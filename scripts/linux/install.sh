@@ -13,8 +13,9 @@ if [[ $EUID -ne 0 ]]; then
   echo "Run as root: sudo $0 <SERVER_URL> <REGISTRATION_TOKEN>"
   exit 1
 fi
-if [[ -z "$SERVER_URL" ]]; then
+if [[ -z "$SERVER_URL" || -z "$REGISTRATION_TOKEN" ]]; then
   echo "Usage: $0 <SERVER_URL> <REGISTRATION_TOKEN>"
+  echo "Create a token in LabWatch Admin → tokens, then pass it as the second argument."
   exit 1
 fi
 SERVER_HOST="${SERVER_URL#*://}"
@@ -44,17 +45,20 @@ fi
 mkdir -p "$PREFIX/labwatch_agent"
 cp -a "$AGENT_SRC/labwatch_agent/." "$PREFIX/labwatch_agent/"
 cat > "$PREFIX/run.py" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from labwatch_agent.service import main
+
 if __name__ == "__main__":
     raise SystemExit(main())
 PY
-# Make the package importable
-echo "$PREFIX" > "$PREFIX/venv/lib/python3.*/site-packages/labwatch.pth" 2>/dev/null || true
-PY_SITE="$("$PREFIX/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
+PY_SITE="$("$PREFIX/venv/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+mkdir -p "$PY_SITE"
 echo "$PREFIX" > "$PY_SITE/labwatch.pth"
 
-if [[ ! -f "$CONFIG_DIR/config.toml" ]]; then
-  cat > "$CONFIG_DIR/config.toml" <<EOF
+cat > "$CONFIG_DIR/config.toml" <<EOF
 [server]
 url = "${SERVER_URL}"
 registration_token = "${REGISTRATION_TOKEN}"
@@ -70,13 +74,13 @@ verify = true
 [logging]
 level = "INFO"
 EOF
-  chmod 600 "$CONFIG_DIR/config.toml"
-fi
+chmod 600 "$CONFIG_DIR/config.toml"
 
 cat > /usr/local/bin/labwatch-agent <<EOF
 #!/usr/bin/env bash
 export LABWATCH_CONFIG="${CONFIG_DIR}/config.toml"
 export LABWATCH_STATE_DIR="${STATE_DIR}"
+export PYTHONPATH="${PREFIX}"
 export NO_PROXY="${SERVER_HOST},localhost,127.0.0.1"
 export no_proxy="${SERVER_HOST},localhost,127.0.0.1"
 exec ${PREFIX}/venv/bin/python ${PREFIX}/run.py "\$@"
@@ -93,6 +97,7 @@ Wants=network-online.target
 Type=simple
 Environment=LABWATCH_CONFIG=${CONFIG_DIR}/config.toml
 Environment=LABWATCH_STATE_DIR=${STATE_DIR}
+Environment=PYTHONPATH=${PREFIX}
 Environment=NO_PROXY=${SERVER_HOST},localhost,127.0.0.1
 Environment=no_proxy=${SERVER_HOST},localhost,127.0.0.1
 ExecStart=${PREFIX}/venv/bin/python ${PREFIX}/run.py run
@@ -108,4 +113,10 @@ EOF
 systemctl daemon-reload
 systemctl enable labwatch-agent
 systemctl restart labwatch-agent
+sleep 2
+if ! systemctl is-active --quiet labwatch-agent; then
+  echo "Agent failed to stay running. Last logs:"
+  journalctl -u labwatch-agent -n 40 --no-pager || true
+  exit 1
+fi
 echo "Installed. Commands: labwatch-agent status|once ; systemctl status labwatch-agent"
