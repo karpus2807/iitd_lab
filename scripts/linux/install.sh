@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # LabWatch Linux agent installer
-# Usage: sudo ./install-linux.sh https://labwatch.example.edu lw_token_here
+# Usage: sudo ./scripts/linux/install.sh http://hobbit2.cse.iitd.ac.in lw_token_here
 
 PREFIX="${PREFIX:-/opt/labwatch-agent}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/labwatch-agent}"
@@ -18,10 +18,16 @@ if [[ -z "$SERVER_URL" ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENT_SRC="${SCRIPT_DIR}/agent"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+AGENT_SRC="${REPO_ROOT}/agent"
 if [[ ! -d "$AGENT_SRC/labwatch_agent" ]]; then
-  AGENT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../agent" && pwd)"
+  echo "Could not find agent sources at $AGENT_SRC"
+  echo "Run this from a LabWatch git checkout: sudo ./scripts/linux/install.sh <SERVER_URL> <TOKEN>"
+  exit 1
+fi
+if ! command -v python3 >/dev/null; then
+  echo "python3 is required. On Ubuntu: sudo apt-get install -y python3 python3-venv python3-pip"
+  exit 1
 fi
 
 echo "Installing LabWatch agent to $PREFIX"

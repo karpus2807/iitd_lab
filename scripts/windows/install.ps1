@@ -13,9 +13,10 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 New-Item -ItemType Directory -Force -Path "$DataDir\state" | Out-Null
 
-$repoAgent = Join-Path (Split-Path $PSScriptRoot -Parent) "agent"
+$repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$repoAgent = Join-Path $repoRoot "agent"
 if (-not (Test-Path (Join-Path $repoAgent "labwatch_agent"))) {
-  $repoAgent = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "agent"
+  throw "Could not find agent sources at $repoAgent"
 }
 Copy-Item -Recurse -Force (Join-Path $repoAgent "labwatch_agent") $InstallDir
 Copy-Item -Force (Join-Path $repoAgent "requirements.txt") $InstallDir
