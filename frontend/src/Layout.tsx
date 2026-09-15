@@ -41,7 +41,7 @@ export default function Layout() {
         </div>
         <nav className="nav">
           {links.map(([to, label]) => {
-            if (label === 'Updates' && user?.role !== 'ADMIN') return null
+            if ((label === 'Updates' || label === 'Admin') && user?.role !== 'ADMIN') return null
             return (
               <NavLink key={to} to={to} end={to === '/' || to === '/admin'}>
                 {label}
@@ -49,12 +49,14 @@ export default function Layout() {
               </NavLink>
             )
           })}
-          <NavLink to="/account">Password</NavLink>
         </nav>
         <div className="sidebar-foot">
           <div>{user?.username} · {user?.role}</div>
           <button className="btn secondary" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          </button>
+          <button className="btn secondary" onClick={() => nav('/account')}>
+            Password
           </button>
           <button
             className="btn secondary"

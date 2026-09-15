@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:web-static": "tsc -b && vite build && rm -rf ../docker/web-static && mkdir -p ../docker/web-static && cp -a dist/. ../docker/web-static/",
     "preview": "vite preview"
   },
   "dependencies": {

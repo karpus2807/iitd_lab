@@ -13,7 +13,7 @@ export default function Login() {
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
       setSession(data)
-      window.location.assign('/labs')
+      window.location.assign('/')
     } catch (ex: any) {
       setErr(ex.message || 'Login failed')
     }

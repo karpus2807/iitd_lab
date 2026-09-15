@@ -37,13 +37,11 @@ sudo ./scripts/linux/install-host-updater.sh
 
 Compose bind-mounts the git checkout at `/opt/labwatch` and Docker socket into `api`. `.env` is not overwritten by `git checkout`.
 
-If the Nginx dashboard is an older image (no **Infra** / **Updates** in the sidebar), use the API-hosted pages after login:
+Sidebar, Labs, Updates, and Admin all come from the bind-mounted SPA in `docker/web-static`. After `git checkout`, recreate **web** (no npm/image rebuild):
 
-- `http://<server>/api/ui/admin` — create, edit, set password, and delete users
-- `http://<server>/api/ui/infra` — create, rename, and delete labs; assign machines
-- `http://<server>/api/ui/updates` — list GitHub tags and apply a release
-
-Those routes ship with the API bind-mount, so they appear after `git checkout` without rebuilding `web`.
+```bash
+sudo docker compose up -d --force-recreate --no-deps web
+```
 
 ## Docker / pip: IITD proxy CONNECT drops
 
