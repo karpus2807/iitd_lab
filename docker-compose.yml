@@ -34,6 +34,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://labwatch:labwatch@db:5432/labwatch
       LABWATCH_REPO_DIR: ${PWD}
       LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
+      PYTHONUNBUFFERED: "1"
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}

@@ -80,6 +80,20 @@ async def init_models() -> None:
         await conn.run_sync(_ensure_machine_address_columns)
 
 
+def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
+    if dialect_name == "postgresql":
+        return {
+            "current_ips": "JSONB",
+            "previous_ip": "VARCHAR(64)",
+            "ip_changed_at": "TIMESTAMPTZ",
+        }
+    return {
+        "current_ips": "JSON",
+        "previous_ip": "VARCHAR(64)",
+        "ip_changed_at": "DATETIME",
+    }
+
+
 def _ensure_machine_address_columns(sync_conn) -> None:
     from sqlalchemy import inspect, text
 
@@ -87,11 +101,6 @@ def _ensure_machine_address_columns(sync_conn) -> None:
     if "machines" not in insp.get_table_names():
         return
     existing = {c["name"] for c in insp.get_columns("machines")}
-    additions = {
-        "current_ips": "JSON",
-        "previous_ip": "VARCHAR(64)",
-        "ip_changed_at": "DATETIME",
-    }
-    for name, sql_type in additions.items():
+    for name, sql_type in machine_address_column_sql(sync_conn.dialect.name).items():
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE machines ADD COLUMN {name} {sql_type}"))

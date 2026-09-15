@@ -93,8 +93,19 @@ async def _loop(name: str, interval: float, coro_factory):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    await init_models()
-    await seed()
+    last_error: Exception | None = None
+    for attempt in range(1, 16):
+        try:
+            await init_models()
+            await seed()
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.exception("API startup failed (attempt %s/15)", attempt)
+            await asyncio.sleep(2)
+    if last_error is not None:
+        raise last_error
     tasks = [
         asyncio.create_task(_loop("heartbeat", 15, reconcile_machine_status)),
         asyncio.create_task(_loop("retention", 3600, rollup_and_prune)),

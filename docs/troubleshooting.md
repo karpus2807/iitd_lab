@@ -11,7 +11,19 @@ sudo docker compose logs api --tail 80
 curl -sS http://127.0.0.1/health
 ```
 
-`health` must return `{"status":"ok",...}`. If `api` is `Exit` or not listed, fix that first — the UI cannot log in without it.
+`health` must return `{"status":"ok",...}`. If `api` is `Exit` or **Up Less than a second**, the API is crash-looping and Nginx will always return 502.
+
+```bash
+sudo docker inspect iitd_lab-api-1 --format 'restarts={{.RestartCount}} exit={{.State.ExitCode}} err={{.State.Error}}'
+sudo docker compose logs api --tail 200
+```
+
+Typical causes: incomplete `pip install` image, or Postgres rejecting `ALTER ... DATETIME`. Rebuild after `git checkout v1.1.2`:
+
+```bash
+sudo docker compose up -d --build --pull never api web
+sudo docker compose logs -f api
+```
 
 Also confirm `.env` has `NO_PROXY` including `db` so Postgres is not sent through the campus HTTP proxy.
 
