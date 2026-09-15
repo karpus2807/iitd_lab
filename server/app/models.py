@@ -99,7 +99,9 @@ class Machine(Base, TimestampMixin):
     identity_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     lab: Mapped[Lab | None] = relationship(back_populates="machines")
-    agent: Mapped["Agent | None"] = relationship(back_populates="machine", uselist=False)
+    agent: Mapped["Agent | None"] = relationship(
+        back_populates="machine", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class Agent(Base, TimestampMixin):

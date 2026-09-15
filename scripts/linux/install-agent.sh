@@ -50,11 +50,34 @@ _read_tty() {
   printf '%s' "$value"
 }
 
+if systemctl is-active --quiet labwatch-agent 2>/dev/null || [[ -f "${CONFIG_DIR}/config.toml" ]]; then
+  echo "Existing LabWatch agent found. Enter keeps the current machine ID and lab."
+  systemctl stop labwatch-agent 2>/dev/null || true
+fi
+
+_toml_get() {
+  local file="$1" key="$2"
+  [[ -f "$file" ]] || return 0
+  python3 - "$file" "$key" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+key = sys.argv[2]
+m = re.search(r"^" + re.escape(key) + r'\s*=\s*"(.*)"', text, re.M)
+print(m.group(1) if m else "", end="")
+PY
+}
+
 USERNAME="${LABWATCH_USER:-}"
 PASSWORD="${LABWATCH_PASSWORD:-}"
 INVENTORY_ID="${LABWATCH_INVENTORY_ID:-${2:-}}"
 LAB_ID="${LABWATCH_LAB_ID:-}"
 LAB_NAME="${LABWATCH_LAB:-}"
+EXISTING_INVENTORY="$(_toml_get "${CONFIG_DIR}/config.toml" inventory_id)"
+EXISTING_LAB_ID="${LAB_ID:-$(_toml_get "${CONFIG_DIR}/config.toml" lab_id)}"
+EXISTING_LAB_NAME="${LAB_NAME:-$(_toml_get "${CONFIG_DIR}/config.toml" lab)}"
+if [[ -z "$INVENTORY_ID" && -n "$EXISTING_INVENTORY" ]]; then
+  INVENTORY_ID="$EXISTING_INVENTORY"
+fi
 
 if [[ -z "$USERNAME" ]]; then
   USERNAME="$(_read_tty 'LabWatch username: ')"
@@ -62,20 +85,23 @@ fi
 if [[ -z "$PASSWORD" ]]; then
   PASSWORD="$(_read_tty 'LabWatch password: ' 1)"
 fi
-if [[ -z "$INVENTORY_ID" ]]; then
-  INVENTORY_ID="$(_read_tty 'Machine ID (example 12345/2012/12): ')"
+if [[ -z "${LABWATCH_INVENTORY_ID:-}" && -z "${2:-}" ]]; then
+  TYPED="$(_read_tty "Machine ID [${EXISTING_INVENTORY:-example 12345/2012/12}]: ")"
+  if [[ -n "$TYPED" ]]; then
+    INVENTORY_ID="$TYPED"
+  fi
 fi
 
 if [[ -z "$USERNAME" || -z "$PASSWORD" || -z "$INVENTORY_ID" ]]; then
-  echo "Username, password, and machine ID are required."
+  echo "Username, password, and machine ID are required (Enter keeps the previous machine ID if one exists)."
   exit 1
 fi
 
 if [[ -z "$LAB_ID" ]]; then
   echo "Fetching labs from ${SERVER_URL}…"
   LAB_PICK="$(
-    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" LABWATCH_LAB="$LAB_NAME" python3 - <<'PY'
-import json, os, sys, urllib.error, urllib.request
+    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" LABWATCH_LAB="$LAB_NAME" INVENTORY_ID="$INVENTORY_ID" EXISTING_LAB_ID="$EXISTING_LAB_ID" EXISTING_LAB_NAME="$EXISTING_LAB_NAME" python3 - <<'PY'
+import json, os, sys, urllib.error, urllib.parse, urllib.request
 
 def call(method, path, data=None, token=None):
     headers = {"Content-Type": "application/json"}
@@ -96,14 +122,35 @@ tty_out = open("/dev/tty", "w") if os.path.exists("/dev/tty") else sys.stderr
 tty_in = open("/dev/tty", "r") if os.path.exists("/dev/tty") else sys.stdin
 
 login = call("POST", "/api/auth/login", {"username": os.environ["USERNAME"], "password": os.environ["PASSWORD"]})
-labs = call("GET", "/api/labs", token=login["access_token"])
+token = login["access_token"]
+labs = call("GET", "/api/labs", token=token)
 if not isinstance(labs, list) or not labs:
     raise SystemExit("No labs found. Create labs in Admin first.")
 labs.sort(key=lambda row: (str(row.get("name") or "").strip().lower() == "unassigned", str(row.get("name") or "").lower()))
+by_id = {str(row["id"]): row for row in labs}
+unassigned = next((row for row in labs if str(row.get("name") or "").strip().lower() == "unassigned"), labs[0])
+
+current = None
+inv = (os.environ.get("INVENTORY_ID") or "").strip()
+if inv:
+    q = urllib.parse.quote(inv)
+    listed = call("GET", f"/api/machines?inventory_id={q}", token=token)
+    if isinstance(listed, list) and listed:
+        lid = str(listed[0].get("lab_id") or "")
+        current = by_id.get(lid)
+if current is None:
+    lid = (os.environ.get("EXISTING_LAB_ID") or "").strip()
+    current = by_id.get(lid)
+if current is None:
+    name = (os.environ.get("EXISTING_LAB_NAME") or "").strip().lower()
+    if name:
+        current = next((row for row in labs if str(row.get("name") or "").lower() == name), None)
+
 tty_out.write("\nLabs:\n")
 for i, lab in enumerate(labs, 1):
     extra = f"  ({lab.get('machine_count') or 0} hosts)" if lab.get("machine_count") is not None else ""
-    tty_out.write(f"  {i}) {lab['name']}{extra}\n")
+    mark = "  [current]" if current and lab["id"] == current["id"] else ""
+    tty_out.write(f"  {i}) {lab['name']}{extra}{mark}\n")
 tty_out.flush()
 preset = (os.environ.get("LABWATCH_LAB") or "").strip()
 choice = None
@@ -117,9 +164,15 @@ elif preset:
     if choice is None:
         raise SystemExit(f"Unknown lab '{preset}'")
 else:
-    tty_out.write("Select lab number: ")
+    keep = current["name"] if current else unassigned["name"]
+    tty_out.write(f"Select lab number (Enter keeps {keep}): ")
     tty_out.flush()
     raw = tty_in.readline().strip()
+    if not raw:
+        chosen = current or unassigned
+        tty_out.write(f"Keeping {chosen['name']}\n")
+        print(json.dumps({"lab_id": chosen["id"], "lab": chosen["name"]}))
+        raise SystemExit
     if not raw.isdigit():
         raise SystemExit("Select a lab by number, for example 1")
     choice = int(raw)
@@ -188,6 +241,7 @@ if [[ -z "$AGENT_SRC" ]]; then
 fi
 
 echo "Installing LabWatch agent to $PREFIX"
+systemctl stop labwatch-agent 2>/dev/null || true
 mkdir -p "$PREFIX" "$CONFIG_DIR" "$STATE_DIR"
 python3 -m venv --without-pip "$PREFIX/venv" 2>/dev/null || python3 -m venv "$PREFIX/venv"
 if [[ ! -x "$PREFIX/venv/bin/pip" ]]; then
@@ -211,11 +265,14 @@ PY_SITE="$("$PREFIX/venv/bin/python" -c 'import sysconfig; print(sysconfig.get_p
 mkdir -p "$PY_SITE"
 echo "$PREFIX" > "$PY_SITE/labwatch.pth"
 
+LAB_TOML="$(printf '%s' "$LAB_NAME" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [server]
 url = "${SERVER_URL}"
 registration_token = "${TOKEN}"
 inventory_id = "${INVENTORY_ID}"
+lab_id = "${LAB_ID}"
+lab = ${LAB_TOML}
 
 [agent]
 heartbeat_interval = 30
@@ -229,6 +286,7 @@ verify = true
 level = "INFO"
 EOF
 chmod 600 "$CONFIG_DIR/config.toml"
+rm -f "$STATE_DIR/state.toml"
 
 cat > /usr/local/bin/labwatch-agent <<EOF
 #!/usr/bin/env bash
@@ -273,5 +331,6 @@ if ! systemctl is-active --quiet labwatch-agent; then
   journalctl -u labwatch-agent -n 40 --no-pager || true
   exit 1
 fi
-echo "Installed ${INVENTORY_ID} → ${SERVER_URL}"
+echo "Installed ${INVENTORY_ID} (${LAB_NAME:-lab}) → ${SERVER_URL}"
+echo "Update later with the same curl command; Enter keeps this machine ID and lab."
 echo "Commands: labwatch-agent status|once ; systemctl status labwatch-agent"

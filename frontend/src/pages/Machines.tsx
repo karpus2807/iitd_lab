@@ -10,7 +10,7 @@ export default function Machines() {
   const [params, setParams] = useSearchParams()
   const nav = useNavigate()
   const role = currentUser()?.role
-  const canAssign = role === 'ADMIN' || role === 'OPERATOR'
+  const canManage = role === 'ADMIN' || role === 'OPERATOR'
   const q = params.get('q') || ''
   const lab = params.get('lab') || ''
   const status = params.get('status') || ''
@@ -46,6 +46,18 @@ export default function Machines() {
     setParams(next)
   }
 
+  async function removeMachine(m: any) {
+    const name = m.inventory_id || m.display_name || m.hostname
+    if (!confirm(`Remove ${name} from LabWatch? This deletes the host on the server.`)) return
+    setErr('')
+    try {
+      await api(`/api/machines/${m.id}`, { method: 'DELETE' })
+      loadRows()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not remove machine')
+    }
+  }
+
   async function assignLab(machineId: string, labId: string) {
     if (!labId) return
     setErr('')
@@ -62,7 +74,7 @@ export default function Machines() {
       <div className="topbar">
         <div>
           <h2>Machines</h2>
-          <p>{rows.length} matching hosts{canAssign ? ' · change Lab in the list to move a host, including Unassigned' : ''}</p>
+          <p>{rows.length} matching hosts{canManage ? ' · change Lab in the list to move a host, or Remove to delete it from the server' : ''}</p>
         </div>
       </div>
       {err && <p className="err">{err}</p>}
@@ -96,7 +108,7 @@ export default function Machines() {
         <table>
           <thead>
             <tr>
-              <th>Machine ID</th><th>Lab</th><th>Status</th><th>OS</th><th>IP</th><th>GPUs</th><th>Seen</th>
+              <th>Machine ID</th><th>Lab</th><th>Status</th><th>OS</th><th>IP</th><th>GPUs</th><th>Seen</th>{canManage ? <th></th> : null}
             </tr>
           </thead>
           <tbody>
@@ -109,7 +121,7 @@ export default function Machines() {
                   {m.is_virtual && <span className="badge INFO" style={{ marginLeft: 8 }}>VM</span>}
                 </td>
                 <td onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
-                  {canAssign ? (
+                  {canManage ? (
                     <select
                       className="lab-assign"
                       value={m.lab_id || ''}
@@ -126,6 +138,11 @@ export default function Machines() {
                 <td className="mono">{m.current_ip || '—'}{(m.current_ips || []).length > 1 ? ` +${m.current_ips.length - 1}` : ''}</td>
                 <td className="mono">{m.gpu_count}</td>
                 <td className="muted">{ago(m.last_seen_at)}</td>
+                {canManage && (
+                  <td onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+                    <button className="btn danger" type="button" onClick={() => removeMachine(m)}>Remove</button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

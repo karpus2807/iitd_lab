@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { ago, api, bytes, currentUser, fmt } from '../api'
 import { StatusBadge } from '../Layout'
@@ -35,6 +35,7 @@ function Kv({ label, value }: { label: string; value: unknown }) {
 
 export default function MachineDetail() {
   const { id } = useParams()
+  const nav = useNavigate()
   const [tab, setTab] = useState<(typeof TABS)[number]>('Overview')
   const [machine, setMachine] = useState<any>(null)
   const [hw, setHw] = useState<any>(null)
@@ -43,6 +44,8 @@ export default function MachineDetail() {
   const [metrics, setMetrics] = useState<any>(null)
   const [range, setRange] = useState('24h')
   const [labs, setLabs] = useState<any[]>([])
+  const [err, setErr] = useState('')
+  const canManage = ['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '')
 
   useEffect(() => {
     if (!id) return
@@ -63,6 +66,18 @@ export default function MachineDetail() {
 
   if (!machine) return <p className="muted">Loading machine…</p>
 
+  async function removeMachine() {
+    const name = machine.inventory_id || machine.display_name || machine.hostname
+    if (!confirm(`Remove ${name} from LabWatch? This deletes the host on the server. Uninstall the agent on the PC separately.`)) return
+    setErr('')
+    try {
+      await api(`/api/machines/${machine.id}`, { method: 'DELETE' })
+      nav('/machines')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not remove machine')
+    }
+  }
+
   return (
     <>
       <div className="topbar">
@@ -74,8 +89,14 @@ export default function MachineDetail() {
             {machine.is_virtual ? ' · Virtual machine' : ' · Physical machine'}
           </p>
         </div>
-        <StatusBadge status={machine.status} />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <StatusBadge status={machine.status} />
+          {canManage && (
+            <button className="btn danger" type="button" onClick={removeMachine}>Remove from LabWatch</button>
+          )}
+        </div>
       </div>
+      {err && <p className="err">{err}</p>}
       <div className="tabs">
         {TABS.map((t) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>
@@ -108,7 +129,7 @@ export default function MachineDetail() {
               <Kv label="GPUs" value={machine.gpu_count} />
               <Kv label="Disks" value={hw?.storage?.disks?.length ?? '—'} />
             </div>
-            {['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '') && (
+            {canManage && (
               <div className="field" style={{ marginTop: 16 }}>
                 <label>Move to lab</label>
                 <select

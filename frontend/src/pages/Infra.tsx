@@ -94,6 +94,18 @@ export default function Infra() {
     await load()
   }
 
+  async function removeMachine(m: Machine) {
+    if (!confirm(`Remove ${m.inventory_id || m.hostname} from LabWatch? This deletes the host on the server.`)) return
+    setErr('')
+    try {
+      await api(`/api/machines/${m.id}`, { method: 'DELETE' })
+      setMsg('Machine removed')
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    }
+  }
+
   async function saveMachine(id: string) {
     const d = hostDrafts[id]
     await api(`/api/machines/${id}`, {
@@ -176,7 +188,10 @@ export default function Infra() {
                   <td>
                     <input type="checkbox" checked={d.approved} disabled={!canEdit} onChange={(e) => setHostDrafts({ ...hostDrafts, [m.id]: { ...d, approved: e.target.checked } })} />
                   </td>
-                  <td>{canEdit && <button className="btn secondary" type="button" onClick={() => saveMachine(m.id)}>Save</button>}</td>
+                  <td className="row-actions">
+                    {canEdit && <button className="btn secondary" type="button" onClick={() => saveMachine(m.id)}>Save</button>}
+                    {canEdit && <button className="btn danger" type="button" onClick={() => removeMachine(m)}>Remove</button>}
+                  </td>
                 </tr>
               )
             })}

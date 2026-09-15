@@ -55,6 +55,15 @@ def get_engine() -> AsyncEngine:
             pool_pre_ping=not settings.is_sqlite,
             connect_args={"check_same_thread": False} if settings.is_sqlite else {},
         )
+        if settings.is_sqlite:
+            from sqlalchemy import event
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _sqlite_fk(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
+
         SessionLocal = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     return _engine
 

@@ -138,7 +138,18 @@ On a lab PC (Wi-Fi or LAN), install with one command against the hobbit **hostna
 curl -fsSL http://hobbit2.cse.iitd.ac.in/install-agent.sh | sudo bash
 ```
 
-The script asks for LabWatch username/password and a machine ID such as `12345/2012/12`. It then fetches every lab and you pick one by number (so a typo cannot miss the category). It logs in, creates a one-use token by itself, and installs `labwatch-agent`. Do not copy tokens by hand. If a host lands in Unassigned, move it from the Machines list Lab dropdown or the machine page.
+The script asks for LabWatch username/password. If an agent is already on the PC, Enter keeps the previous machine ID and lab; otherwise type a machine ID such as `12345/2012/12` and pick a lab number. The same command also **updates** the agent (new files from the server, same ID/lab if you press Enter).
+
+To delete a host from the website after uninstalling the PC agent, open **Machines**, then **Remove** / **Remove from LabWatch**.
+
+```bash
+# remove agent on the lab PC
+sudo systemctl disable --now labwatch-agent
+sudo rm -f /etc/systemd/system/labwatch-agent.service /usr/local/bin/labwatch-agent
+sudo rm -rf /opt/labwatch-agent
+# optional full wipe of local ID/lab:
+# sudo rm -rf /etc/labwatch-agent /var/lib/labwatch-agent
+```
 
 That installs a systemd unit `labwatch-agent` which starts on boot.
 

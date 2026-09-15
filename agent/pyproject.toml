@@ -1,6 +1,6 @@
 [project]
 name = "labwatch-agent"
-version = "1.0.0"
+version = "1.1.15"
 description = "LabWatch hardware monitoring agent"
 requires-python = ">=3.10"
 dependencies = [

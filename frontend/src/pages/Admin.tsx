@@ -221,6 +221,11 @@ function Agents() {
                   <button className="btn secondary" onClick={async () => { await api(`/api/admin/agents/${a.id}/approve`, { method: 'POST' }); load() }}>Approve</button>
                   <button className="btn secondary" onClick={async () => { const r = await api(`/api/admin/agents/${a.id}/rotate`, { method: 'POST' }); setSecret(r.agent_secret) }}>Rotate</button>
                   <button className="btn danger" onClick={async () => { await api(`/api/admin/agents/${a.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
+                  <button className="btn danger" onClick={async () => {
+                    if (!confirm(`Remove ${a.hostname} from LabWatch? This deletes the host on the server.`)) return
+                    await api(`/api/machines/${a.machine_id}`, { method: 'DELETE' })
+                    load()
+                  }}>Remove host</button>
                 </td>
               </tr>
             ))}

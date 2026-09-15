@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, DbDep, OperatorUser
+from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
 from app.models import (
     Agent,
     AgentLog,
@@ -45,6 +45,7 @@ async def list_machines(
     lab_id: UUID | None = None,
     status: str | None = None,
     q: str | None = None,
+    inventory_id: str | None = None,
     os_name: str | None = None,
     has_alerts: bool | None = None,
     has_gpu: bool | None = None,
@@ -67,6 +68,8 @@ async def list_machines(
         stmt = stmt.where(Machine.is_virtual.is_(True))
     if virtual is False:
         stmt = stmt.where(Machine.is_virtual.is_(False))
+    if inventory_id:
+        stmt = stmt.where(Machine.inventory_id == inventory_id.strip())
     if q:
         like = f"%{q.lower()}%"
         stmt = stmt.where(
@@ -180,6 +183,29 @@ async def update_machine(machine_id: UUID, body: MachineUpdate, db: DbDep, user:
             agent.status = "ACTIVE"
     await db.commit()
     return {"ok": True}
+
+
+@router.delete("/{machine_id}")
+async def delete_machine(machine_id: UUID, db: DbDep, user: OperatorUser, request: Request):
+    machine = await db.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    label = machine.inventory_id or machine.display_name or machine.hostname or str(machine.id)
+    await write_audit(
+        db,
+        "machine.delete",
+        user=user,
+        machine_id=machine.id,
+        details={"inventory_id": machine.inventory_id, "hostname": machine.hostname},
+        request=request,
+    )
+    agent = (await db.execute(select(Agent).where(Agent.machine_id == machine.id))).scalar_one_or_none()
+    if agent:
+        await db.delete(agent)
+        await db.flush()
+    await db.delete(machine)
+    await db.commit()
+    return {"ok": True, "deleted": label}
 
 
 async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:

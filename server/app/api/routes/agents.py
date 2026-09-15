@@ -225,6 +225,8 @@ async def register_agent(body: RegisterRequest, db: DbDep):
         existing_agent = (await db.execute(select(Agent).where(Agent.machine_id == machine.id))).scalar_one_or_none()
         if existing_agent and existing_agent.status == AgentStatus.REVOKED.value:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Agent revoked; ask an administrator to re-enable it")
+        if token.lab_id is not None:
+            machine.lab_id = token.lab_id
 
     secret = new_secret(32)
     agent = (await db.execute(select(Agent).where(Agent.machine_id == machine.id))).scalar_one_or_none()
