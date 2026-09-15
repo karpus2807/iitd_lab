@@ -1,0 +1,33 @@
+Handle 0x0100, DMI type 9, 17 bytes
+System Slot Information
+	Designation: Slot 1
+	Type: PCI Express 4 x16
+	Current Usage: In Use
+	Length: Long
+	ID: 1
+	Bus Address: 0000:01:00.0
+
+Handle 0x0101, DMI type 9, 17 bytes
+System Slot Information
+	Designation: GPU Slot 2
+	Type: PCI Express 4 x16
+	Current Usage: In Use
+	Length: Long
+	ID: 2
+	Bus Address: 0000:02:00.0
+
+Handle 0x0102, DMI type 9, 17 bytes
+System Slot Information
+	Designation: Slot 3
+	Type: PCI Express 3 x4
+	Current Usage: Available
+	Length: Short
+	ID: 3
+
+Handle 0x0103, DMI type 9, 17 bytes
+System Slot Information
+	Designation: Slot 4
+	Type: PCI Express 3 x1
+	Current Usage: Available
+	Length: Short
+	ID: 4

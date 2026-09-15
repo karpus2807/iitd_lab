@@ -1,0 +1,70 @@
+# dmidecode 3.5
+Getting SMBIOS data from sysfs.
+SMBIOS 3.3.0 present.
+
+Handle 0x0020, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+	Use: System Memory
+	Error Correction Type: None
+	Maximum Capacity: 128 GB
+	Error Information Handle: Not Provided
+	Number Of Devices: 4
+
+Handle 0x0021, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0020
+	Size: 16 GB
+	Form Factor: DIMM
+	Locator: A1
+	Bank Locator: BANK 0
+	Type: DDR4
+	Type Detail: Synchronous
+	Speed: 3200 MT/s
+	Manufacturer: Samsung
+	Serial Number: S1
+	Asset Tag: 00000000
+	Part Number: M393A2K40DB3-CWE
+	Rank: 2
+	Configured Memory Speed: 3200 MT/s
+
+Handle 0x0022, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0020
+	Size: 16 GB
+	Form Factor: DIMM
+	Locator: A2
+	Bank Locator: BANK 1
+	Type: DDR4
+	Speed: 3200 MT/s
+	Manufacturer: Samsung
+	Serial Number: S2
+	Part Number: M393A2K40DB3-CWE
+	Configured Memory Speed: 3200 MT/s
+
+Handle 0x0023, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0020
+	Size: 16 GB
+	Form Factor: DIMM
+	Locator: B1
+	Bank Locator: BANK 2
+	Type: DDR4
+	Speed: 3200 MT/s
+	Manufacturer: Samsung
+	Serial Number: S3
+	Part Number: M393A2K40DB3-CWE
+	Configured Memory Speed: 3200 MT/s
+
+Handle 0x0024, DMI type 17, 40 bytes
+Memory Device
+	Array Handle: 0x0020
+	Size: No Module Installed
+	Form Factor: DIMM
+	Locator: B2
+	Bank Locator: BANK 3
+	Type: Unknown
+	Speed: Unknown
+	Manufacturer: [Empty]
+	Serial Number: [Empty]
+	Part Number: [Empty]

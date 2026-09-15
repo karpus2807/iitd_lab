@@ -1,0 +1,21 @@
+# LabWatch agent configuration
+# Copy to /etc/labwatch-agent/config.toml (Linux)
+# or C:\ProgramData\LabWatch\config.toml (Windows)
+
+[server]
+url = "https://labwatch.example.edu"
+registration_token = "lw_replace_me"
+
+[agent]
+# Optional stable override. If empty, the agent generates and stores a UUID.
+id = ""
+heartbeat_interval = 30
+metric_interval = 30
+inventory_interval = 300
+
+[tls]
+verify = true
+ca_file = ""
+
+[logging]
+level = "INFO"

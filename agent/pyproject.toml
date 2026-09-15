@@ -1,0 +1,20 @@
+[project]
+name = "labwatch-agent"
+version = "1.0.0"
+description = "LabWatch hardware monitoring agent"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.28.0",
+  "psutil>=6.1.0",
+  "pydantic>=2.10.0",
+]
+
+[project.scripts]
+labwatch-agent = "labwatch_agent.service:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["labwatch_agent*"]
