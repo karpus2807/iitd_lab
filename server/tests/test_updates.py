@@ -7,6 +7,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.10",
+        "name": "LabWatch 1.1.10",
+        "published_at": "2026-09-15T16:20:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.10",
+        "notes": "Fix login Not Found nginx proxy",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.9",
         "name": "LabWatch 1.1.9",
         "published_at": "2026-09-15T16:15:00Z",
@@ -104,15 +112,15 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert listed.status_code == 200, listed.text
     body = listed.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.9"
-    assert body["current"]["tag"] == "v1.1.9"
+    assert body["latest"]["tag"] == "v1.1.10"
+    assert body["current"]["tag"] == "v1.1.10"
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])
 
-    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.8"})
+    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.9"})
     assert apply.status_code == 200, apply.text
     status = apply.json()["status"]
-    assert status["tag"] == "v1.1.8"
+    assert status["tag"] == "v1.1.9"
     assert status["state"] == "queued"
     assert (update_harness / "data" / "update-request.json").is_file()
 
