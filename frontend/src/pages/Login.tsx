@@ -1,10 +1,8 @@
 import type { FormEvent } from 'react'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { api, setSession } from '../api'
 
 export default function Login() {
-  const nav = useNavigate()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState('')
@@ -15,7 +13,7 @@ export default function Login() {
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
       setSession(data)
-      nav('/')
+      window.location.assign('/labs')
     } catch (ex: any) {
       setErr(ex.message || 'Login failed')
     }

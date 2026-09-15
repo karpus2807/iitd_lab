@@ -35,6 +35,7 @@ export default function App() {
         <Route path="machines/:id" element={<MachineDetail />} />
         <Route path="labs" element={<Labs />} />
         <Route path="infra" element={<Infra />} />
+        <Route path="updates" element={<Updates />} />
         <Route path="alerts" element={<Alerts />} />
         <Route path="admin" element={<Admin />} />
         <Route path="admin/updates" element={<Updates />} />

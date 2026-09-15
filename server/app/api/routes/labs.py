@@ -11,10 +11,23 @@ from app.schemas.api import LabCreate, LabOut, LabUpdate
 router = APIRouter(prefix="/api/labs", tags=["labs"])
 
 UNASSIGNED = "Unassigned"
+STR_FIELDS = ("code", "department", "building", "floor", "room", "incharge", "phone", "email", "description")
 
 
 def _is_protected(lab: Lab) -> bool:
     return lab.name.strip().lower() == UNASSIGNED.lower()
+
+
+def _text(lab: Lab, key: str) -> str:
+    return getattr(lab, key, None) or ""
+
+
+def _apply_fields(lab: Lab, data: dict) -> None:
+    for key in STR_FIELDS:
+        if key in data and data[key] is not None:
+            setattr(lab, key, str(data[key]).strip())
+    if "capacity" in data and data["capacity"] is not None:
+        lab.capacity = max(0, int(data["capacity"]))
 
 
 async def _unassigned_lab(db) -> Lab:
@@ -39,9 +52,16 @@ async def _lab_out(db, lab: Lab) -> LabOut:
     return LabOut(
         id=lab.id,
         name=lab.name,
-        description=lab.description or "",
-        building=getattr(lab, "building", None) or "",
-        room=getattr(lab, "room", None) or "",
+        code=_text(lab, "code"),
+        department=_text(lab, "department"),
+        building=_text(lab, "building"),
+        floor=_text(lab, "floor"),
+        room=_text(lab, "room"),
+        capacity=int(getattr(lab, "capacity", 0) or 0),
+        incharge=_text(lab, "incharge"),
+        phone=_text(lab, "phone"),
+        email=_text(lab, "email"),
+        description=_text(lab, "description"),
         machine_count=total,
         online_count=online,
         protected=_is_protected(lab),
@@ -54,17 +74,21 @@ async def list_labs(db: DbDep, user: CurrentUser):
     return [await _lab_out(db, lab) for lab in labs]
 
 
+@router.get("/{lab_id}", response_model=LabOut)
+async def get_lab(lab_id: UUID, db: DbDep, user: CurrentUser):
+    lab = await db.get(Lab, lab_id)
+    if not lab:
+        raise HTTPException(404, "Lab not found")
+    return await _lab_out(db, lab)
+
+
 @router.post("", response_model=LabOut)
 async def create_lab(body: LabCreate, db: DbDep, user: OperatorUser):
     existing = (await db.execute(select(Lab).where(func.lower(Lab.name) == body.name.strip().lower()))).scalar_one_or_none()
     if existing:
         raise HTTPException(409, "Lab already exists")
-    lab = Lab(
-        name=body.name.strip(),
-        description=body.description,
-        building=body.building.strip(),
-        room=body.room.strip(),
-    )
+    lab = Lab(name=body.name.strip())
+    _apply_fields(lab, body.model_dump())
     db.add(lab)
     await write_audit(db, "lab.create", user=user, details={"name": body.name})
     await db.commit()
@@ -88,12 +112,7 @@ async def update_lab(lab_id: UUID, body: LabUpdate, db: DbDep, user: OperatorUse
         if clash:
             raise HTTPException(409, "Lab already exists")
         lab.name = name
-    if "description" in data and data["description"] is not None:
-        lab.description = data["description"]
-    if "building" in data and data["building"] is not None:
-        lab.building = data["building"].strip()
-    if "room" in data and data["room"] is not None:
-        lab.room = data["room"].strip()
+    _apply_fields(lab, data)
     await write_audit(db, "lab.update", user=user, details={"lab_id": str(lab_id), "name": lab.name})
     await db.commit()
     return await _lab_out(db, lab)

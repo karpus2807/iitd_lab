@@ -59,24 +59,45 @@ class UserOut(BaseModel):
 
 class LabCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    description: str = ""
+    code: str = ""
+    department: str = ""
     building: str = ""
+    floor: str = ""
     room: str = ""
+    capacity: int = 0
+    incharge: str = ""
+    phone: str = ""
+    email: str = ""
+    description: str = ""
 
 
 class LabUpdate(BaseModel):
     name: str | None = None
-    description: str | None = None
+    code: str | None = None
+    department: str | None = None
     building: str | None = None
+    floor: str | None = None
     room: str | None = None
+    capacity: int | None = None
+    incharge: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    description: str | None = None
 
 
 class LabOut(BaseModel):
     id: UUID
     name: str
-    description: str
+    code: str = ""
+    department: str = ""
     building: str = ""
+    floor: str = ""
     room: str = ""
+    capacity: int = 0
+    incharge: str = ""
+    phone: str = ""
+    email: str = ""
+    description: str = ""
     machine_count: int = 0
     online_count: int = 0
     protected: bool = False

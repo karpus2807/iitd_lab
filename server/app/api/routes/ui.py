@@ -1,4 +1,4 @@
-"""Self-contained Admin / Infra / Updates pages (work even when the SPA image is old)."""
+"""Management UI served by the API (Labs + Updates). Works with an old Nginx SPA image."""
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
@@ -20,44 +20,47 @@ PAGE = r"""<!doctype html>
     header a.active { color:var(--accent); }
     main { padding:24px; max-width:1280px; margin:0 auto; }
     h1 { margin:0 0 8px; font-size:22px; }
-    p.muted, .muted { color:var(--muted); }
+    .muted { color:var(--muted); }
     .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:16px; }
-    table { width:100%; border-collapse:collapse; font-size:14px; }
-    th { text-align:left; color:var(--muted); font-weight:500; padding:8px; border-bottom:1px solid var(--line); }
-    td { padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
-    input, select, textarea { width:100%; background:#1b2530; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px; }
+    input, select { background:#1b2530; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px; min-width:0; }
     button { background:var(--accent); color:#062018; border:0; border-radius:8px; padding:8px 12px; font-weight:600; cursor:pointer; }
     button.sec { background:#1b2530; color:var(--text); border:1px solid var(--line); }
     button.danger { background:var(--crit); color:#fff; }
-    button:disabled { opacity:0.45; cursor:not-allowed; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
-    .row > * { flex:1; min-width:140px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:8px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .err { color:var(--crit); }
-    .ok { color:var(--accent); }
-    .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 8px; font-size:12px; margin-right:6px; }
-    .actions { display:flex; gap:6px; flex-wrap:wrap; }
+    .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 8px; font-size:12px; }
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+    .login { max-width:380px; margin:10vh auto; }
   </style>
 </head>
 <body>
-<header>
-  <strong>LabWatch</strong>
-  <a href="/">Dashboard</a>
-  <a href="/api/ui/admin" id="nav-admin">Users</a>
-  <a href="/api/ui/infra" id="nav-infra">Infra</a>
-  <a href="/api/ui/updates" id="nav-updates">Updates</a>
-</header>
+<header id="nav"></header>
 <main id="root"><p class="muted">Loading…</p></main>
 <script>
-const PAGE = location.pathname.includes("/updates") ? "updates" : location.pathname.includes("/infra") ? "infra" : "admin";
-const nav = document.getElementById("nav-"+PAGE);
-if (nav) nav.classList.add("active");
-const token = localStorage.getItem("lw_access");
-if (!token) { location.href = "/login"; }
-
-async function api(path, opt={}) {
-  const headers = Object.assign({"Content-Type":"application/json", Authorization:"Bearer "+token}, opt.headers||{});
+const PAGE = location.pathname.includes("/updates") ? "updates" : location.pathname.includes("/admin") ? "admin" : "labs";
+const LAB_KEYS = ["name","code","department","building","floor","room","capacity","incharge","phone","email","description"];
+function esc(s){ return String(s??"").replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c])); }
+function el(html){ const d=document.createElement("div"); d.innerHTML=html.trim(); return d.firstElementChild; }
+function token(){ return localStorage.getItem("lw_access"); }
+function saveSession(data){
+  localStorage.setItem("lw_access", data.access_token);
+  localStorage.setItem("lw_refresh", data.refresh_token);
+  localStorage.setItem("lw_user", JSON.stringify({username:data.username, role:data.role, user_id:data.user_id}));
+}
+function nav(){
+  const n=document.getElementById("nav");
+  n.innerHTML = "<strong>LabWatch</strong> <a href='/labs' id='n-labs'>Labs</a> <a href='/updates' id='n-updates'>Updates</a> <a href='/api/ui/admin' id='n-admin'>Users</a> <a href='/machines'>Machines</a> <a href='#' id='out'>Sign out</a>";
+  document.getElementById("n-"+PAGE).classList.add("active");
+  document.getElementById("out").onclick=function(e){ e.preventDefault(); localStorage.clear(); location.href="/"; };
+}
+async function api(path, opt) {
+  opt = opt || {};
+  const headers = Object.assign({"Content-Type":"application/json"}, opt.headers||{});
+  if (token()) headers.Authorization = "Bearer "+token();
   const res = await fetch(path, Object.assign({}, opt, {headers}));
-  if (res.status === 401) { location.href = "/login"; throw new Error("Unauthorized"); }
+  if (res.status === 401) { localStorage.removeItem("lw_access"); throw new Error("login"); }
   if (!res.ok) {
     let d = res.statusText;
     try { const j = await res.json(); d = j.detail || JSON.stringify(j); } catch(e) {}
@@ -66,186 +69,124 @@ async function api(path, opt={}) {
   if (res.status === 204) return null;
   return res.json();
 }
-function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstElementChild; }
-function esc(s){ return String(s??"").replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c])); }
-function me() { try { return JSON.parse(localStorage.getItem("lw_user")||"null"); } catch(e) { return null; } }
-
-async function renderAdmin() {
-  const root = document.getElementById("root");
-  const self = me();
-  try {
-    const users = await api("/api/admin/users");
-    root.innerHTML = "";
-    root.append(el("<h1>Users</h1>"));
-    root.append(el("<p class='muted'>Create, edit, set password, disable, or delete accounts. Last admin cannot be removed.</p>"));
-    const own = el(`<form class="card row">
-      <input name="current_password" type="password" placeholder="Current password" required/>
-      <input name="new_password" type="password" placeholder="New password" minlength="8" required/>
-      <button>Change my password</button>
-    </form>`);
-    own.onsubmit = async (e) => {
-      e.preventDefault();
-      const f = Object.fromEntries(new FormData(own));
-      await api("/api/auth/password", {method:"POST", body: JSON.stringify(f)});
-      renderAdmin();
-    };
-    root.append(own);
-    const create = el(`<form class="card row">
-      <input name="username" placeholder="Username" required/>
-      <input name="email" placeholder="Email" required/>
-      <input name="full_name" placeholder="Full name"/>
-      <input name="password" type="password" placeholder="Password" minlength="8" required/>
-      <select name="role"><option>VIEWER</option><option>OPERATOR</option><option>ADMIN</option></select>
-      <button>Create user</button>
-    </form>`);
-    create.onsubmit = async (e) => {
-      e.preventDefault();
-      await api("/api/admin/users", {method:"POST", body: JSON.stringify(Object.fromEntries(new FormData(create)))});
-      renderAdmin();
-    };
-    root.append(create);
-    const wrap = el("<div class='card' style='padding:0;overflow:auto'><table><thead><tr><th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>New password</th><th></th></tr></thead><tbody></tbody></table></div>");
-    const tb = wrap.querySelector("tbody");
-    users.forEach(u => {
-      const mine = self && self.user_id === u.id;
-      const tr = el(`<tr>
-        <td><input data-k="username" value="${esc(u.username)}"/></td>
-        <td><input data-k="email" value="${esc(u.email)}"/></td>
-        <td><input data-k="full_name" value="${esc(u.full_name||"")}"/></td>
-        <td><select data-k="role">
-          <option ${u.role==="ADMIN"?"selected":""}>ADMIN</option>
-          <option ${u.role==="OPERATOR"?"selected":""}>OPERATOR</option>
-          <option ${u.role==="VIEWER"?"selected":""}>VIEWER</option>
-        </select></td>
-        <td><input data-k="password" type="password" placeholder="leave blank"/></td>
-        <td class="actions">
-          <button type="button" class="sec save">Save</button>
-          <button type="button" class="sec tog">${u.is_active?"Disable":"Enable"}</button>
-          <button type="button" class="danger del" ${mine?"disabled":""}>Delete</button>
-        </td>
-      </tr>`);
-      tr.querySelector(".save").onclick = async () => {
-        const body = {};
-        tr.querySelectorAll("[data-k]").forEach(i => {
-          if (i.dataset.k === "password" && !i.value) return;
-          body[i.dataset.k] = i.value;
-        });
-        await api("/api/admin/users/"+u.id, {method:"PATCH", body: JSON.stringify(body)});
-        renderAdmin();
-      };
-      tr.querySelector(".tog").onclick = async () => {
-        await api("/api/admin/users/"+u.id, {method:"PATCH", body: JSON.stringify({is_active: !u.is_active})});
-        renderAdmin();
-      };
-      const del = tr.querySelector(".del");
-      del.onclick = async () => {
-        if (!confirm("Delete "+u.username+"?")) return;
-        await api("/api/admin/users/"+u.id, {method:"DELETE"});
-        renderAdmin();
-      };
-      tb.append(tr);
-    });
-    root.append(wrap);
-  } catch (e) {
-    root.innerHTML = "<p class='err'>"+esc(e.message)+"</p><p class='muted'>Users API needs an administrator login.</p>";
-  }
+function labInputs(values, prefix){
+  const labels = {name:"Name", code:"Code", department:"Department", building:"Building", floor:"Floor", room:"Room", capacity:"Capacity", incharge:"In-charge", phone:"Phone", email:"Email", description:"Notes"};
+  return LAB_KEYS.map(function(k){
+    return "<input name='"+prefix+k+"' placeholder='"+labels[k]+"' "+(k==="capacity"?"type='number' min='0'":"")+" value='"+esc(values[k]||"")+"'/>";
+  }).join("");
 }
-
-async function renderInfra() {
-  const root = document.getElementById("root");
+function labBody(form, prefix){
+  const body = {};
+  LAB_KEYS.forEach(function(k){
+    const v = form.querySelector("[name='"+prefix+k+"']").value;
+    body[k] = k==="capacity" ? Number(v||0) : v;
+  });
+  return body;
+}
+function renderLogin(msg){
+  document.getElementById("nav").innerHTML = "<strong>LabWatch</strong>";
+  const root=document.getElementById("root");
+  root.innerHTML="";
+  const box=el("<form class='card login'><h1>Sign in</h1><p class='muted'>Labs editor and Updates</p><div class='grid' style='grid-template-columns:1fr'><input name='username' placeholder='Username' value='admin'/><input name='password' type='password' placeholder='Password'/></div><p class='err' id='le'></p><button style='margin-top:12px'>Sign in</button></form>");
+  document.getElementById("le").textContent = msg || "";
+  box.onsubmit=async function(e){
+    e.preventDefault();
+    try {
+      const data=await api("/api/auth/login",{method:"POST", body:JSON.stringify({username:box.username.value, password:box.password.value})});
+      saveSession(data);
+      location.reload();
+    } catch(err){ document.getElementById("le").textContent = err.message==="login" ? "Invalid credentials" : err.message; }
+  };
+  root.append(box);
+}
+async function renderLabs(){
+  const root=document.getElementById("root");
   try {
-    const [labs, machines] = await Promise.all([api("/api/labs"), api("/api/machines")]);
-    root.innerHTML = "";
-    root.append(el("<h1>Infrastructure</h1>"));
-    root.append(el("<p class='muted'>Create, rename, or delete labs. Unassigned cannot be deleted. Machines can be moved between labs.</p>"));
-    const form = el(`<form class="card row">
-      <input name="name" placeholder="Lab name" required/>
-      <input name="building" placeholder="Building"/>
-      <input name="room" placeholder="Room"/>
-      <input name="description" placeholder="Description"/>
-      <button>Add lab</button>
-    </form>`);
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      await api("/api/labs", {method:"POST", body: JSON.stringify(Object.fromEntries(new FormData(form)))});
-      renderInfra();
-    };
-    root.append(form);
-    const table = el("<div class='card' style='padding:0;overflow:auto'><table><thead><tr><th>Name</th><th>Building</th><th>Room</th><th>Description</th><th>Hosts</th><th></th></tr></thead><tbody></tbody></table></div>");
-    const tb = table.querySelector("tbody");
-    labs.forEach(lab => {
-      const tr = el(`<tr>
-        <td><input value="${esc(lab.name)}" data-k="name"/></td>
-        <td><input value="${esc(lab.building||"")}" data-k="building"/></td>
-        <td><input value="${esc(lab.room||"")}" data-k="room"/></td>
-        <td><input value="${esc(lab.description||"")}" data-k="description"/></td>
-        <td class="muted">${lab.online_count||0}/${lab.machine_count||0}</td>
-        <td class="actions"><button type="button" class="sec save">Save</button> ${lab.protected ? "" : '<button type="button" class="danger del">Delete</button>'}</td>
-      </tr>`);
-      tr.querySelector(".save").onclick = async () => {
-        const body = {};
-        tr.querySelectorAll("input").forEach(i => body[i.dataset.k] = i.value);
-        await api("/api/labs/"+lab.id, {method:"PATCH", body: JSON.stringify(body)});
-        renderInfra();
-      };
-      const del = tr.querySelector(".del");
-      if (del) del.onclick = async () => {
-        if (!confirm("Delete "+lab.name+"? Machines move to Unassigned.")) return;
-        await api("/api/labs/"+lab.id, {method:"DELETE"});
-        renderInfra();
-      };
-      tb.append(tr);
+    const pack = await Promise.all([api("/api/labs"), api("/api/machines")]);
+    const labs = pack[0], machines = pack[1];
+    root.innerHTML="";
+    root.append(el("<h1>Labs</h1>"));
+    root.append(el("<p class='muted'>Every lab field is editable. Save writes all parameters. Delete moves hosts to Unassigned.</p>"));
+    const create=el("<form class='card'><h3>Add lab</h3><div class='grid'>"+labInputs({},"c_")+"</div><button style='margin-top:10px'>Create lab</button></form>");
+    create.onsubmit=async function(e){ e.preventDefault(); await api("/api/labs",{method:"POST", body:JSON.stringify(labBody(create,"c_"))}); renderLabs(); };
+    root.append(create);
+    labs.forEach(function(lab){
+      const card=el("<form class='card'><div class='row'><strong>"+esc(lab.name)+"</strong><span class='muted'>"+(lab.online_count||0)+"/"+(lab.machine_count||0)+" online</span>"+(lab.protected?"<span class='badge'>Protected</span>":"")+"</div><div class='grid' style='margin-top:10px'>"+labInputs(lab,"")+"</div><div class='row' style='margin-top:10px'><button type='submit' class='sec'>Save all fields</button>"+(lab.protected?"":"<button type='button' class='danger del'>Delete lab</button>")+"</div></form>");
+      if (lab.protected) card.querySelector("[name=name]").disabled = true;
+      card.onsubmit=async function(e){ e.preventDefault(); await api("/api/labs/"+lab.id,{method:"PATCH", body:JSON.stringify(labBody(card,""))}); renderLabs(); };
+      const del=card.querySelector(".del");
+      if (del) del.onclick=async function(){ if(!confirm("Delete "+lab.name+"?")) return; await api("/api/labs/"+lab.id,{method:"DELETE"}); renderLabs(); };
+      root.append(card);
     });
-    root.append(table);
-    const mt = el("<div class='card' style='padding:0;overflow:auto'><h3 class='muted' style='padding:12px'>Machines</h3><table><thead><tr><th>Host</th><th>Display name</th><th>Lab</th><th></th></tr></thead><tbody></tbody></table></div>");
-    const mb = mt.querySelector("tbody");
-    machines.forEach(m => {
-      const opts = ['<option value="">Unassigned</option>'].concat(labs.map(l => `<option value="${l.id}" ${m.lab_id===l.id?"selected":""}>${esc(l.name)}</option>`)).join("");
-      const tr = el(`<tr>
-        <td>${esc(m.hostname)}</td>
-        <td><input value="${esc(m.display_name||"")}"/></td>
-        <td><select>${opts}</select></td>
-        <td><button type="button" class="sec">Save</button></td>
-      </tr>`);
-      tr.querySelector("button").onclick = async () => {
-        await api("/api/machines/"+m.id, {method:"PATCH", body: JSON.stringify({display_name: tr.querySelector("input").value, lab_id: tr.querySelector("select").value || null})});
-        renderInfra();
+    const mt=el("<div class='card'><h3>Machines</h3><table><thead><tr><th>Host</th><th>Display name</th><th>Lab</th><th></th></tr></thead><tbody></tbody></table></div>");
+    machines.forEach(function(m){
+      const opts=["<option value=''>Unassigned</option>"].concat(labs.map(function(l){ return "<option value='"+l.id+"' "+(m.lab_id===l.id?"selected":"")+">"+esc(l.name)+"</option>"; })).join("");
+      const tr=el("<tr><td>"+esc(m.hostname)+"</td><td><input value='"+esc(m.display_name||"")+"'/></td><td><select>"+opts+"</select></td><td><button type='button' class='sec'>Save</button></td></tr>");
+      tr.querySelector("button").onclick=async function(){
+        await api("/api/machines/"+m.id,{method:"PATCH", body:JSON.stringify({display_name:tr.querySelector("input").value, lab_id:tr.querySelector("select").value||null})});
+        renderLabs();
       };
-      mb.append(tr);
+      mt.querySelector("tbody").append(tr);
     });
     root.append(mt);
   } catch (e) {
+    if (e.message==="login") return renderLogin();
     root.innerHTML = "<p class='err'>"+esc(e.message)+"</p>";
   }
 }
-
-async function renderUpdates() {
-  const root = document.getElementById("root");
-  root.innerHTML = "<h1>Server updates</h1><p class='muted'>Last GitHub releases. Select a tag to update or downgrade this server.</p>";
+async function renderUpdates(){
+  const root=document.getElementById("root");
+  root.innerHTML="<h1>Updates</h1><p class='muted'>GitHub releases. Pick a tag to shift this server.</p>";
   try {
-    const data = await api("/api/admin/updates");
-    const box = el("<div class='card'></div>");
-    box.innerHTML = `<p><span class="badge">Current ${esc(data.current && data.current.tag)}</span><span class="badge">Latest ${esc(data.latest && data.latest.tag)}</span></p>`;
-    (data.builds||[]).forEach(b => {
-      const row = el(`<div class="card"><strong>${esc(b.tag)}</strong> ${b.is_current?"<span class='badge'>Current</span>":""} ${b.is_latest?"<span class='badge'>Latest</span>":""}<div class="muted">${esc(b.name||"")}</div><button class="sec">${b.action==="downgrade"?"Downgrade": b.action==="current"?"Reinstall":"Update"}</button></div>`);
-      row.querySelector("button").onclick = async () => {
-        if (!confirm("Apply "+b.tag+"?")) return;
-        await api("/api/admin/updates/apply", {method:"POST", body: JSON.stringify({tag: b.tag})});
-        renderUpdates();
-      };
+    const data=await api("/api/admin/updates");
+    const box=el("<div class='card'></div>");
+    box.innerHTML="<p><span class='badge'>Current "+esc(data.current && data.current.tag)+"</span> <span class='badge'>Latest "+esc(data.latest && data.latest.tag)+"</span></p>";
+    (data.builds||[]).forEach(function(b){
+      const row=el("<div class='card'><strong>"+esc(b.tag)+"</strong> "+(b.is_current?"<span class='badge'>Current</span>":"")+" "+(b.is_latest?"<span class='badge'>Latest</span>":"")+"<div class='muted'>"+esc(b.name||"")+"</div><button class='sec'>"+(b.action==="downgrade"?"Downgrade": b.action==="current"?"Reinstall":"Update")+"</button></div>");
+      row.querySelector("button").onclick=async function(){ if(!confirm("Apply "+b.tag+"?")) return; await api("/api/admin/updates/apply",{method:"POST", body:JSON.stringify({tag:b.tag})}); renderUpdates(); };
       box.append(row);
     });
+    if (!(data.builds||[]).length) box.append(el("<p class='muted'>GitHub list empty. Login proxy.cgi then refresh.</p>"));
     if (data.status && data.status.message) box.append(el("<p>"+esc(data.status.message)+"</p>"));
-    if (!(data.builds||[]).length) box.append(el("<p class='muted'>GitHub list empty. Login to proxy.cgi then refresh this page.</p>"));
     root.append(box);
   } catch (e) {
+    if (e.message==="login") return renderLogin();
     root.innerHTML += "<p class='err'>"+esc(e.message)+"</p>";
   }
 }
-
-if (PAGE === "updates") renderUpdates();
-else if (PAGE === "infra") renderInfra();
-else renderAdmin();
+async function renderAdmin(){
+  const root=document.getElementById("root");
+  try {
+    const users=await api("/api/admin/users");
+    root.innerHTML="";
+    root.append(el("<h1>Users</h1>"));
+    const create=el("<form class='card grid'><input name='username' placeholder='username' required/><input name='email' placeholder='email' required/><input name='password' type='password' placeholder='password' minlength='8' required/><select name='role'><option>VIEWER</option><option>OPERATOR</option><option>ADMIN</option></select><button>Create</button></form>");
+    create.onsubmit=async function(e){ e.preventDefault(); await api("/api/admin/users",{method:"POST", body:JSON.stringify(Object.fromEntries(new FormData(create)))}); renderAdmin(); };
+    root.append(create);
+    users.forEach(function(u){
+      const card=el("<form class='card grid'><input name='username' value='"+esc(u.username)+"'/><input name='email' value='"+esc(u.email)+"'/><input name='full_name' value='"+esc(u.full_name||"")+"'/><select name='role'><option "+(u.role==="ADMIN"?"selected":"")+">ADMIN</option><option "+(u.role==="OPERATOR"?"selected":"")+">OPERATOR</option><option "+(u.role==="VIEWER"?"selected":"")+">VIEWER</option></select><input name='password' type='password' placeholder='new password'/><button type='submit' class='sec'>Save</button><button type='button' class='danger del'>Delete</button></form>");
+      card.onsubmit=async function(e){
+        e.preventDefault();
+        const body=Object.fromEntries(new FormData(card));
+        if (!body.password) delete body.password;
+        await api("/api/admin/users/"+u.id,{method:"PATCH", body:JSON.stringify(body)});
+        renderAdmin();
+      };
+      card.querySelector(".del").onclick=async function(){ if(!confirm("Delete "+u.username+"?")) return; await api("/api/admin/users/"+u.id,{method:"DELETE"}); renderAdmin(); };
+      root.append(card);
+    });
+  } catch (e) {
+    if (e.message==="login") return renderLogin();
+    root.innerHTML="<p class='err'>"+esc(e.message)+"</p>";
+  }
+}
+if (!token()) renderLogin();
+else {
+  nav();
+  if (PAGE==="updates") renderUpdates();
+  else if (PAGE==="admin") renderAdmin();
+  else renderLabs();
+}
 </script>
 </body>
 </html>
@@ -253,16 +194,9 @@ else renderAdmin();
 
 
 @router.get("", response_class=HTMLResponse)
+@router.get("/app", response_class=HTMLResponse)
 @router.get("/admin", response_class=HTMLResponse)
-async def admin_page():
-    return HTMLResponse(PAGE)
-
-
 @router.get("/infra", response_class=HTMLResponse)
-async def infra_page():
-    return HTMLResponse(PAGE)
-
-
 @router.get("/updates", response_class=HTMLResponse)
-async def updates_page():
+async def ui_page():
     return HTMLResponse(PAGE)

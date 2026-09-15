@@ -18,7 +18,7 @@ sudo docker inspect iitd_lab-api-1 --format 'restarts={{.RestartCount}} exit={{.
 sudo docker compose logs api --tail 200
 ```
 
-Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.6`:
+Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.7`:
 
 ```bash
 sudo docker compose up -d --force-recreate --no-deps api

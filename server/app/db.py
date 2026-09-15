@@ -121,6 +121,16 @@ def _ensure_lab_columns(sync_conn) -> None:
     if "labs" not in insp.get_table_names():
         return
     existing = {c["name"] for c in insp.get_columns("labs")}
-    for name, sql_type in (("building", "VARCHAR(120)"), ("room", "VARCHAR(64)")):
+    for name, sql_type in (
+        ("building", "VARCHAR(120)"),
+        ("room", "VARCHAR(64)"),
+        ("code", "VARCHAR(32)"),
+        ("department", "VARCHAR(120)"),
+        ("floor", "VARCHAR(32)"),
+        ("capacity", "INTEGER"),
+        ("incharge", "VARCHAR(120)"),
+        ("phone", "VARCHAR(64)"),
+        ("email", "VARCHAR(255)"),
+    ):
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE labs ADD COLUMN {name} {sql_type}"))

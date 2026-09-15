@@ -79,7 +79,7 @@ Postgres data stays in the `labwatch_pg` volume. `.env` is not in git.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout v1.1.6
+git checkout v1.1.7
 sudo docker compose up -d --build --pull never
 sudo docker compose ps
 curl -sS http://127.0.0.1/health
@@ -93,11 +93,7 @@ sudo ./scripts/linux/install-host-updater.sh
 
 After this version, admins can also use **Updates** in the dashboard for later tags.
 
-If the dashboard image is old (no Infra / Updates in the sidebar), open the API-hosted pages:
-
-- Users (create, edit, password, delete): `http://<server>/api/ui/admin`
-- Infra (edit/delete labs): `http://<server>/api/ui/infra`
-- Updates (shift release): `http://<server>/api/ui/updates`
+Open `http://<server>/` — **Labs** (every field editable) and **Updates** are on that page. Old SPA sidebar is not required.
 
 ### Server updates (GitHub)
 

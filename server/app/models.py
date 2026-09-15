@@ -51,8 +51,15 @@ class Lab(Base, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    code: Mapped[str] = mapped_column(String(32), default="")
+    department: Mapped[str] = mapped_column(String(120), default="")
     building: Mapped[str] = mapped_column(String(120), default="")
+    floor: Mapped[str] = mapped_column(String(32), default="")
     room: Mapped[str] = mapped_column(String(64), default="")
+    capacity: Mapped[int] = mapped_column(Integer, default=0)
+    incharge: Mapped[str] = mapped_column(String(120), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str] = mapped_column(String(255), default="")
     description: Mapped[str] = mapped_column(Text, default="")
 
     machines: Mapped[list["Machine"]] = relationship(back_populates="lab")

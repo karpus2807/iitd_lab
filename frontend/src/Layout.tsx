@@ -5,7 +5,8 @@ import { useEffect, useState } from 'react'
 const links = [
   ['/', 'Dashboard'],
   ['/machines', 'Machines'],
-  ['/infra', 'Infra'],
+  ['/labs', 'Labs'],
+  ['/updates', 'Updates'],
   ['/alerts', 'Alerts'],
   ['/admin', 'Admin'],
 ]
@@ -39,15 +40,15 @@ export default function Layout() {
           </div>
         </div>
         <nav className="nav">
-          {links.map(([to, label]) => (
-            <NavLink key={to} to={to} end={to === '/' || to === '/admin'}>
-              {label}
-              {label === 'Alerts' && unread > 0 ? ` (${unread})` : ''}
-            </NavLink>
-          ))}
-          {user?.role === 'ADMIN' && (
-            <NavLink to="/admin/updates">Updates</NavLink>
-          )}
+          {links.map(([to, label]) => {
+            if (label === 'Updates' && user?.role !== 'ADMIN') return null
+            return (
+              <NavLink key={to} to={to} end={to === '/' || to === '/admin'}>
+                {label}
+                {label === 'Alerts' && unread > 0 ? ` (${unread})` : ''}
+              </NavLink>
+            )
+          })}
           <NavLink to="/account">Password</NavLink>
         </nav>
         <div className="sidebar-foot">
