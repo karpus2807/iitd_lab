@@ -107,6 +107,7 @@ class LabOut(BaseModel):
 
 class MachineUpdate(BaseModel):
     display_name: str | None = None
+    inventory_id: str | None = None
     lab_id: UUID | None = None
     approved: bool | None = None
 
@@ -115,6 +116,7 @@ class MachineListItem(BaseModel):
     id: UUID
     hostname: str
     display_name: str
+    inventory_id: str | None = None
     lab_id: UUID | None
     lab_name: str | None = None
     status: str

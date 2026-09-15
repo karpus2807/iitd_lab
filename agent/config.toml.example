@@ -3,8 +3,9 @@
 # or C:\ProgramData\LabWatch\config.toml (Windows)
 
 [server]
-url = "https://labwatch.example.edu"
-registration_token = "lw_replace_me"
+url = "http://hobbit2.cse.iitd.ac.in"
+registration_token = "created-by-installer"
+inventory_id = "12345/2012/12"
 
 [agent]
 # Optional stable override. If empty, the agent generates and stores a UUID.

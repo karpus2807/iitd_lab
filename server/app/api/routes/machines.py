@@ -73,6 +73,7 @@ async def list_machines(
             or_(
                 func.lower(Machine.hostname).like(like),
                 func.lower(Machine.display_name).like(like),
+                func.lower(func.coalesce(Machine.inventory_id, "")).like(like),
                 func.lower(func.coalesce(Machine.current_ip, "")).like(like),
             )
         )
@@ -83,6 +84,7 @@ async def list_machines(
             id=m.id,
             hostname=m.hostname,
             display_name=m.display_name,
+            inventory_id=m.inventory_id,
             lab_id=m.lab_id,
             lab_name=lab_name,
             status=m.status,
@@ -113,6 +115,7 @@ async def get_machine(machine_id: UUID, db: DbDep, user: CurrentUser):
         "id": str(machine.id),
         "hostname": machine.hostname,
         "display_name": machine.display_name,
+        "inventory_id": machine.inventory_id,
         "lab_id": str(machine.lab_id) if machine.lab_id else None,
         "lab_name": lab.name if lab else None,
         "status": machine.status,
@@ -152,6 +155,18 @@ async def update_machine(machine_id: UUID, body: MachineUpdate, db: DbDep, user:
     data = body.model_dump(exclude_unset=True)
     if "display_name" in data:
         machine.display_name = data["display_name"]
+    if "inventory_id" in data and data["inventory_id"] is not None:
+        from app.services.public_url import normalize_inventory_id
+
+        inv = normalize_inventory_id(data["inventory_id"])
+        clash = (
+            await db.execute(select(Machine).where(Machine.inventory_id == inv, Machine.id != machine.id))
+        ).scalar_one_or_none()
+        if clash:
+            raise HTTPException(409, f"Machine ID {inv} is already in use")
+        machine.inventory_id = inv
+        if not machine.display_name or machine.display_name == machine.hostname:
+            machine.display_name = inv
     if "lab_id" in data:
         machine.lab_id = data["lab_id"]
     if "approved" in data:

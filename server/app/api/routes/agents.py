@@ -1,13 +1,12 @@
 from datetime import timedelta
-from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from app.api.deps import CurrentAgent, DbDep
+from app.api.deps import CurrentAgent, DbDep, write_audit
 from app.config import get_settings
-from app.enums import AgentStatus, EventType, MachineStatus
+from app.enums import AgentStatus, EventType, MachineStatus, UserRole
 from app.models import (
     Agent,
     AgentLog,
@@ -15,6 +14,7 @@ from app.models import (
     Lab,
     Machine,
     RegistrationToken,
+    User,
     utcnow,
 )
 from app.schemas.inventory import (
@@ -25,9 +25,10 @@ from app.schemas.inventory import (
     InventoryPayload,
     MetricsPayload,
 )
-from app.security import hash_token, identity_fingerprint, new_secret, token_matches
+from app.security import hash_token, identity_fingerprint, new_secret, token_matches, verify_password
 from app.services.heartbeat import apply_heartbeat, apply_reported_addresses
 from app.services.inventory import persist_inventory
+from app.services.public_url import hostname_server_url, normalize_inventory_id
 from app.models import GpuMetricSample, MetricSample
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -38,6 +39,14 @@ class RegisterRequest(BaseModel):
     identity: IdentityInfo
     agent_uuid: str = Field(min_length=8)
     agent_version: str = ""
+    inventory_id: str | None = None
+
+
+class EnrollRequest(BaseModel):
+    username: str
+    password: str
+    inventory_id: str
+    lab: str | None = None
 
 
 class RegisterResponse(BaseModel):
@@ -64,10 +73,11 @@ async def _valid_token(db, raw: str) -> RegistrationToken:
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid registration token")
 
 
-async def _match_machine(db, identity: IdentityInfo, agent_uuid: str) -> Machine | None:
+async def _match_machine(db, identity: IdentityInfo, agent_uuid: str, inventory_id: str | None = None) -> Machine | None:
     """Resolve a returning host without using IP address.
 
     Order: persistent agent UUID, then SMBIOS/system UUID fingerprint,
+    then inventory ID (same asset tag on replacement hardware),
     then system UUID / machine UUID. DHCP or LAN switches must not create
     a second machine row.
     """
@@ -83,6 +93,12 @@ async def _match_machine(db, identity: IdentityInfo, agent_uuid: str) -> Machine
         ).scalar_one_or_none()
         if found:
             return found
+    if inventory_id:
+        found = (
+            await db.execute(select(Machine).where(Machine.inventory_id == inventory_id))
+        ).scalar_one_or_none()
+        if found:
+            return found
     if identity.system_uuid:
         found = (await db.execute(select(Machine).where(Machine.system_uuid == identity.system_uuid))).scalar_one_or_none()
         if found:
@@ -94,12 +110,64 @@ async def _match_machine(db, identity: IdentityInfo, agent_uuid: str) -> Machine
     return None
 
 
+@router.post("/enroll")
+async def enroll_agent(body: EnrollRequest, db: DbDep, request: Request):
+    """Terminal installer login: mint a one-use token so operators never copy tokens."""
+    inventory_id = normalize_inventory_id(body.inventory_id)
+    user = (await db.execute(select(User).where(User.username == body.username))).scalar_one_or_none()
+    if not user or not user.is_active or not verify_password(body.password, user.password_hash):
+        await write_audit(db, "agent.enroll_failed", details={"username": body.username, "inventory_id": inventory_id}, request=request)
+        await db.commit()
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+    if user.role not in {UserRole.ADMIN.value, UserRole.OPERATOR.value}:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator or operator role required")
+    lab_id = None
+    lab_name = "Unassigned"
+    lab_query = (body.lab or "").strip()
+    if lab_query:
+        lab = (
+            await db.execute(select(Lab).where(func.lower(Lab.name) == lab_query.lower()))
+        ).scalar_one_or_none()
+        if lab is None:
+            raise HTTPException(400, f"Unknown lab '{lab_query}'")
+        lab_id = lab.id
+        lab_name = lab.name
+    raw = "lw_" + new_secret(24)
+    db.add(
+        RegistrationToken(
+            token_hash=hash_token(raw),
+            token_prefix=raw[:10],
+            label=f"enroll:{inventory_id}",
+            lab_id=lab_id,
+            created_by_id=user.id,
+            expires_at=utcnow() + timedelta(hours=2),
+            max_uses=1,
+        )
+    )
+    await write_audit(
+        db,
+        "agent.enroll",
+        user=user,
+        details={"inventory_id": inventory_id, "lab": lab_name},
+        request=request,
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "registration_token": raw,
+        "inventory_id": inventory_id,
+        "server_url": hostname_server_url(request),
+        "lab": lab_name,
+    }
+
+
 @router.post("/register", response_model=RegisterResponse)
 async def register_agent(body: RegisterRequest, db: DbDep):
     settings = get_settings()
     token = await _valid_token(db, body.registration_token)
     identity = body.identity
-    machine = await _match_machine(db, identity, body.agent_uuid)
+    inventory_id = normalize_inventory_id(body.inventory_id) if body.inventory_id else None
+    machine = await _match_machine(db, identity, body.agent_uuid, inventory_id)
     created = False
     if machine is None:
         fp = identity_fingerprint(
@@ -116,7 +184,8 @@ async def register_agent(body: RegisterRequest, db: DbDep):
         machine = Machine(
             lab_id=lab_id,
             hostname=identity.hostname,
-            display_name=identity.hostname,
+            display_name=inventory_id or identity.hostname,
+            inventory_id=inventory_id,
             os_name=identity.os_name,
             os_version=identity.os_version,
             kernel_version=identity.kernel_version or "",
@@ -139,7 +208,7 @@ async def register_agent(body: RegisterRequest, db: DbDep):
                 machine_id=machine.id,
                 event_type=EventType.MACHINE_REGISTERED.value,
                 severity="INFO",
-                summary=f"Machine registered ({identity.hostname})",
+                summary=f"Machine registered ({inventory_id or identity.hostname})",
                 detected_by="SERVER",
             )
         )
@@ -169,6 +238,14 @@ async def register_agent(body: RegisterRequest, db: DbDep):
         )
         db.add(agent)
     token.use_count += 1
+    if inventory_id:
+        clash = (
+            await db.execute(select(Machine).where(Machine.inventory_id == inventory_id, Machine.id != machine.id))
+        ).scalar_one_or_none()
+        if clash:
+            raise HTTPException(409, f"Machine ID {inventory_id} is already in use")
+        machine.inventory_id = inventory_id
+        machine.display_name = inventory_id
     machine.approved = machine.approved or not settings.require_agent_approval
     await db.commit()
     return RegisterResponse(

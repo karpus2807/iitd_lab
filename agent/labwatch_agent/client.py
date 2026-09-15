@@ -42,17 +42,16 @@ class AgentClient:
             logger.warning("Server request failed: %s", exc)
             raise
 
-    def register(self, registration_token: str, identity: dict[str, Any], agent_uuid: str, version: str) -> dict[str, Any]:
-        r = self._request(
-            "POST",
-            "/api/agents/register",
-            json={
-                "registration_token": registration_token,
-                "identity": identity,
-                "agent_uuid": agent_uuid,
-                "agent_version": version,
-            },
-        )
+    def register(self, registration_token: str, identity: dict[str, Any], agent_uuid: str, version: str, inventory_id: str = "") -> dict[str, Any]:
+        payload = {
+            "registration_token": registration_token,
+            "identity": identity,
+            "agent_uuid": agent_uuid,
+            "agent_version": version,
+        }
+        if inventory_id:
+            payload["inventory_id"] = inventory_id
+        r = self._request("POST", "/api/agents/register", json=payload)
         r.raise_for_status()
         data = r.json()
         self.agent_id = data["agent_id"]

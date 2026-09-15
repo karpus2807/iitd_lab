@@ -44,7 +44,7 @@ def _ensure_registered(cfg: AgentConfig, client: AgentClient, state: dict, ident
     if not cfg.registration_token:
         raise SystemExit("No registration token configured and agent is not enrolled. Set REGISTRATION_TOKEN.")
     logger.info("Registering with %s", cfg.server_url)
-    data = client.register(cfg.registration_token, identity, _agent_uuid(cfg, state), __version__)
+    data = client.register(cfg.registration_token, identity, _agent_uuid(cfg, state), __version__, cfg.inventory_id)
     state = {
         "agent_id": data["agent_id"],
         "agent_secret": data["agent_secret"],

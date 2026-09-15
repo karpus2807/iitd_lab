@@ -85,6 +85,7 @@ async def init_models() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_machine_address_columns)
+        await conn.run_sync(ensure_machine_inventory_column)
         await conn.run_sync(ensure_lab_columns)
 
 
@@ -112,6 +113,21 @@ def _ensure_machine_address_columns(sync_conn) -> None:
     for name, sql_type in machine_address_column_sql(sync_conn.dialect.name).items():
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE machines ADD COLUMN {name} {sql_type}"))
+
+
+def ensure_machine_inventory_column(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "machines" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("machines")}
+    if "inventory_id" not in existing:
+        sync_conn.execute(text("ALTER TABLE machines ADD COLUMN inventory_id VARCHAR(64)"))
+    try:
+        sync_conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_machines_inventory_id ON machines (inventory_id)"))
+    except Exception:
+        pass
 
 
 def ensure_lab_columns(sync_conn) -> None:

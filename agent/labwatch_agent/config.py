@@ -16,7 +16,7 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 @dataclass
 class AgentConfig:
-    server_url: str = "http://127.0.0.1:8000"
+    server_url: str = "http://hobbit2.cse.iitd.ac.in"
     registration_token: str = ""
     agent_id: str = ""
     heartbeat_interval: int = 30
@@ -25,6 +25,7 @@ class AgentConfig:
     log_level: str = "INFO"
     tls_verify: bool = True
     tls_ca_file: str = ""
+    inventory_id: str = ""
     state_dir: str = ""
     config_path: str = ""
 
@@ -57,7 +58,7 @@ def load_config(path: str | None = None) -> AgentConfig:
     tls = data.get("tls", {})
     logging_cfg = data.get("logging", {})
     cfg = AgentConfig(
-        server_url=_env("SERVER_URL", server.get("url", "http://127.0.0.1:8000")) or "http://127.0.0.1:8000",
+        server_url=_env("SERVER_URL", server.get("url", "http://hobbit2.cse.iitd.ac.in")) or "http://hobbit2.cse.iitd.ac.in",
         registration_token=_env("REGISTRATION_TOKEN", server.get("registration_token", "")) or "",
         agent_id=_env("AGENT_ID", agent.get("id", "")) or "",
         heartbeat_interval=int(_env("HEARTBEAT_INTERVAL", str(agent.get("heartbeat_interval", 30)))),
@@ -66,6 +67,7 @@ def load_config(path: str | None = None) -> AgentConfig:
         log_level=_env("LOG_LEVEL", logging_cfg.get("level", "INFO")) or "INFO",
         tls_verify=str(_env("TLS_VERIFY", str(tls.get("verify", True)))).lower() not in {"0", "false", "no"},
         tls_ca_file=_env("TLS_CA_FILE", tls.get("ca_file", "")) or "",
+        inventory_id=_env("INVENTORY_ID", server.get("inventory_id", "")) or "",
         state_dir=_env("LABWATCH_STATE_DIR", str(state_dir)) or str(state_dir),
         config_path=str(cfg_path),
     )

@@ -21,6 +21,7 @@ type Machine = {
   id: string
   hostname: string
   display_name: string
+  inventory_id?: string | null
   lab_id?: string | null
   status: string
   approved: boolean
@@ -157,15 +158,15 @@ export default function Infra() {
         <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Machines in labs</h3>
         <table>
           <thead>
-            <tr><th>Hostname</th><th>Display name</th><th>Lab</th><th>Approved</th><th></th></tr>
+            <tr><th>Machine ID</th><th>Hostname</th><th>Lab</th><th>Approved</th><th></th></tr>
           </thead>
           <tbody>
             {machines.map((m) => {
               const d = hostDrafts[m.id] || { display_name: '', lab_id: '', approved: true }
               return (
                 <tr key={m.id}>
+                  <td className="mono">{m.inventory_id || '—'}</td>
                   <td>{m.hostname}</td>
-                  <td><input value={d.display_name} disabled={!canEdit} onChange={(e) => setHostDrafts({ ...hostDrafts, [m.id]: { ...d, display_name: e.target.value } })} /></td>
                   <td>
                     <select value={d.lab_id} disabled={!canEdit} onChange={(e) => setHostDrafts({ ...hostDrafts, [m.id]: { ...d, lab_id: e.target.value } })}>
                       <option value="">Unassigned</option>

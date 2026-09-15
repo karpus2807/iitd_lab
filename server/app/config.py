@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="dev-only-change-me-use-32-bytes-min", alias="LABWATCH_SECRET_KEY")
     api_host: str = Field(default="0.0.0.0", alias="LABWATCH_API_HOST")
     api_port: int = Field(default=8000, alias="LABWATCH_API_PORT")
-    public_url: str = Field(default="http://localhost", alias="LABWATCH_PUBLIC_URL")
+    public_url: str = Field(default="http://hobbit2.cse.iitd.ac.in", alias="LABWATCH_PUBLIC_URL")
 
     database_url: str = Field(
         default="sqlite+aiosqlite:///./labwatch.db",

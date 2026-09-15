@@ -132,13 +132,13 @@ The Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
 
 ## Agent installation
 
-Create a registration token in **Admin → tokens**. Each lab can have its own token. Tokens are hashed at rest; the plaintext is shown **once**.
-
-### Linux
+On a lab PC (Wi-Fi or LAN), install with one command against the hobbit **hostname**:
 
 ```bash
-sudo ./scripts/linux/install.sh https://labwatch.example.edu lw_your_token
+curl -fsSL http://hobbit2.cse.iitd.ac.in/install-agent.sh | sudo bash
 ```
+
+The script asks for LabWatch username/password and a machine ID such as `12345/2012/12`. It logs in, creates a one-use token by itself, and installs `labwatch-agent`. Do not copy tokens by hand.
 
 That installs a systemd unit `labwatch-agent` which starts on boot.
 
@@ -161,7 +161,7 @@ Run PowerShell as Administrator:
 
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process
-.\scripts\windows\install.ps1 -ServerUrl https://labwatch.example.edu -RegistrationToken lw_your_token
+.\scripts\windows\install.ps1 -ServerUrl http://hobbit2.cse.iitd.ac.in -RegistrationToken lw_your_token
 ```
 
 A scheduled task named `LabWatchAgent` runs as SYSTEM at startup.
@@ -172,8 +172,8 @@ Config: `C:\ProgramData\LabWatch\config.toml`
 
 ### Agent registration
 
-1. Admin creates a registration token (optionally bound to a lab).
-2. Agent config contains `SERVER_URL` and `REGISTRATION_TOKEN`.
+1. Installer logs in as ADMIN/OPERATOR and mints a one-use registration token.
+2. Agent config contains `SERVER_URL` (hobbit DNS name), `inventory_id`, and that token.
 3. `POST /api/agents/register` returns `machine_id`, `agent_id`, and a unique `agent_secret`.
 4. The secret is stored locally and sent as `Authorization: Bearer <agent_id>:<agent_secret>`.
 5. Subsequent heartbeat / inventory / metrics / events use that credential.

@@ -48,7 +48,7 @@ export default function Machines() {
         </div>
       </div>
       <div className="toolbar">
-        <input placeholder="Search hostname or IP" value={q} onChange={(e) => set('q', e.target.value)} />
+        <input placeholder="Search machine ID, hostname or IP" value={q} onChange={(e) => set('q', e.target.value)} />
         <select value={lab} onChange={(e) => set('lab', e.target.value)}>
           <option value="">All labs</option>
           {labs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
@@ -77,14 +77,15 @@ export default function Machines() {
         <table>
           <thead>
             <tr>
-              <th>Host</th><th>Lab</th><th>Status</th><th>OS</th><th>IP</th><th>GPUs</th><th>Seen</th>
+              <th>Machine ID</th><th>Lab</th><th>Status</th><th>OS</th><th>IP</th><th>GPUs</th><th>Seen</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((m) => (
               <tr key={m.id} className="clickable" onClick={() => nav(`/machines/${m.id}`)}>
                 <td>
-                  <Link to={`/machines/${m.id}`}><strong>{m.display_name || m.hostname}</strong></Link>
+                  <Link to={`/machines/${m.id}`}><strong>{m.inventory_id || m.display_name || m.hostname}</strong></Link>
+                  {m.inventory_id && m.hostname ? <div className="muted">{m.hostname}</div> : null}
                   {m.has_open_alerts && <span className="badge WARNING" style={{ marginLeft: 8 }}>alert</span>}
                   {m.is_virtual && <span className="badge INFO" style={{ marginLeft: 8 }}>VM</span>}
                 </td>

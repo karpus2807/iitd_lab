@@ -9,6 +9,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.13",
+        "name": "LabWatch 1.1.13",
+        "published_at": "2026-09-15T17:20:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.13",
+        "notes": "One-command agent install via hobbit hostname",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.12",
         "name": "LabWatch 1.1.12",
         "published_at": "2026-09-15T16:55:00Z",
@@ -146,7 +154,7 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     idle = listed.json()
     assert idle["builds"] == []
     assert idle["needs_fetch"] is True
-    assert idle["current"]["tag"] == "v1.1.12"
+    assert idle["current"]["tag"] == "v1.1.13"
 
     denied_apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.11"})
     assert denied_apply.status_code == 400
@@ -162,8 +170,8 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.12"
-    assert body["current"]["tag"] == "v1.1.12"
+    assert body["latest"]["tag"] == "v1.1.13"
+    assert body["current"]["tag"] == "v1.1.13"
     assert body["source"] == "github"
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])

@@ -67,9 +67,10 @@ export default function MachineDetail() {
     <>
       <div className="topbar">
         <div>
-          <h2>{machine.display_name || machine.hostname}</h2>
+          <h2>{machine.inventory_id || machine.display_name || machine.hostname}</h2>
           <p>
-            {machine.lab_name || 'Unassigned'} · {machine.os_name}
+            {machine.hostname}
+            {machine.lab_name ? ` · ${machine.lab_name}` : ' · Unassigned'} · {machine.os_name}
             {machine.is_virtual ? ' · Virtual machine' : ' · Physical machine'}
           </p>
         </div>
