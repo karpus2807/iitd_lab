@@ -85,7 +85,7 @@ async def init_models() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_machine_address_columns)
-        await conn.run_sync(_ensure_lab_columns)
+        await conn.run_sync(ensure_lab_columns)
 
 
 def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
@@ -114,23 +114,33 @@ def _ensure_machine_address_columns(sync_conn) -> None:
             sync_conn.execute(text(f"ALTER TABLE machines ADD COLUMN {name} {sql_type}"))
 
 
-def _ensure_lab_columns(sync_conn) -> None:
+def ensure_lab_columns(sync_conn) -> None:
     from sqlalchemy import inspect, text
 
     insp = inspect(sync_conn)
     if "labs" not in insp.get_table_names():
         return
     existing = {c["name"] for c in insp.get_columns("labs")}
-    for name, sql_type in (
-        ("building", "VARCHAR(120)"),
-        ("room", "VARCHAR(64)"),
-        ("code", "VARCHAR(32)"),
-        ("department", "VARCHAR(120)"),
-        ("floor", "VARCHAR(32)"),
-        ("capacity", "INTEGER"),
-        ("incharge", "VARCHAR(120)"),
-        ("phone", "VARCHAR(64)"),
-        ("email", "VARCHAR(255)"),
-    ):
+    columns = (
+        ("building", "VARCHAR(120) DEFAULT ''"),
+        ("room", "VARCHAR(64) DEFAULT ''"),
+        ("code", "VARCHAR(32) DEFAULT ''"),
+        ("department", "VARCHAR(120) DEFAULT ''"),
+        ("floor", "VARCHAR(32) DEFAULT ''"),
+        ("capacity", "INTEGER DEFAULT 0"),
+        ("incharge", "VARCHAR(120) DEFAULT ''"),
+        ("phone", "VARCHAR(64) DEFAULT ''"),
+        ("email", "VARCHAR(255) DEFAULT ''"),
+    )
+    for name, sql_type in columns:
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE labs ADD COLUMN {name} {sql_type}"))
+
+
+def lab_column_names(sync_conn) -> list[str]:
+    from sqlalchemy import inspect
+
+    insp = inspect(sync_conn)
+    if "labs" not in insp.get_table_names():
+        return []
+    return [c["name"] for c in insp.get_columns("labs")]

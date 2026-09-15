@@ -134,7 +134,37 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "version": __version__}
+        from sqlalchemy import text
+
+        from app.db import get_engine, lab_column_names
+
+        payload = {"status": "ok", "version": __version__, "database": "down", "labs_ok": False}
+        try:
+            engine = get_engine()
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+                payload["database"] = "ok"
+                cols = await conn.run_sync(lab_column_names)
+                needed = [
+                    "name",
+                    "building",
+                    "room",
+                    "code",
+                    "department",
+                    "floor",
+                    "capacity",
+                    "incharge",
+                    "phone",
+                    "email",
+                    "description",
+                ]
+                missing = [name for name in needed if name not in cols]
+                payload["lab_columns"] = cols
+                payload["lab_missing_columns"] = missing
+                payload["labs_ok"] = not missing
+        except Exception as exc:
+            payload["database"] = f"{type(exc).__name__}: {exc}"
+        return payload
 
     return app
 

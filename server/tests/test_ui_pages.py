@@ -22,4 +22,4 @@ async def test_infra_and_updates_html_pages(client: AsyncClient):
 
     home = await client.get("/api/ui/app")
     assert home.status_code == 200
-    assert "Labs" in home.text
+    assert 'id="login-form"' in home.text

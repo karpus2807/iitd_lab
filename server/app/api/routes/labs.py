@@ -3,7 +3,10 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
+from sqlalchemy.exc import OperationalError, ProgrammingError
+
 from app.api.deps import AdminUser, CurrentUser, DbDep, OperatorUser, write_audit
+from app.db import ensure_lab_columns, get_engine
 from app.enums import MachineStatus
 from app.models import Lab, Machine
 from app.schemas.api import LabCreate, LabOut, LabUpdate
@@ -70,7 +73,14 @@ async def _lab_out(db, lab: Lab) -> LabOut:
 
 @router.get("", response_model=list[LabOut])
 async def list_labs(db: DbDep, user: CurrentUser):
-    labs = (await db.execute(select(Lab).order_by(Lab.name.asc()))).scalars().all()
+    try:
+        labs = (await db.execute(select(Lab).order_by(Lab.name.asc()))).scalars().all()
+    except (ProgrammingError, OperationalError):
+        await db.rollback()
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(ensure_lab_columns)
+        labs = (await db.execute(select(Lab).order_by(Lab.name.asc()))).scalars().all()
     return [await _lab_out(db, lab) for lab in labs]
 
 
