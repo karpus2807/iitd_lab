@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api.routes import admin, agents, alerts, audit, auth, dashboard, labs, machines, notifications, updates
+from app.api.routes import admin, agents, alerts, audit, auth, dashboard, labs, machines, notifications, ui, updates
 from app.config import get_settings
 from app.db import get_session_factory, init_models
 from app.services.alerts import seed_default_rules
@@ -17,7 +17,7 @@ logger = logging.getLogger("labwatch")
 
 
 async def seed() -> None:
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from app.config import get_settings
     from app.enums import NotificationChannel, UserRole
@@ -38,15 +38,11 @@ async def seed() -> None:
                 )
             )
             logger.warning("Created bootstrap admin user '%s'", settings.admin_username)
-        if not (await db.execute(select(Lab))).scalars().first():
-            for name, desc in [
-                ("Unassigned", "Default lab for newly registered machines"),
-                ("DAIR LAB", ""),
-                ("NLP LAB", ""),
-                ("VISION LAB", ""),
-                ("SYSTEMS LAB", ""),
-            ]:
-                db.add(Lab(name=name, description=desc))
+        unassigned = (
+            await db.execute(select(Lab).where(func.lower(Lab.name) == "unassigned"))
+        ).scalar_one_or_none()
+        if not unassigned:
+            db.add(Lab(name="Unassigned", description="Default lab for newly registered machines"))
         await seed_default_rules(db)
         for channel in NotificationChannel:
             existing = (
@@ -133,7 +129,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    for r in (auth, agents, machines, labs, alerts, admin, dashboard, notifications, audit, updates):
+    for r in (auth, agents, machines, labs, alerts, admin, dashboard, notifications, audit, updates, ui):
         app.include_router(r.router)
 
     @app.get("/health")

@@ -51,6 +51,8 @@ class Lab(Base, TimestampMixin):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    building: Mapped[str] = mapped_column(String(120), default="")
+    room: Mapped[str] = mapped_column(String(64), default="")
     description: Mapped[str] = mapped_column(Text, default="")
 
     machines: Mapped[list["Machine"]] = relationship(back_populates="lab")

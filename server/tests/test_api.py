@@ -42,8 +42,6 @@ async def test_agent_register_heartbeat_inventory_offline(client: AsyncClient, a
     tok = await client.post("/api/admin/tokens", headers=auth_headers, json={"label": "lab", "expires_hours": 24})
     assert tok.status_code == 200
     registration = tok.json()["token"]
-    labs = await client.get("/api/labs", headers=auth_headers)
-    dair = next(x for x in labs.json() if x["name"] == "DAIR LAB")
 
     reg = await client.post(
         "/api/agents/register",

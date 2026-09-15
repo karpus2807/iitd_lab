@@ -5,6 +5,7 @@ import Layout from './Layout'
 import Admin from './pages/Admin'
 import Alerts from './pages/Alerts'
 import Dashboard from './pages/Dashboard'
+import Infra from './pages/Infra'
 import Labs from './pages/Labs'
 import Login from './pages/Login'
 import MachineDetail from './pages/MachineDetail'
@@ -32,6 +33,7 @@ export default function App() {
         <Route path="machines" element={<Machines />} />
         <Route path="machines/:id" element={<MachineDetail />} />
         <Route path="labs" element={<Labs />} />
+        <Route path="infra" element={<Infra />} />
         <Route path="alerts" element={<Alerts />} />
         <Route path="admin" element={<Admin />} />
         <Route path="admin/updates" element={<Updates />} />

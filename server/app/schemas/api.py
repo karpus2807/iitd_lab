@@ -54,19 +54,26 @@ class UserOut(BaseModel):
 class LabCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
+    building: str = ""
+    room: str = ""
 
 
 class LabUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    building: str | None = None
+    room: str | None = None
 
 
 class LabOut(BaseModel):
     id: UUID
     name: str
     description: str
+    building: str = ""
+    room: str = ""
     machine_count: int = 0
     online_count: int = 0
+    protected: bool = False
 
     model_config = {"from_attributes": True}
 

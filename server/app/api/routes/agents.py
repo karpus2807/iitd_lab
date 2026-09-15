@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.deps import CurrentAgent, DbDep
 from app.config import get_settings
@@ -107,7 +107,11 @@ async def register_agent(body: RegisterRequest, db: DbDep):
         )
         lab_id = token.lab_id
         if lab_id is None:
-            lab = (await db.execute(select(Lab).order_by(Lab.created_at.asc()))).scalars().first()
+            lab = (
+                await db.execute(select(Lab).where(func.lower(Lab.name) == "unassigned"))
+            ).scalars().first()
+            if lab is None:
+                lab = (await db.execute(select(Lab).order_by(Lab.created_at.asc()))).scalars().first()
             lab_id = lab.id if lab else None
         machine = Machine(
             lab_id=lab_id,

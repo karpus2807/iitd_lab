@@ -18,7 +18,7 @@ sudo docker inspect iitd_lab-api-1 --format 'restarts={{.RestartCount}} exit={{.
 sudo docker compose logs api --tail 200
 ```
 
-Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.4`:
+Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.5`:
 
 ```bash
 sudo docker compose up -d --force-recreate --no-deps api
@@ -36,6 +36,13 @@ sudo ./scripts/linux/install-host-updater.sh
 ```
 
 Compose also bind-mounts `${PWD}` and `/var/run/docker.sock` into `api`. `.env` is not overwritten by `git checkout`.
+
+If the Nginx dashboard is an older image (no **Infra** / **Updates** in the sidebar), use the API-hosted pages after login:
+
+- `http://<server>/api/ui/infra` — create, rename, and delete labs; assign machines
+- `http://<server>/api/ui/updates` — list GitHub tags and apply a release
+
+Those routes ship with the API bind-mount, so they appear after `git checkout` without rebuilding `web`.
 
 ## Docker / pip: IITD proxy CONNECT drops
 
