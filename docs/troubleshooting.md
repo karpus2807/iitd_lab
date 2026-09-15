@@ -18,7 +18,7 @@ sudo docker inspect iitd_lab-api-1 --format 'restarts={{.RestartCount}} exit={{.
 sudo docker compose logs api --tail 200
 ```
 
-Typical causes: incomplete `pip install` image, or Postgres rejecting `ALTER ... DATETIME`. Rebuild after `git checkout v1.1.2`:
+Typical causes: incomplete `pip install` image, Postgres `DATETIME` types, or aware UTC datetimes inserted into `TIMESTAMP WITHOUT TIME ZONE`. Rebuild after `git checkout v1.1.3`:
 
 ```bash
 sudo docker compose up -d --build --pull never api web

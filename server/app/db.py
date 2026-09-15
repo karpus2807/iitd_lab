@@ -14,20 +14,27 @@ def json_column():
 
 
 class TZDateTime(TypeDecorator):
-    """Always return timezone-aware UTC datetimes (SQLite stores naive)."""
+    """Store UTC naive timestamps; return timezone-aware UTC datetimes.
+
+    PostgreSQL TIMESTAMP WITHOUT TIME ZONE (asyncpg) rejects aware datetimes.
+    """
 
     impl = DateTime
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
-        if value is not None and value.tzinfo is not None:
-            return value.astimezone(timezone.utc)
+        if value is None:
+            return None
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
         return value
 
     def process_result_value(self, value, dialect):
-        if value is not None and value.tzinfo is None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
-        return value
+        return value.astimezone(timezone.utc)
 
 
 class Base(DeclarativeBase):
