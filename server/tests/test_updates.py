@@ -7,6 +7,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.4",
+        "name": "LabWatch 1.1.4",
+        "published_at": "2026-09-15T11:20:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.4",
+        "notes": "Bind-mount API code",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.3",
         "name": "LabWatch 1.1.3",
         "published_at": "2026-09-15T11:15:00Z",
@@ -20,14 +28,6 @@ RELEASES = [
         "published_at": "2026-09-15T11:00:00Z",
         "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.2",
         "notes": "API crash loop / 502",
-        "prerelease": False,
-    },
-    {
-        "tag": "v1.1.1",
-        "name": "LabWatch 1.1.1",
-        "published_at": "2026-09-15T10:30:00Z",
-        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.1",
-        "notes": "Fix login 502",
         "prerelease": False,
     },
 ]
@@ -54,7 +54,7 @@ def test_annotate_current_and_latest():
     assert builds[0]["is_latest"] is True
     current = next(b for b in builds if b["tag"] == update_svc.current_tag())
     assert current["is_current"] is True
-    older = next(b for b in builds if b["tag"] == "v1.1.1")
+    older = next(b for b in builds if b["tag"] == "v1.1.2")
     assert older["action"] == "downgrade"
 
 
@@ -80,15 +80,15 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert listed.status_code == 200, listed.text
     body = listed.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.3"
-    assert body["current"]["tag"] == "v1.1.3"
+    assert body["latest"]["tag"] == "v1.1.4"
+    assert body["current"]["tag"] == "v1.1.4"
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])
 
-    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.1"})
+    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.3"})
     assert apply.status_code == 200, apply.text
     status = apply.json()["status"]
-    assert status["tag"] == "v1.1.1"
+    assert status["tag"] == "v1.1.3"
     assert status["state"] == "queued"
     assert (update_harness / "data" / "update-request.json").is_file()
 

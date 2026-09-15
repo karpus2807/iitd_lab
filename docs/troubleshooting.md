@@ -18,10 +18,10 @@ sudo docker inspect iitd_lab-api-1 --format 'restarts={{.RestartCount}} exit={{.
 sudo docker compose logs api --tail 200
 ```
 
-Typical causes: incomplete `pip install` image, Postgres `DATETIME` types, or aware UTC datetimes inserted into `TIMESTAMP WITHOUT TIME ZONE`. Rebuild after `git checkout v1.1.3`:
+Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.4`:
 
 ```bash
-sudo docker compose up -d --build --pull never api web
+sudo docker compose up -d --force-recreate --no-deps api
 sudo docker compose logs -f api
 ```
 

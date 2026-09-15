@@ -39,6 +39,8 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}
     volumes:
+      - ${PWD}/server/app:/app/app
+      - ${PWD}/VERSION:/app/VERSION:ro
       - ${PWD}:${PWD}
       - ${PWD}:/opt/labwatch
       - /var/run/docker.sock:/var/run/docker.sock
@@ -70,6 +72,8 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}
     volumes:
+      - ${PWD}/server/app:/app/app
+      - ${PWD}/VERSION:/app/VERSION:ro
       - ${PWD}:${PWD}
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
