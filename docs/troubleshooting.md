@@ -1,5 +1,36 @@
 # Troubleshooting
 
+## Admin Updates page cannot apply a GitHub tag
+
+The API lists the last 3 releases from GitHub. Apply needs the git checkout path (`LABWATCH_REPO_DIR`) and Docker. From the repo root:
+
+```bash
+sudo ./scripts/linux/install-host-updater.sh
+```
+
+Compose also bind-mounts `${PWD}` and `/var/run/docker.sock` into `api`. `.env` is not overwritten by `git checkout`.
+
+## Docker / pip: IITD proxy CONNECT drops
+
+`Establishing a new connection` during `pip`/`npm` is **squid**, not SSH. Each wheel hits `pypi.org` then `files.pythonhosted.org`; squid 3.1 closes the CONNECT tunnel, the client opens another, and if the `proxy.cgi` session expired you get `302` again.
+
+Keep a `proxy.cgi` **Refresh every 30s** on that same host for the whole download. One login only (a second login kicks the first).
+
+Put proxy URLs in `.env` so Compose build args reach `pip`/`npm`:
+
+```
+HTTP_PROXY=http://10.10.78.21:3128/
+HTTPS_PROXY=http://10.10.78.21:3128/
+NO_PROXY=localhost,127.0.0.1,::1,db
+```
+
+Prefetch wheels with retries (survives CONNECT drops), then build without PyPI:
+
+```bash
+./scripts/linux/prefetch-pypi-wheels.sh
+sudo docker compose up -d --build
+```
+
 ## API will not start
 
 - Check `DATABASE_URL`. For Docker it must point at service `db`.

@@ -1,8 +1,42 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 
 WORKDIR /app
 COPY server/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY docker/wheels /tmp/wheels
+COPY VERSION /app/VERSION
+
+# Export proxy into the pip RUN. ARG alone is not always in pip's environment.
+# Cleared after install so the API does not proxy traffic to Postgres.
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    http_proxy=${http_proxy} \
+    https_proxy=${https_proxy} \
+    no_proxy=${no_proxy} \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_MAX_WORKERS=1
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if ls /tmp/wheels/*.whl >/dev/null 2>&1; then \
+      pip install --no-index --find-links /tmp/wheels -r /app/requirements.txt; \
+    else \
+      pip install --retries 30 --timeout 180 -r /app/requirements.txt; \
+    fi
+
+ENV HTTP_PROXY= \
+    HTTPS_PROXY= \
+    http_proxy= \
+    https_proxy=
+
 COPY server /app
 ENV PYTHONPATH=/app
 EXPOSE 8000

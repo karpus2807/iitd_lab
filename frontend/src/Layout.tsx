@@ -40,11 +40,14 @@ export default function Layout() {
         </div>
         <nav className="nav">
           {links.map(([to, label]) => (
-            <NavLink key={to} to={to} end={to === '/'}>
+            <NavLink key={to} to={to} end={to === '/' || to === '/admin'}>
               {label}
               {label === 'Alerts' && unread > 0 ? ` (${unread})` : ''}
             </NavLink>
           ))}
+          {user?.role === 'ADMIN' && (
+            <NavLink to="/admin/updates">Updates</NavLink>
+          )}
         </nav>
         <div className="sidebar-foot">
           <div>{user?.username} · {user?.role}</div>

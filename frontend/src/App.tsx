@@ -9,6 +9,7 @@ import Labs from './pages/Labs'
 import Login from './pages/Login'
 import MachineDetail from './pages/MachineDetail'
 import Machines from './pages/Machines'
+import Updates from './pages/Updates'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   if (!currentUser() && !localStorage.getItem('lw_access')) return <Navigate to="/login" replace />
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="labs" element={<Labs />} />
         <Route path="alerts" element={<Alerts />} />
         <Route path="admin" element={<Admin />} />
+        <Route path="admin/updates" element={<Updates />} />
       </Route>
     </Routes>
   )

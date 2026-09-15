@@ -1,0 +1,2 @@
+# Put .whl files here (scripts/linux/prefetch-pypi-wheels.sh) so the API
+# image build does not need PyPI during docker compose.

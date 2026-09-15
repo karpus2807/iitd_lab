@@ -24,6 +24,11 @@ agent/*.db
 .DS_Store
 state/
 data/postgres/
+data/update-request.json
+data/update-status.json
+data/update-apply.log
+data/releases-cache.json
+docker/wheels/*.whl
 uploads/
 *.pem
 *.key

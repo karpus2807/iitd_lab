@@ -49,6 +49,15 @@ class Settings(BaseSettings):
 
     cors_origins: str = Field(default="http://localhost,http://localhost:5173,http://127.0.0.1:5173")
 
+    github_repo: str = Field(default="karpus2807/iitd_lab", alias="LABWATCH_GITHUB_REPO")
+    github_api: str = Field(default="https://api.github.com", alias="LABWATCH_GITHUB_API")
+    repo_dir: str = Field(default="", alias="LABWATCH_REPO_DIR")
+    updates_enabled: bool = Field(default=True, alias="LABWATCH_UPDATES_ENABLED")
+    updates_builds: int = Field(default=3, alias="LABWATCH_UPDATES_BUILDS")
+    http_proxy: str = Field(default="", alias="HTTP_PROXY")
+    https_proxy: str = Field(default="", alias="HTTPS_PROXY")
+    no_proxy: str = Field(default="localhost,127.0.0.1,db", alias="NO_PROXY")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

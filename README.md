@@ -70,6 +70,18 @@ Open `http://<server>/`. Default admin comes from `.env` (`ADMIN_USERNAME` / `AD
 
 API documentation: `http://<server>/api/docs`
 
+### Server updates (GitHub)
+
+Admins get an **Updates** page that lists the last 3 GitHub releases, marks **Current** vs **Latest**, and can update or downgrade to a selected tag.
+
+Compose bind-mounts the git checkout and Docker socket so Apply can `git checkout` that release and rebuild. On first boot also run:
+
+```bash
+sudo ./scripts/linux/install-host-updater.sh
+```
+
+That systemd watcher applies the same request if the API container cannot spawn Docker. `.env` is gitignored and is never overwritten.
+
 ### Database / migrations
 
 Tables are created on API startup. Alembic is also provided:

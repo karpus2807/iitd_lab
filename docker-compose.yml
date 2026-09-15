@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    pull_policy: missing
     environment:
       POSTGRES_USER: labwatch
       POSTGRES_PASSWORD: labwatch
@@ -15,23 +16,57 @@ services:
     restart: unless-stopped
 
   api:
-    build:
+    build: &api-build
       context: .
       dockerfile: docker/Dockerfile.api
+      pull: false
+      args: &proxy-args
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+        http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+        https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+        no_proxy: ${no_proxy:-${NO_PROXY:-localhost,127.0.0.1}}
     env_file:
       - path: .env
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://labwatch:labwatch@db:5432/labwatch
+      LABWATCH_REPO_DIR: ${PWD}
+      LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web}
+    volumes:
+      - ${PWD}:${PWD}
+      - ${PWD}:/opt/labwatch
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  updater:
+    build: *api-build
+    command: ["python3", "-u", "-m", "app.services.updates"]
+    environment:
+      PYTHONPATH: /app
+      LABWATCH_REPO_DIR: ${PWD}
+      LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web}
+    volumes:
+      - ${PWD}:${PWD}
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
   web:
     build:
       context: .
       dockerfile: docker/Dockerfile.web
+      pull: false
+      args: *proxy-args
     ports:
       - "80:80"
     depends_on:
