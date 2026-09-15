@@ -52,7 +52,8 @@ function saveSession(data){
 function nav(){
   const n=document.getElementById("nav");
   n.innerHTML = "<strong>LabWatch</strong> <a href='/labs' id='n-labs'>Labs</a> <a href='/updates' id='n-updates'>Updates</a> <a href='/api/ui/admin' id='n-admin'>Users</a> <a href='/machines'>Machines</a> <a href='#' id='out'>Sign out</a>";
-  document.getElementById("n-"+PAGE).classList.add("active");
+  var active = document.getElementById("n-"+PAGE);
+  if (active) active.classList.add("active");
   document.getElementById("out").onclick=function(e){ e.preventDefault(); localStorage.clear(); location.href="/"; };
 }
 async function api(path, opt) {
@@ -88,16 +89,20 @@ function renderLogin(msg){
   const root=document.getElementById("root");
   root.innerHTML="";
   const box=el("<form class='card login'><h1>Sign in</h1><p class='muted'>Labs editor and Updates</p><div class='grid' style='grid-template-columns:1fr'><input name='username' placeholder='Username' value='admin'/><input name='password' type='password' placeholder='Password'/></div><p class='err' id='le'></p><button style='margin-top:12px'>Sign in</button></form>");
-  document.getElementById("le").textContent = msg || "";
   box.onsubmit=async function(e){
     e.preventDefault();
     try {
       const data=await api("/api/auth/login",{method:"POST", body:JSON.stringify({username:box.username.value, password:box.password.value})});
       saveSession(data);
       location.reload();
-    } catch(err){ document.getElementById("le").textContent = err.message==="login" ? "Invalid credentials" : err.message; }
+    } catch(err){
+      var le = box.querySelector("#le");
+      if (le) le.textContent = err.message==="login" ? "Invalid credentials" : err.message;
+    }
   };
   root.append(box);
+  var le0 = box.querySelector("#le");
+  if (le0 && msg) le0.textContent = msg;
 }
 async function renderLabs(){
   const root=document.getElementById("root");
@@ -180,12 +185,17 @@ async function renderAdmin(){
     root.innerHTML="<p class='err'>"+esc(e.message)+"</p>";
   }
 }
-if (!token()) renderLogin();
-else {
-  nav();
-  if (PAGE==="updates") renderUpdates();
-  else if (PAGE==="admin") renderAdmin();
-  else renderLabs();
+try {
+  if (!token()) renderLogin();
+  else {
+    nav();
+    if (PAGE==="updates") renderUpdates();
+    else if (PAGE==="admin") renderAdmin();
+    else renderLabs();
+  }
+} catch (e) {
+  document.getElementById("root").innerHTML = "<div class='card'><h1>Sign in</h1><p class='err'>"+esc(e.message)+"</p><p class='muted'>Clear site data for this host if this keeps happening.</p></div>";
+  renderLogin(e.message);
 }
 </script>
 </body>
