@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -22,6 +23,8 @@ from app.config import get_settings
 logger = logging.getLogger("labwatch.updates")
 
 TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.]+)?$")
+SECRET_IN_URL = re.compile(r"://[^/@:]+:[^/@]+@")
+CAMPUS_PROXY = "http://10.10.78.21:3128"
 IDLE_STATUS = {
     "state": "idle",
     "tag": None,
@@ -128,15 +131,37 @@ def write_request(tag: str, username: str) -> None:
     tmp.replace(path)
 
 
-def _proxy_url() -> str | None:
+def redact_secrets(text: str) -> str:
+    return SECRET_IN_URL.sub("://***:***@", str(text or ""))
+
+
+def _proxy_url(username: str | None = None, password: str | None = None) -> str | None:
     settings = get_settings()
+    raw = ""
     for value in (settings.https_proxy, settings.http_proxy):
         if value and value.strip():
-            return value.strip()
-    return None
+            raw = value.strip()
+            break
+    user = (username or "").strip()
+    if not raw:
+        if not user:
+            return None
+        raw = CAMPUS_PROXY
+    parts = urlsplit(raw)
+    scheme = parts.scheme or "http"
+    host = parts.hostname or "10.10.78.21"
+    port = parts.port or (443 if scheme == "https" else 3128)
+    netloc = f"{host}:{port}" if port else host
+    if user:
+        netloc = f"{quote(user, safe='')}:{quote(password or '', safe='')}@{netloc}"
+    return urlunsplit((scheme, netloc, parts.path or "", "", ""))
 
 
-async def fetch_github_releases(limit: int | None = None) -> list[dict[str, Any]]:
+async def fetch_github_releases(
+    limit: int | None = None,
+    proxy_user: str | None = None,
+    proxy_password: str | None = None,
+) -> list[dict[str, Any]]:
     settings = get_settings()
     limit = limit or settings.updates_builds
     url = f"{settings.github_api.rstrip('/')}/repos/{settings.github_repo}/releases"
@@ -145,11 +170,17 @@ async def fetch_github_releases(limit: int | None = None) -> list[dict[str, Any]
         "User-Agent": f"LabWatch/{current_version()}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    proxy = _proxy_url()
+    proxy = _proxy_url(proxy_user, proxy_password)
     async with httpx.AsyncClient(timeout=25.0, proxy=proxy, follow_redirects=True) as client:
         response = await client.get(url, headers=headers, params={"per_page": max(limit, 10)})
+        content_type = response.headers.get("content-type", "")
+        if response.status_code in {401, 407} or "html" in content_type.lower():
+            raise RuntimeError("Campus proxy rejected the login. Check username and password.")
         response.raise_for_status()
-        rows = response.json()
+        try:
+            rows = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("GitHub fetch did not return JSON. Check proxy username and password.") from exc
     if not isinstance(rows, list):
         raise ValueError("GitHub releases response was not a list")
     releases = []
@@ -212,18 +243,28 @@ def annotate_builds(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return builds
 
 
-async def list_builds() -> dict[str, Any]:
+async def list_builds(
+    *,
+    live: bool = False,
+    proxy_user: str | None = None,
+    proxy_password: str | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
-    source = "github"
+    source = "idle"
     error = None
     releases: list[dict[str, Any]] = []
-    try:
-        releases = await fetch_github_releases(settings.updates_builds)
-    except Exception as exc:  # noqa: BLE001 — surface GitHub/proxy failures to the admin UI
-        logger.warning("GitHub releases fetch failed: %s", exc)
-        error = str(exc)
-        releases = load_cached_releases()[: settings.updates_builds]
-        source = "cache" if releases else "unavailable"
+    if live:
+        try:
+            releases = await fetch_github_releases(
+                settings.updates_builds,
+                proxy_user=proxy_user,
+                proxy_password=proxy_password,
+            )
+            source = "github"
+        except Exception as exc:  # noqa: BLE001 — surface GitHub/proxy failures to the admin UI
+            logger.warning("GitHub releases fetch failed: %s", redact_secrets(str(exc)))
+            error = redact_secrets(str(exc))
+            source = "unavailable"
     builds = annotate_builds(releases[: settings.updates_builds])
     latest = next((b for b in builds if b.get("is_latest")), None)
     current = next((b for b in builds if b.get("is_current")), None)
@@ -240,9 +281,31 @@ async def list_builds() -> dict[str, Any]:
         "builds": builds,
         "source": source,
         "source_error": error,
+        "needs_fetch": source != "github",
         "apply_ready": apply_ready(),
         "status": read_status(),
     }
+
+
+def cached_catalog() -> dict[str, Any]:
+    settings = get_settings()
+    releases = load_cached_releases()[: settings.updates_builds]
+    builds = annotate_builds(releases)
+    latest = next((b for b in builds if b.get("is_latest")), None)
+    current = next((b for b in builds if b.get("is_current")), None)
+    return {
+        "builds": builds,
+        "latest": {"tag": latest["tag"], "name": latest["name"]} if latest else None,
+        "current": {
+            "version": current_version(),
+            "tag": current_tag(),
+            "in_catalog": bool(current),
+        },
+    }
+
+
+def allowed_tags_from_cache() -> set[str]:
+    return {normalize_tag(str(row.get("tag") or "")) for row in cached_catalog()["builds"] if row.get("tag")}
 
 
 def apply_ready() -> dict[str, Any]:

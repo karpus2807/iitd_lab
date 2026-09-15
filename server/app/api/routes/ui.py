@@ -40,10 +40,9 @@ PAGE = r"""<!doctype html>
 <header>
   <strong>LabWatch</strong>
   <nav id="links" class="hidden">
-    <a href="/labs">Labs</a>
-    <a href="/updates">Updates</a>
-    <a href="/api/ui/admin">Users</a>
+    <a href="/">Dashboard</a>
     <a href="/machines">Machines</a>
+    <a href="/admin">Admin</a>
     <a href="#" id="signout">Sign out</a>
   </nav>
 </header>
@@ -63,7 +62,7 @@ PAGE = r"""<!doctype html>
 </main>
 <script>
 const PAGE = location.pathname.indexOf("/updates") >= 0 ? "updates" : location.pathname.indexOf("/admin") >= 0 ? "admin" : "labs";
-const LAB_KEYS = ["name","code","department","building","floor","room","capacity","incharge","phone","email","description"];
+const LAB_KEYS = ["name","code","building","floor","room","capacity","phone","description"];
 function $(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"'`]/g, function(c){ return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;","`":"&#96;"})[c]; }); }
 function token(){ return localStorage.getItem("lw_access"); }
@@ -99,7 +98,7 @@ async function api(path, opt) {
   return res.json();
 }
 function labInputs(values, prefix){
-  const labels = {name:"Name", code:"Code", department:"Department", building:"Building", floor:"Floor", room:"Room", capacity:"Capacity", incharge:"In-charge", phone:"Phone", email:"Email", description:"Notes"};
+  const labels = {name:"Name", code:"Code", building:"Building", floor:"Floor", room:"Room", capacity:"Capacity", phone:"Phone", description:"Notes"};
   return LAB_KEYS.map(function(k){
     return "<input name='"+prefix+k+"' placeholder='"+labels[k]+"' "+(k==="capacity"?"type='number' min='0'":"")+" value='"+esc(values[k]||"")+"'/>";
   }).join("");
@@ -171,23 +170,34 @@ async function renderLabs(){
 }
 async function renderUpdates(){
   const root = $("workspace");
-  root.innerHTML = "<h1>Updates</h1><p class='muted'>GitHub releases. Pick a tag to shift this server.</p>";
-  try {
-    const data = await api("/api/admin/updates");
-    var html = "<div class='card'><p><span class='badge'>Current "+esc(data.current && data.current.tag)+"</span> <span class='badge'>Latest "+esc(data.latest && data.latest.tag)+"</span></p></div>";
-    (data.builds||[]).forEach(function(b){
-      html += "<div class='card'><strong>"+esc(b.tag)+"</strong> "+(b.is_current?"<span class='badge'>Current</span> ":"")+(b.is_latest?"<span class='badge'>Latest</span>":"")+"<div class='muted'>"+esc(b.name||"")+"</div><button class='sec apply' data-tag='"+esc(b.tag)+"'>"+(b.action==="downgrade"?"Downgrade": b.action==="current"?"Reinstall":"Update")+"</button></div>";
-    });
-    if (!(data.builds||[]).length) html += "<p class='muted'>GitHub list empty. Login proxy.cgi then refresh.</p>";
-    if (data.status && data.status.message) html += "<p>"+esc(data.status.message)+"</p>";
-    root.innerHTML += html;
-    root.querySelectorAll(".apply").forEach(function(btn){
-      btn.onclick = async function(){ if(!confirm("Apply "+btn.getAttribute("data-tag")+"?")) return; await api("/api/admin/updates/apply",{method:"POST", body:JSON.stringify({tag:btn.getAttribute("data-tag")})}); renderUpdates(); };
-    });
-  } catch (e) {
-    if (e.message === "login") { loggedOut(); return; }
-    root.innerHTML += "<p class='err'>"+esc(e.message)+"</p>";
-  }
+  root.innerHTML = "<h1>Updates</h1><p class='muted'>Enter campus proxy credentials, then fetch GitHub releases.</p>";
+  const form = document.createElement("form");
+  form.className = "card grid";
+  form.innerHTML = "<input name='proxy_user' placeholder='Proxy username' required/><input name='proxy_password' type='password' placeholder='Proxy password' required/><button>Fetch GitHub releases</button>";
+  const out = document.createElement("div");
+  form.onsubmit = async function(e){
+    e.preventDefault();
+    out.innerHTML = "<p class='muted'>Fetching…</p>";
+    try {
+      const data = await api("/api/admin/updates/fetch",{method:"POST", body:JSON.stringify({proxy_user:form.proxy_user.value, proxy_password:form.proxy_password.value})});
+      if (data.source !== "github") { out.innerHTML = "<p class='err'>"+esc(data.source_error||"GitHub fetch failed")+"</p>"; return; }
+      var html = "<div class='card'><p><span class='badge'>Current "+esc(data.current && data.current.tag)+"</span> <span class='badge'>Latest "+esc(data.latest && data.latest.tag)+"</span></p></div>";
+      (data.builds||[]).forEach(function(b){
+        html += "<div class='card'><strong>"+esc(b.tag)+"</strong> "+(b.is_current?"<span class='badge'>Current</span> ":"")+(b.is_latest?"<span class='badge'>Latest</span>":"")+"<div class='muted'>"+esc(b.name||"")+"</div><button class='sec apply' data-tag='"+esc(b.tag)+"'>"+(b.action==="downgrade"?"Downgrade": b.action==="current"?"Reinstall":"Update")+"</button></div>";
+      });
+      if (!(data.builds||[]).length) html += "<p class='muted'>GitHub list empty.</p>";
+      if (data.status && data.status.message) html += "<p>"+esc(data.status.message)+"</p>";
+      out.innerHTML = html;
+      out.querySelectorAll(".apply").forEach(function(btn){
+        btn.onclick = async function(){ if(!confirm("Apply "+btn.getAttribute("data-tag")+"?")) return; await api("/api/admin/updates/apply",{method:"POST", body:JSON.stringify({tag:btn.getAttribute("data-tag")})}); renderUpdates(); };
+      });
+    } catch (err) {
+      if (err.message === "login") { loggedOut(); return; }
+      out.innerHTML = "<p class='err'>"+esc(err.message)+"</p>";
+    }
+  };
+  root.appendChild(form);
+  root.appendChild(out);
 }
 async function renderAdmin(){
   const root = $("workspace");

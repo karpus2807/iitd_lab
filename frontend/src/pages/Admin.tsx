@@ -1,22 +1,26 @@
 import type { FormEvent } from 'react'
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ago, api } from '../api'
 import { currentUser } from '../api'
 import Infra from './Infra'
 import Updates from './Updates'
 
-type AdminTab = 'users' | 'labs' | 'updates' | 'tokens' | 'agents' | 'rules' | 'audit'
+const ADMIN_TABS = ['users', 'labs', 'updates', 'tokens', 'agents', 'rules', 'audit'] as const
+type AdminTab = (typeof ADMIN_TABS)[number]
 
 export default function Admin() {
   const role = currentUser()?.role
+  const [params, setParams] = useSearchParams()
   if (role !== 'ADMIN') return <p className="err">Administrator role required.</p>
-  const [tab, setTab] = useState<AdminTab>('users')
+  const raw = params.get('tab') || 'users'
+  const tab: AdminTab = (ADMIN_TABS as readonly string[]).includes(raw) ? (raw as AdminTab) : 'users'
   return (
     <>
       <div className="topbar"><div><h2>Admin</h2><p>Users, labs, server updates, enrollment, thresholds</p></div></div>
       <div className="tabs">
-        {(['users', 'labs', 'updates', 'tokens', 'agents', 'rules', 'audit'] as const).map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>
+        {ADMIN_TABS.map((t) => (
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setParams({ tab: t })}>{t}</button>
         ))}
       </div>
       {tab === 'users' && <Users />}

@@ -6,14 +6,11 @@ type Lab = {
   id: string
   name: string
   code: string
-  department: string
   building: string
   floor: string
   room: string
   capacity: number
-  incharge: string
   phone: string
-  email: string
   description: string
   machine_count: number
   online_count: number
@@ -30,8 +27,8 @@ type Machine = {
 }
 
 const EMPTY_LAB = {
-  name: '', code: '', department: '', building: '', floor: '', room: '',
-  capacity: 0, incharge: '', phone: '', email: '', description: '',
+  name: '', code: '', building: '', floor: '', room: '',
+  capacity: 0, phone: '', description: '',
 }
 
 export default function Infra() {
@@ -52,9 +49,9 @@ export default function Infra() {
     const next: Record<string, Partial<Lab>> = {}
     labRows.forEach((l) => {
       next[l.id] = {
-        name: l.name, code: l.code || '', department: l.department || '', building: l.building || '',
-        floor: l.floor || '', room: l.room || '', capacity: l.capacity || 0, incharge: l.incharge || '',
-        phone: l.phone || '', email: l.email || '', description: l.description || '',
+        name: l.name, code: l.code || '', building: l.building || '',
+        floor: l.floor || '', room: l.room || '', capacity: l.capacity || 0,
+        phone: l.phone || '', description: l.description || '',
       }
     })
     setDrafts(next)
@@ -111,7 +108,7 @@ export default function Infra() {
       <div className="topbar">
         <div>
           <h2>Labs</h2>
-          <p>Every lab field is editable: name, code, department, building, floor, room, capacity, in-charge, phone, email, notes. Delete moves hosts to Unassigned.</p>
+          <p>Name, code, building, floor, room, capacity, phone, and notes. Delete moves hosts to Unassigned.</p>
         </div>
       </div>
       {err && <p className="err">{err}</p>}
@@ -122,14 +119,11 @@ export default function Infra() {
           <div className="toolbar">
             <input placeholder="Lab name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
             <input placeholder="Code" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
-            <input placeholder="Department" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
             <input placeholder="Building" value={form.building} onChange={(e) => setForm({ ...form, building: e.target.value })} />
             <input placeholder="Floor" value={form.floor} onChange={(e) => setForm({ ...form, floor: e.target.value })} />
             <input placeholder="Room" value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} />
             <input placeholder="Capacity" type="number" min={0} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: Number(e.target.value) })} />
-            <input placeholder="In-charge" value={form.incharge} onChange={(e) => setForm({ ...form, incharge: e.target.value })} />
             <input placeholder="Phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-            <input placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             <input placeholder="Notes / description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             <button className="btn">Create lab</button>
           </div>
@@ -147,14 +141,11 @@ export default function Infra() {
             <div className="toolbar">
               <input placeholder="Name" value={d.name ?? ''} disabled={!canEdit || lab.protected} onChange={(e) => setDraft(lab.id, { name: e.target.value })} />
               <input placeholder="Code" value={d.code ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { code: e.target.value })} />
-              <input placeholder="Department" value={d.department ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { department: e.target.value })} />
               <input placeholder="Building" value={d.building ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { building: e.target.value })} />
               <input placeholder="Floor" value={d.floor ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { floor: e.target.value })} />
               <input placeholder="Room" value={d.room ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { room: e.target.value })} />
               <input placeholder="Capacity" type="number" min={0} value={d.capacity ?? 0} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { capacity: Number(e.target.value) })} />
-              <input placeholder="In-charge" value={d.incharge ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { incharge: e.target.value })} />
               <input placeholder="Phone" value={d.phone ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { phone: e.target.value })} />
-              <input placeholder="Email" value={d.email ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { email: e.target.value })} />
               <input placeholder="Notes" value={d.description ?? ''} disabled={!canEdit} onChange={(e) => setDraft(lab.id, { description: e.target.value })} />
               {canEdit && <button className="btn secondary" type="button" onClick={() => saveLab(lab.id)}>Save</button>}
               {canEdit && !lab.protected && <button className="btn danger" type="button" onClick={() => removeLab(lab)}>Delete</button>}
