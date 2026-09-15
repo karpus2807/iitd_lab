@@ -36,7 +36,7 @@ services:
       LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
-      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}
     volumes:
       - ${PWD}:${PWD}
       - ${PWD}:/opt/labwatch
@@ -44,6 +44,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,urllib.request; os.environ['NO_PROXY']='127.0.0.1,localhost'; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 45s
     restart: unless-stopped
 
   updater:
@@ -55,7 +67,7 @@ services:
       LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
-      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}
     volumes:
       - ${PWD}:${PWD}
       - /var/run/docker.sock:/var/run/docker.sock
@@ -70,7 +82,8 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

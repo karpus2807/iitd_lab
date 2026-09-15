@@ -36,6 +36,11 @@ export async function api<T = any>(path: string, init: RequestInit = {}): Promis
     if (!path.includes('/api/auth/login')) window.location.href = '/login'
     throw new Error('Unauthorized')
   }
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    throw new Error(
+      'API is down (Bad Gateway). On the server run: sudo docker compose ps && sudo docker compose logs api --tail 80',
+    )
+  }
   if (!res.ok) {
     let detail = res.statusText
     try {

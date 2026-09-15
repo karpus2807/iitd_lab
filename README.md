@@ -70,6 +70,29 @@ Open `http://<server>/`. Default admin comes from `.env` (`ADMIN_USERNAME` / `AD
 
 API documentation: `http://<server>/api/docs`
 
+Health check: `http://<server>/health` must return JSON. If login shows **Bad Gateway**, the web container is up but `api` is not — see `docs/troubleshooting.md`.
+
+### Apply a GitHub release on an existing Docker server
+
+Postgres data stays in the `labwatch_pg` volume. `.env` is not in git.
+
+```bash
+cd ~/iitd_lab
+git fetch origin --tags
+git checkout v1.1.1
+sudo docker compose up -d --build --pull never
+sudo docker compose ps
+curl -sS http://127.0.0.1/health
+```
+
+Wait until `api` is healthy before signing in. Optional host updater:
+
+```bash
+sudo ./scripts/linux/install-host-updater.sh
+```
+
+After this version, admins can also use **Updates** in the dashboard for later tags.
+
 ### Server updates (GitHub)
 
 Admins get an **Updates** page that lists the last 3 GitHub releases, marks **Current** vs **Latest**, and can update or downgrade to a selected tag.

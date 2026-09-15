@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     updates_builds: int = Field(default=3, alias="LABWATCH_UPDATES_BUILDS")
     http_proxy: str = Field(default="", alias="HTTP_PROXY")
     https_proxy: str = Field(default="", alias="HTTPS_PROXY")
-    no_proxy: str = Field(default="localhost,127.0.0.1,db", alias="NO_PROXY")
+    no_proxy: str = Field(default="localhost,127.0.0.1,db,web,api", alias="NO_PROXY")
 
     @property
     def cors_origin_list(self) -> list[str]:

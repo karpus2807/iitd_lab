@@ -1,5 +1,20 @@
 # Troubleshooting
 
+## Login shows Bad Gateway
+
+The login form is static Nginx. Password submit calls `/api/auth/login`. **502** means Nginx cannot reach the API container (`api` is restarting, crashed, or still installing packages).
+
+```bash
+cd ~/iitd_lab
+sudo docker compose ps
+sudo docker compose logs api --tail 80
+curl -sS http://127.0.0.1/health
+```
+
+`health` must return `{"status":"ok",...}`. If `api` is `Exit` or not listed, fix that first — the UI cannot log in without it.
+
+Also confirm `.env` has `NO_PROXY` including `db` so Postgres is not sent through the campus HTTP proxy.
+
 ## Admin Updates page cannot apply a GitHub tag
 
 The API lists the last 3 releases from GitHub. Apply needs the git checkout path (`LABWATCH_REPO_DIR`) and Docker. From the repo root:
@@ -21,7 +36,7 @@ Put proxy URLs in `.env` so Compose build args reach `pip`/`npm`:
 ```
 HTTP_PROXY=http://10.10.78.21:3128/
 HTTPS_PROXY=http://10.10.78.21:3128/
-NO_PROXY=localhost,127.0.0.1,::1,db
+NO_PROXY=localhost,127.0.0.1,::1,db,web,api
 ```
 
 Prefetch wheels with retries (survives CONNECT drops), then build without PyPI:

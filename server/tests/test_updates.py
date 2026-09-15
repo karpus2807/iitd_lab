@@ -7,6 +7,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.1",
+        "name": "LabWatch 1.1.1",
+        "published_at": "2026-09-15T10:30:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.1",
+        "notes": "Fix login 502",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.0",
         "name": "LabWatch 1.1.0",
         "published_at": "2026-09-15T10:00:00Z",
@@ -20,14 +28,6 @@ RELEASES = [
         "published_at": "2026-09-01T10:00:00Z",
         "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.0.0",
         "notes": "Initial",
-        "prerelease": False,
-    },
-    {
-        "tag": "v0.9.0",
-        "name": "LabWatch 0.9.0",
-        "published_at": "2026-08-01T10:00:00Z",
-        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v0.9.0",
-        "notes": "",
         "prerelease": False,
     },
 ]
@@ -80,8 +80,8 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert listed.status_code == 200, listed.text
     body = listed.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.0"
-    assert body["current"]["tag"] == "v1.1.0"
+    assert body["latest"]["tag"] == "v1.1.1"
+    assert body["current"]["tag"] == "v1.1.1"
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])
 
