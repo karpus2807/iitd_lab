@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ago, api, bytes, fmt } from '../api'
+import { ago, api, bytes, currentUser, fmt } from '../api'
 import { StatusBadge } from '../Layout'
 
 const TABS = ['Overview', 'CPU', 'Memory', 'GPU', 'Storage', 'Network', 'Motherboard', 'History', 'Metrics', 'Events', 'Logs'] as const
@@ -108,20 +108,24 @@ export default function MachineDetail() {
               <Kv label="GPUs" value={machine.gpu_count} />
               <Kv label="Disks" value={hw?.storage?.disks?.length ?? '—'} />
             </div>
-            <div className="field" style={{ marginTop: 16 }}>
-              <label>Move to lab</label>
-              <select
-                value={machine.lab_id || ''}
-                onChange={async (e) => {
-                  await api(`/api/machines/${machine.id}`, { method: 'PATCH', body: JSON.stringify({ lab_id: e.target.value || null }) })
-                  const m = await api(`/api/machines/${machine.id}`)
-                  setMachine(m)
-                }}
-              >
-                <option value="">Unassigned</option>
-                {labs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-              </select>
-            </div>
+            {['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '') && (
+              <div className="field" style={{ marginTop: 16 }}>
+                <label>Move to lab</label>
+                <select
+                  className="lab-assign"
+                  value={machine.lab_id || ''}
+                  onChange={async (e) => {
+                    if (!e.target.value) return
+                    await api(`/api/machines/${machine.id}`, { method: 'PATCH', body: JSON.stringify({ lab_id: e.target.value }) })
+                    const m = await api(`/api/machines/${machine.id}`)
+                    setMachine(m)
+                  }}
+                >
+                  {!machine.lab_id && <option value="">Pick a lab</option>}
+                  {labs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </select>
+              </div>
+            )}
           </div>
         </div>
       )}

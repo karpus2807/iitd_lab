@@ -53,6 +53,7 @@ _read_tty() {
 USERNAME="${LABWATCH_USER:-}"
 PASSWORD="${LABWATCH_PASSWORD:-}"
 INVENTORY_ID="${LABWATCH_INVENTORY_ID:-${2:-}}"
+LAB_ID="${LABWATCH_LAB_ID:-}"
 LAB_NAME="${LABWATCH_LAB:-}"
 
 if [[ -z "$USERNAME" ]]; then
@@ -64,27 +65,88 @@ fi
 if [[ -z "$INVENTORY_ID" ]]; then
   INVENTORY_ID="$(_read_tty 'Machine ID (example 12345/2012/12): ')"
 fi
-if [[ -z "${LABWATCH_LAB+x}" && -z "$LAB_NAME" && -r /dev/tty ]]; then
-  LAB_NAME="$(_read_tty 'Lab name (Enter for Unassigned): ')"
-fi
 
 if [[ -z "$USERNAME" || -z "$PASSWORD" || -z "$INVENTORY_ID" ]]; then
   echo "Username, password, and machine ID are required."
   exit 1
 fi
 
+if [[ -z "$LAB_ID" ]]; then
+  echo "Fetching labs from ${SERVER_URL}…"
+  LAB_PICK="$(
+    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" LABWATCH_LAB="$LAB_NAME" python3 - <<'PY'
+import json, os, sys, urllib.error, urllib.request
+
+def call(method, path, data=None, token=None):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    raw = None if data is None else json.dumps(data).encode()
+    req = urllib.request.Request(os.environ["SERVER_URL"] + path, data=raw, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise SystemExit(f"Request failed ({exc.code}): {body}")
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Cannot reach {os.environ['SERVER_URL']}: {exc}")
+
+tty_out = open("/dev/tty", "w") if os.path.exists("/dev/tty") else sys.stderr
+tty_in = open("/dev/tty", "r") if os.path.exists("/dev/tty") else sys.stdin
+
+login = call("POST", "/api/auth/login", {"username": os.environ["USERNAME"], "password": os.environ["PASSWORD"]})
+labs = call("GET", "/api/labs", token=login["access_token"])
+if not isinstance(labs, list) or not labs:
+    raise SystemExit("No labs found. Create labs in Admin first.")
+labs.sort(key=lambda row: (str(row.get("name") or "").strip().lower() == "unassigned", str(row.get("name") or "").lower()))
+tty_out.write("\nLabs:\n")
+for i, lab in enumerate(labs, 1):
+    extra = f"  ({lab.get('machine_count') or 0} hosts)" if lab.get("machine_count") is not None else ""
+    tty_out.write(f"  {i}) {lab['name']}{extra}\n")
+tty_out.flush()
+preset = (os.environ.get("LABWATCH_LAB") or "").strip()
+choice = None
+if preset.isdigit():
+    choice = int(preset)
+elif preset:
+    for i, lab in enumerate(labs, 1):
+        if lab["name"].lower() == preset.lower():
+            choice = i
+            break
+    if choice is None:
+        raise SystemExit(f"Unknown lab '{preset}'")
+else:
+    tty_out.write("Select lab number: ")
+    tty_out.flush()
+    raw = tty_in.readline().strip()
+    if not raw.isdigit():
+        raise SystemExit("Select a lab by number, for example 1")
+    choice = int(raw)
+if choice < 1 or choice > len(labs):
+    raise SystemExit(f"Lab number must be between 1 and {len(labs)}")
+chosen = labs[choice - 1]
+tty_out.write(f"Selected {choice}) {chosen['name']}\n")
+print(json.dumps({"lab_id": chosen["id"], "lab": chosen["name"]}))
+PY
+  )"
+  LAB_ID="$(printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lab_id"])')"
+  LAB_NAME="$(printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lab"])')"
+  echo "Using lab: ${LAB_NAME}"
+fi
+
 echo "Logging in to ${SERVER_URL} and enrolling ${INVENTORY_ID}…"
 ENROLL_JSON="$(
-  SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" LAB_NAME="$LAB_NAME" python3 - <<'PY'
+  SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" LAB_ID="$LAB_ID" python3 - <<'PY'
 import json, os, urllib.error, urllib.request
 payload = {
     "username": os.environ["USERNAME"],
     "password": os.environ["PASSWORD"],
     "inventory_id": os.environ["INVENTORY_ID"],
 }
-lab = os.environ.get("LAB_NAME") or ""
-if lab.strip():
-    payload["lab"] = lab.strip()
+lab_id = os.environ.get("LAB_ID") or ""
+if lab_id.strip():
+    payload["lab_id"] = lab_id.strip()
 req = urllib.request.Request(
     os.environ["SERVER_URL"] + "/api/agents/enroll",
     data=json.dumps(payload).encode(),

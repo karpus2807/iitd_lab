@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ago, api } from '../api'
+import { ago, api, currentUser } from '../api'
 import { StatusBadge } from '../Layout'
 
 export default function Machines() {
   const [rows, setRows] = useState<any[]>([])
   const [labs, setLabs] = useState<any[]>([])
+  const [err, setErr] = useState('')
   const [params, setParams] = useSearchParams()
   const nav = useNavigate()
+  const role = currentUser()?.role
+  const canAssign = role === 'ADMIN' || role === 'OPERATOR'
   const q = params.get('q') || ''
   const lab = params.get('lab') || ''
   const status = params.get('status') || ''
@@ -19,7 +22,7 @@ export default function Machines() {
     api('/api/labs').then(setLabs).catch(() => undefined)
   }, [])
 
-  useEffect(() => {
+  const loadRows = useCallback(() => {
     const qs = new URLSearchParams()
     if (q) qs.set('q', q)
     if (lab) qs.set('lab_id', lab)
@@ -30,6 +33,10 @@ export default function Machines() {
     api(`/api/machines?${qs}`).then(setRows).catch(() => setRows([]))
   }, [q, lab, status, os, alerts, gpu])
 
+  useEffect(() => {
+    loadRows()
+  }, [loadRows])
+
   const osOptions = useMemo(() => Array.from(new Set(rows.map((r) => r.os_name).filter(Boolean))), [rows])
 
   function set(key: string, value: string) {
@@ -39,14 +46,26 @@ export default function Machines() {
     setParams(next)
   }
 
+  async function assignLab(machineId: string, labId: string) {
+    if (!labId) return
+    setErr('')
+    try {
+      await api(`/api/machines/${machineId}`, { method: 'PATCH', body: JSON.stringify({ lab_id: labId }) })
+      loadRows()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not assign lab')
+    }
+  }
+
   return (
     <>
       <div className="topbar">
         <div>
           <h2>Machines</h2>
-          <p>{rows.length} matching hosts</p>
+          <p>{rows.length} matching hosts{canAssign ? ' · change Lab in the list to move a host, including Unassigned' : ''}</p>
         </div>
       </div>
+      {err && <p className="err">{err}</p>}
       <div className="toolbar">
         <input placeholder="Search machine ID, hostname or IP" value={q} onChange={(e) => set('q', e.target.value)} />
         <select value={lab} onChange={(e) => set('lab', e.target.value)}>
@@ -89,7 +108,19 @@ export default function Machines() {
                   {m.has_open_alerts && <span className="badge WARNING" style={{ marginLeft: 8 }}>alert</span>}
                   {m.is_virtual && <span className="badge INFO" style={{ marginLeft: 8 }}>VM</span>}
                 </td>
-                <td>{m.lab_name || '—'}</td>
+                <td onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+                  {canAssign ? (
+                    <select
+                      className="lab-assign"
+                      value={m.lab_id || ''}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => assignLab(m.id, e.target.value)}
+                    >
+                      {!m.lab_id && <option value="">Pick a lab</option>}
+                      {labs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                  ) : (m.lab_name || '—')}
+                </td>
                 <td><StatusBadge status={m.status} /></td>
                 <td>{m.os_name} {m.architecture}</td>
                 <td className="mono">{m.current_ip || '—'}{(m.current_ips || []).length > 1 ? ` +${m.current_ips.length - 1}` : ''}</td>

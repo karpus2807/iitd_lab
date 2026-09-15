@@ -1,4 +1,5 @@
 from datetime import timedelta
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -47,6 +48,7 @@ class EnrollRequest(BaseModel):
     password: str
     inventory_id: str
     lab: str | None = None
+    lab_id: UUID | None = None
 
 
 class RegisterResponse(BaseModel):
@@ -123,15 +125,22 @@ async def enroll_agent(body: EnrollRequest, db: DbDep, request: Request):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator or operator role required")
     lab_id = None
     lab_name = "Unassigned"
-    lab_query = (body.lab or "").strip()
-    if lab_query:
-        lab = (
-            await db.execute(select(Lab).where(func.lower(Lab.name) == lab_query.lower()))
-        ).scalar_one_or_none()
+    if body.lab_id is not None:
+        lab = await db.get(Lab, body.lab_id)
         if lab is None:
-            raise HTTPException(400, f"Unknown lab '{lab_query}'")
+            raise HTTPException(400, "Unknown lab")
         lab_id = lab.id
         lab_name = lab.name
+    else:
+        lab_query = (body.lab or "").strip()
+        if lab_query:
+            lab = (
+                await db.execute(select(Lab).where(func.lower(Lab.name) == lab_query.lower()))
+            ).scalar_one_or_none()
+            if lab is None:
+                raise HTTPException(400, f"Unknown lab '{lab_query}'")
+            lab_id = lab.id
+            lab_name = lab.name
     raw = "lw_" + new_secret(24)
     db.add(
         RegistrationToken(

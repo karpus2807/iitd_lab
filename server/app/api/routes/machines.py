@@ -168,6 +168,10 @@ async def update_machine(machine_id: UUID, body: MachineUpdate, db: DbDep, user:
         if not machine.display_name or machine.display_name == machine.hostname:
             machine.display_name = inv
     if "lab_id" in data:
+        if data["lab_id"] is not None:
+            lab = await db.get(Lab, data["lab_id"])
+            if lab is None:
+                raise HTTPException(400, "Unknown lab")
         machine.lab_id = data["lab_id"]
     if "approved" in data:
         machine.approved = data["approved"]

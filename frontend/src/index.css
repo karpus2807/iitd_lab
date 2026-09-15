@@ -122,6 +122,7 @@ th { text-align: left; color: var(--muted); font-weight: 500; padding: 10px 8px;
 td { padding: 12px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: var(--bg-elev-2); }
+select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
 
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
 .tabs button {

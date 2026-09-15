@@ -168,8 +168,8 @@ export default function Infra() {
                   <td className="mono">{m.inventory_id || '—'}</td>
                   <td>{m.hostname}</td>
                   <td>
-                    <select value={d.lab_id} disabled={!canEdit} onChange={(e) => setHostDrafts({ ...hostDrafts, [m.id]: { ...d, lab_id: e.target.value } })}>
-                      <option value="">Unassigned</option>
+                    <select className="lab-assign" value={d.lab_id} disabled={!canEdit} onChange={(e) => setHostDrafts({ ...hostDrafts, [m.id]: { ...d, lab_id: e.target.value } })}>
+                      {!d.lab_id && <option value="">Pick a lab</option>}
                       {labs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
                     </select>
                   </td>

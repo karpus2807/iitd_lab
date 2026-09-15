@@ -90,8 +90,88 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "__SERVER_URL__" not in text
     assert "/api/agents/enroll" in text
     assert "Machine ID" in text
+    assert "/api/labs" in text
+    assert "Select lab number" in text
+    assert "lab_id" in text
 
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200
     assert pack.content[:2] == b"\x1f\x8b"
     gzip.decompress(pack.content)
+
+
+def _identity(suffix: str) -> dict:
+    return {
+        "hostname": f"host-{suffix}",
+        "os_name": "Linux",
+        "architecture": "x86_64",
+        "system_uuid": f"sys-{suffix}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_enroll_with_lab_id_and_gui_reassign(client: AsyncClient, auth_headers):
+    created = await client.post("/api/labs", headers=auth_headers, json={"name": "GPU Lab Select"})
+    assert created.status_code == 200, created.text
+    lab_id = created.json()["id"]
+
+    bad = await client.post(
+        "/api/agents/enroll",
+        json={
+            "username": "admin",
+            "password": "testpass123",
+            "inventory_id": "55555/2012/12",
+            "lab_id": "00000000-0000-0000-0000-000000000001",
+        },
+    )
+    assert bad.status_code == 400
+
+    enrolled = await client.post(
+        "/api/agents/enroll",
+        json={
+            "username": "admin",
+            "password": "testpass123",
+            "inventory_id": "55555/2012/12",
+            "lab_id": lab_id,
+        },
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    token = enrolled.json()["registration_token"]
+    assert enrolled.json()["lab"] == "GPU Lab Select"
+
+    reg = await client.post(
+        "/api/agents/register",
+        json={
+            "registration_token": token,
+            "inventory_id": "55555/2012/12",
+            "agent_uuid": "agent-lab-001",
+            "agent_version": "1.0.0",
+            "identity": _identity("lab-001"),
+        },
+    )
+    assert reg.status_code == 200, reg.text
+    machine_id = reg.json()["machine_id"]
+    listed = await client.get("/api/machines", headers=auth_headers)
+    row = next(m for m in listed.json() if m["id"] == machine_id)
+    assert row["lab_name"] == "GPU Lab Select"
+    assert row["lab_id"] == lab_id
+
+    labs = (await client.get("/api/labs", headers=auth_headers)).json()
+    unassigned = next(x for x in labs if x["name"] == "Unassigned")
+    moved = await client.patch(
+        f"/api/machines/{machine_id}",
+        headers=auth_headers,
+        json={"lab_id": unassigned["id"]},
+    )
+    assert moved.status_code == 200, moved.text
+    after = await client.get(f"/api/machines/{machine_id}", headers=auth_headers)
+    assert after.json()["lab_name"] == "Unassigned"
+
+    back = await client.patch(
+        f"/api/machines/{machine_id}",
+        headers=auth_headers,
+        json={"lab_id": lab_id},
+    )
+    assert back.status_code == 200
+    restored = await client.get(f"/api/machines/{machine_id}", headers=auth_headers)
+    assert restored.json()["lab_name"] == "GPU Lab Select"
