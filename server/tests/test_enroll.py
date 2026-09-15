@@ -96,6 +96,8 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "Enter keeps" in text
     assert "inventory_id=" in text
     assert "/api/machines?inventory_id=" in text
+    assert "dmidecode" in text
+    assert "pciutils" in text
 
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200

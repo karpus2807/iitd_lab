@@ -45,6 +45,8 @@ export default function MachineDetail() {
   const [range, setRange] = useState('24h')
   const [labs, setLabs] = useState<any[]>([])
   const [err, setErr] = useState('')
+  const [logLevel, setLogLevel] = useState('ALL')
+  const [logQuery, setLogQuery] = useState('')
   const canManage = ['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '')
 
   useEffect(() => {
@@ -52,9 +54,20 @@ export default function MachineDetail() {
     api(`/api/machines/${id}`).then(setMachine)
     api(`/api/machines/${id}/hardware`).then(setHw)
     api(`/api/machines/${id}/events`).then(setEvents)
-    api(`/api/machines/${id}/logs`).then(setLogs)
     api('/api/labs').then(setLabs)
   }, [id])
+
+  useEffect(() => {
+    if (!id || tab !== 'Logs') return
+    const qs = new URLSearchParams()
+    qs.set('limit', '500')
+    if (logLevel && logLevel !== 'ALL') qs.set('level', logLevel)
+    if (logQuery.trim()) qs.set('q', logQuery.trim())
+    const load = () => api(`/api/machines/${id}/logs?${qs}`).then(setLogs).catch(() => undefined)
+    load()
+    const timer = window.setInterval(load, 8000)
+    return () => window.clearInterval(timer)
+  }, [id, tab, logLevel, logQuery])
 
   useEffect(() => {
     if (!id || tab !== 'Metrics') return
@@ -367,13 +380,37 @@ export default function MachineDetail() {
 
       {tab === 'Logs' && (
         <div className="card">
-          {logs.map((l) => (
-            <div key={l.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
-              <span className="badge">{l.level}</span> {l.message}
-              <div className="muted">{ago(l.created_at)}</div>
-            </div>
-          ))}
-          {logs.length === 0 && <p className="muted">No agent logs.</p>}
+          <div className="toolbar">
+            {['ALL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'CRITICAL'].map((lvl) => (
+              <button
+                key={lvl}
+                type="button"
+                className={`btn ${logLevel === lvl ? '' : 'secondary'}`}
+                onClick={() => setLogLevel(lvl)}
+              >
+                {lvl === 'ALL' ? 'All logs' : lvl.charAt(0) + lvl.slice(1).toLowerCase()}
+              </button>
+            ))}
+            <input
+              placeholder="Search log message"
+              value={logQuery}
+              onChange={(e) => setLogQuery(e.target.value)}
+            />
+          </div>
+          {logs.map((l) => {
+            const details = l.details && typeof l.details === 'object' ? l.details : {}
+            const extra = Object.keys(details).filter((k) => k !== 'source')
+            return (
+              <div key={l.id} className="log-line">
+                <span className={`badge ${l.level}`}>{l.level}</span>{' '}
+                <span className="muted">{l.source || 'agent'}</span>{' '}
+                <span className="muted">{ago(l.created_at)}</span>
+                <div className="msg">{l.message}</div>
+                {extra.length > 0 && <pre className="muted">{JSON.stringify(details, null, 2)}</pre>}
+              </div>
+            )
+          })}
+          {logs.length === 0 && <p className="muted">No agent logs for this filter yet. After the agent heartbeats they appear here.</p>}
         </div>
       )}
     </>

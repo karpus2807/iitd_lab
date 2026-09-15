@@ -221,3 +221,60 @@ async def test_lan_switch_updates_ip_same_machine(client: AsyncClient, auth_head
 async def test_invalid_agent_rejected(client: AsyncClient):
     r = await client.post("/api/agents/heartbeat", headers={"Authorization": "Bearer no:secret"}, json={"hostname": "x"})
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_agent_logs_levels_and_inventory_notes(client: AsyncClient, auth_headers):
+    tok = await client.post("/api/admin/tokens", headers=auth_headers, json={"label": "logs", "expires_hours": 24})
+    reg = await client.post(
+        "/api/agents/register",
+        json={
+            "registration_token": tok.json()["token"],
+            "agent_uuid": "agent-logs-001",
+            "agent_version": "1.1.16",
+            "identity": {"hostname": "LOG-PC", "os_name": "Linux", "architecture": "x86_64", "system_uuid": "sys-logs-001"},
+        },
+    )
+    assert reg.status_code == 200, reg.text
+    headers = {"Authorization": f"Bearer {reg.json()['agent_id']}:{reg.json()['agent_secret']}"}
+    machine_id = reg.json()["machine_id"]
+
+    posted = await client.post(
+        "/api/agents/logs",
+        headers=headers,
+        json=[
+            {"level": "error", "message": "disk smart failed", "details": {"source": "agent"}},
+            {"level": "WARN", "message": "dmidecode missing", "details": {"source": "agent"}},
+            {"level": "info", "message": "agent started", "details": {"source": "agent"}},
+            {"level": "debug", "message": "heartbeat ok", "details": {"source": "agent"}},
+            {"level": "critical", "message": "agent crashed", "details": {"source": "agent"}},
+        ],
+    )
+    assert posted.status_code == 200, posted.text
+
+    inv = await client.post(
+        "/api/agents/inventory",
+        headers=headers,
+        json={
+            "identity": {"hostname": "LOG-PC", "os_name": "Linux", "architecture": "x86_64"},
+            "collection_notes": ["dmidecode not installed; RAM slot topology not exposed."],
+        },
+    )
+    assert inv.status_code == 200, inv.text
+
+    listed = await client.get(f"/api/machines/{machine_id}/logs?limit=500", headers=auth_headers)
+    assert listed.status_code == 200
+    messages = [row["message"] for row in listed.json()]
+    assert "disk smart failed" in messages
+    assert "agent started" in messages
+    assert any("dmidecode not installed" in m for m in messages)
+    levels = {row["level"] for row in listed.json()}
+    assert {"ERROR", "WARNING", "INFO", "DEBUG", "CRITICAL"} <= levels
+
+    errors = await client.get(f"/api/machines/{machine_id}/logs?level=ERROR", headers=auth_headers)
+    assert {row["level"] for row in errors.json()} == {"ERROR"}
+    found = await client.get(f"/api/machines/{machine_id}/logs?q=started", headers=auth_headers)
+    assert any("started" in row["message"] for row in found.json())
+
+    machine = await client.get(f"/api/machines/{machine_id}", headers=auth_headers)
+    assert machine.json()["last_seen_at"]

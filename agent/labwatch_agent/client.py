@@ -11,6 +11,10 @@ from labwatch_agent.config import AgentConfig
 logger = logging.getLogger("labwatch.agent")
 
 
+class AgentAuthError(Exception):
+    """Agent credentials were rejected; the service should re-register."""
+
+
 class AgentClient:
     def __init__(self, cfg: AgentConfig, agent_id: str = "", secret: str = ""):
         self.cfg = cfg
@@ -19,7 +23,12 @@ class AgentClient:
         verify: bool | str = cfg.tls_verify
         if cfg.tls_ca_file:
             verify = cfg.tls_ca_file
-        self._client = httpx.Client(base_url=cfg.server_url.rstrip("/"), timeout=20.0, verify=verify)
+        self._client = httpx.Client(
+            base_url=cfg.server_url.rstrip("/"),
+            timeout=20.0,
+            verify=verify,
+            trust_env=False,
+        )
         self._backoff = 1.0
 
     def close(self) -> None:
@@ -37,6 +46,16 @@ class AgentClient:
             response = self._client.request(method, path, headers=headers, **kwargs)
             if response.status_code < 500:
                 self._backoff = 1.0
+            if response.status_code == 401:
+                raise AgentAuthError(f"{method} {path} -> 401 {response.text[:400]}")
+            if response.status_code >= 400:
+                logger.warning(
+                    "Server %s %s -> %s %s",
+                    method,
+                    path,
+                    response.status_code,
+                    (response.text or "")[:500],
+                )
             return response
         except httpx.HTTPError as exc:
             logger.warning("Server request failed: %s", exc)

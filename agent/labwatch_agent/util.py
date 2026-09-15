@@ -13,6 +13,18 @@ def which(cmd: str) -> str | None:
     return shutil.which(cmd)
 
 
+def probe_host_tools() -> dict[str, bool]:
+    return {
+        "dmidecode": bool(which("dmidecode")),
+        "lspci": bool(which("lspci")),
+        "lsblk": bool(which("lsblk")),
+        "smartctl": bool(which("smartctl")),
+        "nvidia-smi": bool(which("nvidia-smi")),
+        "ip": bool(which("ip")),
+        "lscpu": bool(which("lscpu")),
+    }
+
+
 def run_cmd(args: list[str], timeout: int = 12) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(

@@ -102,6 +102,11 @@ code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
 .badge.AGENT_UNHEALTHY, .badge.WARNING { color: var(--warn); }
 .badge.CRITICAL { color: var(--crit); }
 .badge.INFO { color: var(--info); }
+.badge.DEBUG { color: var(--muted); }
+.badge.ERROR, .badge.CRITICAL { color: var(--crit); }
+.log-line { padding: 10px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.log-line .msg { margin-top: 4px; }
+.log-line pre { margin: 6px 0 0; white-space: pre-wrap; font-size: 12px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }

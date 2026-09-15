@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 Confidence = Literal["DETECTED", "REPORTED", "UNKNOWN"]
@@ -246,6 +246,11 @@ class HeartbeatPayload(BaseModel):
     uptime_seconds: float | None = None
     collector_errors: list[str] = Field(default_factory=list)
 
+    @field_validator("hostname", mode="before")
+    @classmethod
+    def _hostname(cls, value):
+        return value or ""
+
 
 class AgentEventPayload(BaseModel):
     event_type: str
@@ -257,11 +262,33 @@ class AgentEventPayload(BaseModel):
     created_at: datetime | None = None
 
 
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+LOG_ALIASES = {"WARN": "WARNING", "ERR": "ERROR", "FATAL": "CRITICAL", "TRACE": "DEBUG"}
+
+
+def note_log_level(note: str) -> str:
+    low = str(note).lower()
+    if any(token in low for token in ("fail", "denied", "missing", "not installed", "unavailable", "error", "critical")):
+        return "WARNING"
+    return "INFO"
+
+
+def normalize_log_level(value: str | None) -> str:
+    raw = str(value or "INFO").upper().strip()
+    raw = LOG_ALIASES.get(raw, raw)
+    return raw if raw in LOG_LEVELS else "INFO"
+
+
 class AgentLogPayload(BaseModel):
     level: str = "INFO"
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _level(cls, value):
+        return normalize_log_level(value)
 
 
 class DiffEvent(BaseModel):

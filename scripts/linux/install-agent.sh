@@ -21,8 +21,36 @@ if [[ $EUID -ne 0 ]]; then
   echo "Run as root: curl -fsSL ${SERVER_URL}/install-agent.sh | sudo bash"
   exit 1
 fi
+
+_ensure_host_tools() {
+  if ! command -v apt-get >/dev/null; then
+    echo "apt-get not found. Install python3 python3-venv curl dmidecode pciutils util-linux smartmontools iproute2 by hand if fields are empty."
+    return 0
+  fi
+  local pkgs=()
+  command -v python3 >/dev/null || pkgs+=(python3 python3-venv python3-pip)
+  command -v curl >/dev/null || pkgs+=(curl)
+  command -v dmidecode >/dev/null || pkgs+=(dmidecode)
+  command -v lspci >/dev/null || pkgs+=(pciutils)
+  command -v lsblk >/dev/null || pkgs+=(util-linux)
+  command -v lscpu >/dev/null || pkgs+=(util-linux)
+  command -v ip >/dev/null || pkgs+=(iproute2)
+  command -v smartctl >/dev/null || pkgs+=(smartmontools)
+  if ((${#pkgs[@]} == 0)); then
+    echo "Host collector tools already present."
+    return 0
+  fi
+  echo "Installing missing collector tools: ${pkgs[*]}"
+  if ! DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
+    echo "apt-get update failed. Install manually: ${pkgs[*]}"
+    return 0
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || echo "Some packages failed to install: ${pkgs[*]}"
+}
+
+_ensure_host_tools
 if ! command -v python3 >/dev/null; then
-  echo "python3 is required. On Ubuntu: sudo apt-get install -y python3 python3-venv python3-pip curl"
+  echo "python3 is required. On Ubuntu: sudo apt-get install -y python3 python3-venv python3-pip curl dmidecode pciutils"
   exit 1
 fi
 if ! command -v curl >/dev/null; then
@@ -293,6 +321,12 @@ cat > /usr/local/bin/labwatch-agent <<EOF
 export LABWATCH_CONFIG="${CONFIG_DIR}/config.toml"
 export LABWATCH_STATE_DIR="${STATE_DIR}"
 export PYTHONPATH="${PREFIX}"
+export HTTP_PROXY=""
+export HTTPS_PROXY=""
+export ALL_PROXY=""
+export http_proxy=""
+export https_proxy=""
+export all_proxy=""
 export NO_PROXY="${SERVER_HOST},localhost,127.0.0.1"
 export no_proxy="${SERVER_HOST},localhost,127.0.0.1"
 exec ${PREFIX}/venv/bin/python ${PREFIX}/run.py "\$@"
@@ -310,6 +344,12 @@ Type=simple
 Environment=LABWATCH_CONFIG=${CONFIG_DIR}/config.toml
 Environment=LABWATCH_STATE_DIR=${STATE_DIR}
 Environment=PYTHONPATH=${PREFIX}
+Environment=HTTP_PROXY=
+Environment=HTTPS_PROXY=
+Environment=ALL_PROXY=
+Environment=http_proxy=
+Environment=https_proxy=
+Environment=all_proxy=
 Environment=NO_PROXY=${SERVER_HOST},localhost,127.0.0.1
 Environment=no_proxy=${SERVER_HOST},localhost,127.0.0.1
 ExecStart=${PREFIX}/venv/bin/python ${PREFIX}/run.py run
@@ -332,5 +372,10 @@ if ! systemctl is-active --quiet labwatch-agent; then
   exit 1
 fi
 echo "Installed ${INVENTORY_ID} (${LAB_NAME:-lab}) → ${SERVER_URL}"
+echo -n "Collector tools:"
+for t in dmidecode lspci lsblk smartctl nvidia-smi; do
+  if command -v "$t" >/dev/null; then echo -n " $t"; else echo -n " NO-$t"; fi
+done
+echo
 echo "Update later with the same curl command; Enter keeps this machine ID and lab."
 echo "Commands: labwatch-agent status|once ; systemctl status labwatch-agent"

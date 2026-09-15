@@ -25,6 +25,7 @@ from app.schemas.inventory import (
     IdentityInfo,
     InventoryPayload,
     MetricsPayload,
+    note_log_level,
 )
 from app.security import hash_token, identity_fingerprint, new_secret, token_matches, verify_password
 from app.services.heartbeat import apply_heartbeat, apply_reported_addresses
@@ -285,14 +286,15 @@ async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
         apply_reported_addresses(machine, body.ip_addresses, db)
     await apply_heartbeat(db, machine, agent, healthy=body.status == "healthy")
     if body.collector_errors:
-        db.add(
-            AgentLog(
-                machine_id=machine.id,
-                level="WARNING",
-                message="Collector errors reported",
-                details={"errors": body.collector_errors},
+        for err in body.collector_errors:
+            db.add(
+                AgentLog(
+                    machine_id=machine.id,
+                    level="ERROR",
+                    message=str(err),
+                    details={"source": "collector"},
+                )
             )
-        )
     await db.commit()
     return {"ok": True, "server_time": utcnow().isoformat(), "status": machine.status}
 
@@ -304,6 +306,19 @@ async def inventory(body: InventoryPayload, db: DbDep, agent: CurrentAgent):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Machine not found")
     events = await persist_inventory(db, machine, body)
     agent.last_inventory_at = utcnow()
+    await apply_heartbeat(db, machine, agent, healthy=True)
+    for note in body.collection_notes:
+        text = str(note).strip()
+        if not text:
+            continue
+        db.add(
+            AgentLog(
+                machine_id=machine.id,
+                level=note_log_level(text),
+                message=text,
+                details={"source": "inventory"},
+            )
+        )
     await db.commit()
     return {"ok": True, "events": len(events)}
 
@@ -352,6 +367,7 @@ async def metrics(body: MetricsPayload, db: DbDep, agent: CurrentAgent):
             )
         )
     agent.last_metrics_at = utcnow()
+    await apply_heartbeat(db, machine, agent, healthy=True)
     disk_pct = None
     if body.disk_total_bytes and body.disk_used_bytes is not None and body.disk_total_bytes > 0:
         disk_pct = 100.0 * body.disk_used_bytes / body.disk_total_bytes

@@ -69,7 +69,10 @@ export function bytes(n?: number | null) {
 
 export function ago(iso?: string | null) {
   if (!iso) return 'never'
-  const then = new Date(iso).getTime()
+  const raw = String(iso)
+  const normalized = /Z|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`
+  const then = new Date(normalized).getTime()
+  if (!Number.isFinite(then)) return 'never'
   const s = Math.max(0, (Date.now() - then) / 1000)
   if (s < 60) return `${Math.floor(s)}s ago`
   if (s < 3600) return `${Math.floor(s / 60)}m ago`

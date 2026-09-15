@@ -124,6 +124,14 @@ def collect_cpu_linux() -> tuple[dict[str, Any], list[str]]:
     physical_ids = {line.split(":", 1)[1].strip() for line in cpuinfo.splitlines() if line.startswith("physical id")}
     if physical_ids:
         info["physical_sockets"] = len(physical_ids)
+    if not info.get("model"):
+        model = _lscpu_field("Model name") or _lscpu_field("BIOS Model name")
+        if model:
+            info["model"] = model
+    if not info.get("manufacturer"):
+        vendor = _lscpu_field("Vendor ID") or _lscpu_field("BIOS Vendor")
+        if vendor:
+            info["manufacturer"] = vendor
     info["temperature_c"] = _cpu_temp_linux()
     if info["temperature_c"] is None:
         notes.append("CPU temperature not exposed")
@@ -159,6 +167,51 @@ def _cpu_temp_linux() -> float | None:
             temps.append(value)
     return max(temps) if temps else None
 
+
+def _lscpu_field(label: str) -> str | None:
+    if not which("lscpu"):
+        return None
+    code, out, err = run_cmd(["lscpu"])
+    if code != 0 or not out:
+        return None
+    prefix = label.lower() + ":"
+    for line in out.splitlines():
+        if line.lower().startswith(prefix):
+            value = line.split(":", 1)[1].strip()
+            return value or None
+    return None
+
+
+def collect_dmi_sysfs() -> dict[str, Any]:
+    """Fill identity/motherboard/BIOS when dmidecode is missing. Root can read most of these."""
+    base = "/sys/class/dmi/id"
+    if not os.path.isdir(base):
+        base = "/sys/devices/virtual/dmi/id"
+    skip = {"", "unknown", "none", "not specified", "not provided", "to be filled by o.e.m.", "0"}
+
+    def g(name: str) -> str | None:
+        val = read_text(f"{base}/{name}")
+        if not val:
+            return None
+        cleaned = val.strip()
+        if cleaned.lower() in skip:
+            return None
+        return cleaned
+
+    return {
+        "system_manufacturer": g("sys_vendor"),
+        "system_model": g("product_name"),
+        "system_serial": g("product_serial"),
+        "system_uuid": g("product_uuid"),
+        "board_manufacturer": g("board_vendor"),
+        "board_model": g("board_name"),
+        "board_serial": g("board_serial"),
+        "board_version": g("board_version"),
+        "bios_vendor": g("bios_vendor"),
+        "bios_version": g("bios_version"),
+        "bios_date": g("bios_date"),
+        "chassis_type": g("chassis_type"),
+    }
 
 def collect_memory_usage() -> dict[str, Any]:
     vm = psutil.virtual_memory()
@@ -223,6 +276,14 @@ def collect_system_linux() -> dict[str, Any]:
         else:
             notes.append("dmidecode system/BIOS query failed or permission denied.")
     parsed = parse_system_from_dmidecode(text) if text else {}
+    sysfs = collect_dmi_sysfs()
+    for key, value in sysfs.items():
+        if value and not parsed.get(key):
+            parsed[key] = value
+    if not text and not any(sysfs.values()):
+        notes.append("No DMI data (install dmidecode; /sys/class/dmi/id was empty).")
+    elif not text:
+        notes.append("dmidecode missing; using /sys/class/dmi/id for system identity.")
     data["motherboard"] = {
         "manufacturer": parsed.get("board_manufacturer"),
         "model": parsed.get("board_model"),

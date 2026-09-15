@@ -504,24 +504,35 @@ async def machine_events(machine_id: UUID, db: DbDep, user: CurrentUser, limit: 
 
 
 @router.get("/{machine_id}/logs")
-async def machine_logs(machine_id: UUID, db: DbDep, user: CurrentUser, limit: int = 200):
+async def machine_logs(
+    machine_id: UUID,
+    db: DbDep,
+    user: CurrentUser,
+    limit: int = 500,
+    level: str | None = None,
+    q: str | None = None,
+):
     if not await db.get(Machine, machine_id):
         raise HTTPException(404, "Machine not found")
+    stmt = select(AgentLog).where(AgentLog.machine_id == machine_id)
+    if level and level.strip().upper() not in {"ALL", "*", ""}:
+        from app.schemas.inventory import normalize_log_level
+
+        wanted = {normalize_log_level(part) for part in level.split(",") if part.strip()}
+        stmt = stmt.where(AgentLog.level.in_(wanted))
+    if q:
+        stmt = stmt.where(AgentLog.message.ilike(f"%{q.strip()}%"))
     rows = (
-        await db.execute(
-            select(AgentLog)
-            .where(AgentLog.machine_id == machine_id)
-            .order_by(AgentLog.created_at.desc())
-            .limit(limit)
-        )
+        await db.execute(stmt.order_by(AgentLog.created_at.desc()).limit(min(max(limit, 1), 2000)))
     ).scalars().all()
     return [
         {
             "id": str(r.id),
             "level": r.level,
             "message": r.message,
-            "details": r.details,
+            "details": r.details or {},
             "created_at": r.created_at,
+            "source": (r.details or {}).get("source") or "agent",
         }
         for r in rows
     ]
