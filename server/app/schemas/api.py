@@ -18,6 +18,11 @@ class TokenResponse(BaseModel):
     user_id: UUID
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -31,6 +36,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    username: str | None = Field(default=None, min_length=2, max_length=80)
     email: EmailStr | None = None
     full_name: str | None = None
     role: str | None = None

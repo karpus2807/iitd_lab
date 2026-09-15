@@ -48,6 +48,7 @@ export default function Layout() {
           {user?.role === 'ADMIN' && (
             <NavLink to="/admin/updates">Updates</NavLink>
           )}
+          <NavLink to="/account">Password</NavLink>
         </nav>
         <div className="sidebar-foot">
           <div>{user?.username} · {user?.role}</div>

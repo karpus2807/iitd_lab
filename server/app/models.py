@@ -30,7 +30,7 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
 
-    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(back_populates="user")
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class RefreshToken(Base):

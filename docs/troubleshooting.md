@@ -18,7 +18,7 @@ sudo docker inspect iitd_lab-api-1 --format 'restarts={{.RestartCount}} exit={{.
 sudo docker compose logs api --tail 200
 ```
 
-Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.5`:
+Rebuild is not required for this Python fix if the API image already exists. After `git checkout v1.1.6`:
 
 ```bash
 sudo docker compose up -d --force-recreate --no-deps api
@@ -35,10 +35,11 @@ The API lists the last 3 releases from GitHub. Apply needs the git checkout path
 sudo ./scripts/linux/install-host-updater.sh
 ```
 
-Compose also bind-mounts `${PWD}` and `/var/run/docker.sock` into `api`. `.env` is not overwritten by `git checkout`.
+Compose bind-mounts the git checkout at `/opt/labwatch` and Docker socket into `api`. `.env` is not overwritten by `git checkout`.
 
 If the Nginx dashboard is an older image (no **Infra** / **Updates** in the sidebar), use the API-hosted pages after login:
 
+- `http://<server>/api/ui/admin` — create, edit, set password, and delete users
 - `http://<server>/api/ui/infra` — create, rename, and delete labs; assign machines
 - `http://<server>/api/ui/updates` — list GitHub tags and apply a release
 

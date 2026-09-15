@@ -2,16 +2,22 @@ from datetime import timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.deps import AdminUser, DbDep, write_audit
 from app.config import get_settings
 from app.enums import AgentStatus
-from app.models import Agent, Lab, Machine, NotificationChannelConfig, RegistrationToken, User, utcnow
+from app.models import Agent, Lab, Machine, NotificationChannelConfig, RefreshToken, RegistrationToken, User, utcnow
 from app.schemas.api import RegistrationTokenCreate, UserCreate, UserOut, UserUpdate
 from app.security import hash_password, hash_token, new_secret
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+async def _active_admin_count(db) -> int:
+    return (
+        await db.execute(select(func.count()).select_from(User).where(User.role == "ADMIN", User.is_active.is_(True)))
+    ).scalar_one()
 
 
 @router.get("/users", response_model=list[UserOut])
@@ -45,12 +51,52 @@ async def update_user(user_id: UUID, body: UserUpdate, db: DbDep, admin: AdminUs
     data = body.model_dump(exclude_unset=True)
     if "password" in data and data["password"]:
         user.password_hash = hash_password(data.pop("password"))
+    if "username" in data and data["username"]:
+        name = data["username"].strip()
+        clash = (
+            await db.execute(select(User).where(User.username == name, User.id != user.id))
+        ).scalar_one_or_none()
+        if clash:
+            raise HTTPException(409, "Username taken")
+        user.username = name
+        data.pop("username")
+    if "email" in data and data["email"]:
+        clash = (
+            await db.execute(select(User).where(User.email == data["email"], User.id != user.id))
+        ).scalar_one_or_none()
+        if clash:
+            raise HTTPException(409, "Email taken")
+    if "role" in data and data["role"] and data["role"] != "ADMIN" and user.role == "ADMIN":
+        if await _active_admin_count(db) <= 1:
+            raise HTTPException(400, "Cannot demote the last administrator")
+    if "is_active" in data and data["is_active"] is False and user.role == "ADMIN":
+        if await _active_admin_count(db) <= 1:
+            raise HTTPException(400, "Cannot disable the last administrator")
     for k, v in data.items():
         setattr(user, k, v)
     await write_audit(db, "user.update", user=admin, details={"target": user.username}, request=request)
     await db.commit()
     await db.refresh(user)
     return user
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: UUID, db: DbDep, admin: AdminUser, request: Request):
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.id == admin.id:
+        raise HTTPException(400, "You cannot delete your own account")
+    if user.role == "ADMIN" and await _active_admin_count(db) <= 1:
+        raise HTTPException(400, "Cannot delete the last administrator")
+    name = user.username
+    tokens = (await db.execute(select(RefreshToken).where(RefreshToken.user_id == user.id))).scalars().all()
+    for row in tokens:
+        await db.delete(row)
+    await db.delete(user)
+    await write_audit(db, "user.delete", user=admin, details={"username": name}, request=request)
+    await db.commit()
+    return {"ok": True}
 
 
 @router.post("/tokens")

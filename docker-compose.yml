@@ -32,17 +32,16 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://labwatch:labwatch@db:5432/labwatch
-      LABWATCH_REPO_DIR: ${PWD}
+      LABWATCH_REPO_DIR: /opt/labwatch
       LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
       PYTHONUNBUFFERED: "1"
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}
     volumes:
-      - ${PWD}/server/app:/app/app
-      - ${PWD}/VERSION:/app/VERSION:ro
-      - ${PWD}:${PWD}
-      - ${PWD}:/opt/labwatch
+      - ./server/app:/app/app
+      - ./VERSION:/app/VERSION:ro
+      - .:/opt/labwatch
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       db:
@@ -66,15 +65,15 @@ services:
     command: ["python3", "-u", "-m", "app.services.updates"]
     environment:
       PYTHONPATH: /app
-      LABWATCH_REPO_DIR: ${PWD}
+      LABWATCH_REPO_DIR: /opt/labwatch
       LABWATCH_GITHUB_REPO: ${LABWATCH_GITHUB_REPO:-karpus2807/iitd_lab}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,db,web,api}
     volumes:
-      - ${PWD}/server/app:/app/app
-      - ${PWD}/VERSION:/app/VERSION:ro
-      - ${PWD}:${PWD}
+      - ./server/app:/app/app
+      - ./VERSION:/app/VERSION:ro
+      - .:/opt/labwatch
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 

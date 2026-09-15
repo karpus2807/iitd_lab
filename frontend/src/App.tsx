@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { currentUser } from './api'
 import Layout from './Layout'
+import Account from './pages/Account'
 import Admin from './pages/Admin'
 import Alerts from './pages/Alerts'
 import Dashboard from './pages/Dashboard'
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="alerts" element={<Alerts />} />
         <Route path="admin" element={<Admin />} />
         <Route path="admin/updates" element={<Updates />} />
+        <Route path="account" element={<Account />} />
       </Route>
     </Routes>
   )

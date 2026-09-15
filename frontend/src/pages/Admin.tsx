@@ -2,20 +2,26 @@ import type { FormEvent } from 'react'
 import { useEffect, useState } from 'react'
 import { ago, api } from '../api'
 import { currentUser } from '../api'
+import Infra from './Infra'
+import Updates from './Updates'
+
+type AdminTab = 'users' | 'labs' | 'updates' | 'tokens' | 'agents' | 'rules' | 'audit'
 
 export default function Admin() {
   const role = currentUser()?.role
   if (role !== 'ADMIN') return <p className="err">Administrator role required.</p>
-  const [tab, setTab] = useState<'users' | 'tokens' | 'agents' | 'rules' | 'audit'>('users')
+  const [tab, setTab] = useState<AdminTab>('users')
   return (
     <>
-      <div className="topbar"><div><h2>Admin</h2><p>Users, agent enrollment, thresholds, audit</p></div></div>
+      <div className="topbar"><div><h2>Admin</h2><p>Users, labs, server updates, enrollment, thresholds</p></div></div>
       <div className="tabs">
-        {(['users', 'tokens', 'agents', 'rules', 'audit'] as const).map((t) => (
+        {(['users', 'labs', 'updates', 'tokens', 'agents', 'rules', 'audit'] as const).map((t) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>
         ))}
       </div>
       {tab === 'users' && <Users />}
+      {tab === 'labs' && <Infra />}
+      {tab === 'updates' && <Updates />}
       {tab === 'tokens' && <Tokens />}
       {tab === 'agents' && <Agents />}
       {tab === 'rules' && <Rules />}
@@ -25,51 +31,116 @@ export default function Admin() {
 }
 
 function Users() {
+  const me = currentUser()
   const [rows, setRows] = useState<any[]>([])
+  const [drafts, setDrafts] = useState<Record<string, any>>({})
   const [form, setForm] = useState({ username: '', email: '', password: '', role: 'VIEWER', full_name: '' })
-  function load() { api('/api/admin/users').then(setRows) }
-  useEffect(load, [])
+  const [err, setErr] = useState('')
+  const [msg, setMsg] = useState('')
+
+  async function load() {
+    const list = await api<any[]>('/api/admin/users')
+    setRows(list)
+    const next: Record<string, any> = {}
+    list.forEach((u) => {
+      next[u.id] = { username: u.username, email: u.email, full_name: u.full_name || '', role: u.role, password: '' }
+    })
+    setDrafts(next)
+  }
+  useEffect(() => { load().catch((e) => setErr(e.message)) }, [])
+
   async function create(e: FormEvent) {
     e.preventDefault()
-    await api('/api/admin/users', { method: 'POST', body: JSON.stringify(form) })
-    load()
+    setErr('')
+    try {
+      await api('/api/admin/users', { method: 'POST', body: JSON.stringify(form) })
+      setForm({ username: '', email: '', password: '', role: 'VIEWER', full_name: '' })
+      setMsg('User created')
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    }
   }
+
+  async function save(id: string) {
+    const d = drafts[id] || {}
+    setErr('')
+    const body: any = { username: d.username, email: d.email, full_name: d.full_name, role: d.role }
+    if (d.password) body.password = d.password
+    try {
+      await api(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      setMsg(d.password ? 'User saved (password updated)' : 'User saved')
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    }
+  }
+
   async function toggle(u: any) {
-    await api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: !u.is_active }) })
-    load()
+    setErr('')
+    try {
+      await api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: !u.is_active }) })
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    }
   }
-  async function role(u: any, next: string) {
-    await api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: JSON.stringify({ role: next }) })
-    load()
+
+  async function remove(u: any) {
+    if (!confirm(`Delete user ${u.username}? This cannot be undone.`)) return
+    setErr('')
+    try {
+      await api(`/api/admin/users/${u.id}`, { method: 'DELETE' })
+      setMsg(`Deleted ${u.username}`)
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    }
   }
+
   return (
     <>
+      {err && <p className="err">{err}</p>}
+      {msg && <p className="muted">{msg}</p>}
       <form className="card toolbar" onSubmit={create}>
         <input placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
         <input placeholder="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
+        <input placeholder="full name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
         <input placeholder="password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={8} />
         <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
           <option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option>
         </select>
         <button className="btn">Create user</button>
       </form>
-      <div className="card" style={{ padding: 0 }}>
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
         <table>
-          <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Active</th><th></th></tr></thead>
+          <thead>
+            <tr><th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>New password</th><th>Active</th><th></th></tr>
+          </thead>
           <tbody>
-            {rows.map((u) => (
-              <tr key={u.id}>
-                <td>{u.username}</td>
-                <td>{u.email}</td>
-                <td>
-                  <select value={u.role} onChange={(e) => role(u, e.target.value)}>
-                    <option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option>
-                  </select>
-                </td>
-                <td>{u.is_active ? 'yes' : 'no'}</td>
-                <td><button className="btn secondary" onClick={() => toggle(u)}>{u.is_active ? 'Disable' : 'Enable'}</button></td>
-              </tr>
-            ))}
+            {rows.map((u) => {
+              const d = drafts[u.id] || {}
+              const mine = me?.user_id === u.id
+              return (
+                <tr key={u.id}>
+                  <td><input value={d.username ?? u.username} onChange={(e) => setDrafts({ ...drafts, [u.id]: { ...d, username: e.target.value } })} /></td>
+                  <td><input value={d.email ?? u.email} onChange={(e) => setDrafts({ ...drafts, [u.id]: { ...d, email: e.target.value } })} /></td>
+                  <td><input value={d.full_name ?? ''} onChange={(e) => setDrafts({ ...drafts, [u.id]: { ...d, full_name: e.target.value } })} /></td>
+                  <td>
+                    <select value={d.role ?? u.role} onChange={(e) => setDrafts({ ...drafts, [u.id]: { ...d, role: e.target.value } })}>
+                      <option>ADMIN</option><option>OPERATOR</option><option>VIEWER</option>
+                    </select>
+                  </td>
+                  <td><input type="password" placeholder="leave blank" value={d.password ?? ''} onChange={(e) => setDrafts({ ...drafts, [u.id]: { ...d, password: e.target.value } })} minLength={8} /></td>
+                  <td>{u.is_active ? 'yes' : 'no'}</td>
+                  <td className="row-actions">
+                    <button className="btn secondary" type="button" onClick={() => save(u.id)}>Save</button>
+                    <button className="btn secondary" type="button" onClick={() => toggle(u)}>{u.is_active ? 'Disable' : 'Enable'}</button>
+                    <button className="btn danger" type="button" disabled={mine} onClick={() => remove(u)}>Delete</button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

@@ -5,8 +5,8 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbDep, issue_refresh_token, write_audit
 from app.models import RefreshToken, User, utcnow
-from app.schemas.api import LoginRequest, RefreshRequest, TokenResponse, UserOut
-from app.security import create_access_token, hash_token, token_matches, verify_password
+from app.schemas.api import LoginRequest, PasswordChange, RefreshRequest, TokenResponse, UserOut
+from app.security import create_access_token, hash_password, hash_token, token_matches, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -68,3 +68,16 @@ async def logout(body: RefreshRequest, db: DbDep, user: CurrentUser, request: Re
 @router.get("/me", response_model=UserOut)
 async def me(user: CurrentUser):
     return user
+
+
+@router.post("/password")
+async def change_own_password(body: PasswordChange, db: DbDep, user: CurrentUser, request: Request):
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is wrong")
+    user.password_hash = hash_password(body.new_password)
+    tokens = (await db.execute(select(RefreshToken).where(RefreshToken.user_id == user.id))).scalars().all()
+    for row in tokens:
+        row.revoked = True
+    await write_audit(db, "auth.password_change", user=user, request=request)
+    await db.commit()
+    return {"ok": True}
