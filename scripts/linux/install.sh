@@ -17,6 +17,9 @@ if [[ -z "$SERVER_URL" ]]; then
   echo "Usage: $0 <SERVER_URL> <REGISTRATION_TOKEN>"
   exit 1
 fi
+SERVER_HOST="${SERVER_URL#*://}"
+SERVER_HOST="${SERVER_HOST%%/*}"
+SERVER_HOST="${SERVER_HOST%%:*}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AGENT_SRC="${REPO_ROOT}/agent"
@@ -74,6 +77,8 @@ cat > /usr/local/bin/labwatch-agent <<EOF
 #!/usr/bin/env bash
 export LABWATCH_CONFIG="${CONFIG_DIR}/config.toml"
 export LABWATCH_STATE_DIR="${STATE_DIR}"
+export NO_PROXY="${SERVER_HOST},localhost,127.0.0.1"
+export no_proxy="${SERVER_HOST},localhost,127.0.0.1"
 exec ${PREFIX}/venv/bin/python ${PREFIX}/run.py "\$@"
 EOF
 chmod +x /usr/local/bin/labwatch-agent
@@ -88,6 +93,8 @@ Wants=network-online.target
 Type=simple
 Environment=LABWATCH_CONFIG=${CONFIG_DIR}/config.toml
 Environment=LABWATCH_STATE_DIR=${STATE_DIR}
+Environment=NO_PROXY=${SERVER_HOST},localhost,127.0.0.1
+Environment=no_proxy=${SERVER_HOST},localhost,127.0.0.1
 ExecStart=${PREFIX}/venv/bin/python ${PREFIX}/run.py run
 Restart=always
 RestartSec=5
