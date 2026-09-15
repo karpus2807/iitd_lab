@@ -1,5 +1,7 @@
 from datetime import timedelta
 from uuid import UUID
+import logging
+import math
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -33,7 +35,27 @@ from app.services.inventory import persist_inventory
 from app.services.public_url import hostname_server_url, normalize_inventory_id
 from app.models import GpuMetricSample, MetricSample
 
+logger = logging.getLogger("labwatch.agents")
 router = APIRouter(prefix="/api/agents", tags=["agents"])
+
+
+def _clip(value: str | None, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if len(text) <= limit else text[:limit]
+
+
+def _finite(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
 
 
 class RegisterRequest(BaseModel):
@@ -304,22 +326,27 @@ async def inventory(body: InventoryPayload, db: DbDep, agent: CurrentAgent):
     machine = await db.get(Machine, agent.machine_id)
     if not machine:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Machine not found")
-    events = await persist_inventory(db, machine, body)
-    agent.last_inventory_at = utcnow()
-    await apply_heartbeat(db, machine, agent, healthy=True)
-    for note in body.collection_notes:
-        text = str(note).strip()
-        if not text:
-            continue
-        db.add(
-            AgentLog(
-                machine_id=machine.id,
-                level=note_log_level(text),
-                message=text,
-                details={"source": "inventory"},
+    try:
+        events = await persist_inventory(db, machine, body)
+        agent.last_inventory_at = utcnow()
+        await apply_heartbeat(db, machine, agent, healthy=True)
+        for note in body.collection_notes:
+            text = str(note).strip()
+            if not text:
+                continue
+            db.add(
+                AgentLog(
+                    machine_id=machine.id,
+                    level=note_log_level(text),
+                    message=text,
+                    details={"source": "inventory"},
+                )
             )
-        )
-    await db.commit()
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("inventory persist failed for machine %s", machine.id)
+        raise
     return {"ok": True, "events": len(events)}
 
 
@@ -330,60 +357,65 @@ async def metrics(body: MetricsPayload, db: DbDep, agent: CurrentAgent):
     machine = await db.get(Machine, agent.machine_id)
     if not machine:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Machine not found")
-    collected = body.collected_at or utcnow()
-    db.add(
-        MetricSample(
-            machine_id=machine.id,
-            collected_at=collected,
-            cpu_usage_pct=body.cpu_usage_pct,
-            cpu_temp_c=body.cpu_temp_c,
-            cpu_freq_mhz=body.cpu_freq_mhz,
-            ram_used_bytes=body.ram_used_bytes,
-            ram_total_bytes=body.ram_total_bytes,
-            ram_available_bytes=body.ram_available_bytes,
-            ram_usage_pct=body.ram_usage_pct,
-            disk_read_bps=body.disk_read_bps,
-            disk_write_bps=body.disk_write_bps,
-            disk_used_bytes=body.disk_used_bytes,
-            disk_total_bytes=body.disk_total_bytes,
-            net_tx_bps=body.net_tx_bps,
-            net_rx_bps=body.net_rx_bps,
-        )
-    )
-    for gpu in body.gpus:
+    try:
+        collected = body.collected_at or utcnow()
         db.add(
-            GpuMetricSample(
+            MetricSample(
                 machine_id=machine.id,
-                gpu_index=gpu.index,
-                gpu_key=gpu.gpu_key,
                 collected_at=collected,
-                utilization_pct=gpu.utilization_pct,
-                temperature_c=gpu.temperature_c,
-                vram_used_bytes=gpu.vram_used_bytes,
-                vram_total_bytes=gpu.vram_total_bytes,
-                power_w=gpu.power_w,
-                graphics_clock_mhz=gpu.graphics_clock_mhz,
-                memory_clock_mhz=gpu.memory_clock_mhz,
+                cpu_usage_pct=_finite(body.cpu_usage_pct),
+                cpu_temp_c=_finite(body.cpu_temp_c),
+                cpu_freq_mhz=_finite(body.cpu_freq_mhz),
+                ram_used_bytes=body.ram_used_bytes,
+                ram_total_bytes=body.ram_total_bytes,
+                ram_available_bytes=body.ram_available_bytes,
+                ram_usage_pct=_finite(body.ram_usage_pct),
+                disk_read_bps=_finite(body.disk_read_bps),
+                disk_write_bps=_finite(body.disk_write_bps),
+                disk_used_bytes=body.disk_used_bytes,
+                disk_total_bytes=body.disk_total_bytes,
+                net_tx_bps=_finite(body.net_tx_bps),
+                net_rx_bps=_finite(body.net_rx_bps),
             )
         )
-    agent.last_metrics_at = utcnow()
-    await apply_heartbeat(db, machine, agent, healthy=True)
-    disk_pct = None
-    if body.disk_total_bytes and body.disk_used_bytes is not None and body.disk_total_bytes > 0:
-        disk_pct = 100.0 * body.disk_used_bytes / body.disk_total_bytes
-    gpu_temp = max((g.temperature_c for g in body.gpus if g.temperature_c is not None), default=None)
-    await evaluate_metrics(
-        db,
-        machine,
-        {
-            "cpu_temp_c": body.cpu_temp_c,
-            "gpu_temp_c": gpu_temp,
-            "ram_usage_pct": body.ram_usage_pct,
-            "disk_usage_pct": disk_pct,
-            "cpu_usage_pct": body.cpu_usage_pct,
-        },
-    )
-    await db.commit()
+        for gpu in body.gpus:
+            db.add(
+                GpuMetricSample(
+                    machine_id=machine.id,
+                    gpu_index=gpu.index,
+                    gpu_key=_clip(gpu.gpu_key, 128) or "",
+                    collected_at=collected,
+                    utilization_pct=_finite(gpu.utilization_pct),
+                    temperature_c=_finite(gpu.temperature_c),
+                    vram_used_bytes=gpu.vram_used_bytes,
+                    vram_total_bytes=gpu.vram_total_bytes,
+                    power_w=_finite(gpu.power_w),
+                    graphics_clock_mhz=_finite(gpu.graphics_clock_mhz),
+                    memory_clock_mhz=_finite(gpu.memory_clock_mhz),
+                )
+            )
+        agent.last_metrics_at = utcnow()
+        await apply_heartbeat(db, machine, agent, healthy=True)
+        disk_pct = None
+        if body.disk_total_bytes and body.disk_used_bytes is not None and body.disk_total_bytes > 0:
+            disk_pct = 100.0 * body.disk_used_bytes / body.disk_total_bytes
+        gpu_temp = max((g.temperature_c for g in body.gpus if g.temperature_c is not None), default=None)
+        await evaluate_metrics(
+            db,
+            machine,
+            {
+                "cpu_temp_c": _finite(body.cpu_temp_c),
+                "gpu_temp_c": _finite(gpu_temp),
+                "ram_usage_pct": _finite(body.ram_usage_pct),
+                "disk_usage_pct": _finite(disk_pct),
+                "cpu_usage_pct": _finite(body.cpu_usage_pct),
+            },
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("metrics persist failed for machine %s", machine.id)
+        raise
     return {"ok": True}
 
 

@@ -96,6 +96,7 @@ async def init_models() -> None:
         await conn.run_sync(_ensure_machine_address_columns)
         await conn.run_sync(ensure_machine_inventory_column)
         await conn.run_sync(ensure_lab_columns)
+        await conn.run_sync(ensure_hardware_column_types)
 
 
 def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
@@ -169,3 +170,80 @@ def lab_column_names(sync_conn) -> list[str]:
     if "labs" not in insp.get_table_names():
         return []
     return [c["name"] for c in insp.get_columns("labs")]
+
+
+# Postgres INTEGER is 32-bit; lab RAM/VRAM/disks overflow it. SQLite already stores 64-bit.
+BYTE_COLUMNS = (
+    ("memory_summaries", "total_physical_bytes"),
+    ("memory_summaries", "max_supported_bytes"),
+    ("memory_summaries", "used_bytes"),
+    ("memory_summaries", "available_bytes"),
+    ("memory_slots", "capacity_bytes"),
+    ("gpu_devices", "vram_bytes"),
+    ("storage_devices", "capacity_bytes"),
+    ("filesystems", "total_bytes"),
+    ("filesystems", "used_bytes"),
+    ("network_interfaces", "rx_bytes"),
+    ("network_interfaces", "tx_bytes"),
+    ("metric_samples", "ram_used_bytes"),
+    ("metric_samples", "ram_total_bytes"),
+    ("metric_samples", "ram_available_bytes"),
+    ("metric_samples", "disk_used_bytes"),
+    ("metric_samples", "disk_total_bytes"),
+    ("gpu_metric_samples", "vram_used_bytes"),
+    ("gpu_metric_samples", "vram_total_bytes"),
+)
+
+# dmidecode Type Detail / PCIe type strings exceed the original VARCHAR(32).
+VARCHAR_WIDEN = (
+    ("memory_slots", "ecc", 120),
+    ("memory_slots", "rank", 64),
+    ("memory_slots", "memory_type", 120),
+    ("pcie_slots", "generation", 120),
+    ("pcie_slots", "width", 64),
+    ("gpu_devices", "pci_bus", 128),
+    ("gpu_devices", "driver_version", 128),
+    ("storage_devices", "media_type", 64),
+    ("machines", "os_version", 255),
+    ("machines", "kernel_version", 255),
+    ("machines", "virtualization", 120),
+    ("motherboards", "version", 120),
+)
+
+
+def _column_type_name(col) -> str:
+    return str(col.get("type") or "").upper()
+
+
+def _is_bigint_type(col) -> bool:
+    name = _column_type_name(col)
+    return "BIGINT" in name or "BIGINTEGER" in name
+
+
+def ensure_hardware_column_types(sync_conn) -> None:
+    """Widen existing Postgres columns created before byte/string size fixes."""
+    if sync_conn.dialect.name != "postgresql":
+        return
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    tables = set(insp.get_table_names())
+    for table, column in BYTE_COLUMNS:
+        if table not in tables:
+            continue
+        cols = {c["name"]: c for c in insp.get_columns(table)}
+        col = cols.get(column)
+        if col is None or _is_bigint_type(col):
+            continue
+        sync_conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE BIGINT"))
+    for table, column, length in VARCHAR_WIDEN:
+        if table not in tables:
+            continue
+        cols = {c["name"]: c for c in insp.get_columns(table)}
+        col = cols.get(column)
+        if col is None:
+            continue
+        current = getattr(col.get("type"), "length", None)
+        if current is not None and current >= length:
+            continue
+        sync_conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({length})"))

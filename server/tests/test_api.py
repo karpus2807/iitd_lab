@@ -231,7 +231,7 @@ async def test_agent_logs_levels_and_inventory_notes(client: AsyncClient, auth_h
         json={
             "registration_token": tok.json()["token"],
             "agent_uuid": "agent-logs-001",
-            "agent_version": "1.1.16",
+            "agent_version": "1.1.17",
             "identity": {"hostname": "LOG-PC", "os_name": "Linux", "architecture": "x86_64", "system_uuid": "sys-logs-001"},
         },
     )
@@ -278,3 +278,85 @@ async def test_agent_logs_levels_and_inventory_notes(client: AsyncClient, auth_h
 
     machine = await client.get(f"/api/machines/{machine_id}", headers=auth_headers)
     assert machine.json()["last_seen_at"]
+
+
+@pytest.mark.asyncio
+async def test_inventory_metrics_accept_gpu_lab_sizes(client: AsyncClient, auth_headers):
+    tok = await client.post("/api/admin/tokens", headers=auth_headers, json={"label": "gpu", "expires_hours": 24})
+    reg = await client.post(
+        "/api/agents/register",
+        json={
+            "registration_token": tok.json()["token"],
+            "agent_uuid": "agent-gpu-lab-001",
+            "agent_version": "1.1.17",
+            "identity": {
+                "hostname": "CLOUD-GPU-1",
+                "os_name": "Linux",
+                "architecture": "x86_64",
+                "system_uuid": "sys-gpu-lab-001",
+            },
+        },
+    )
+    assert reg.status_code == 200, reg.text
+    headers = {"Authorization": f"Bearer {reg.json()['agent_id']}:{reg.json()['agent_secret']}"}
+    inv = await client.post(
+        "/api/agents/inventory",
+        headers=headers,
+        json={
+            "identity": {"hostname": "CLOUD-GPU-1", "os_name": "Linux", "architecture": "x86_64"},
+            "memory": {
+                "total_physical_bytes": 128 * 1024**3,
+                "modules": [
+                    {
+                        "slot_locator": "DIMM_A1",
+                        "occupied": True,
+                        "capacity_bytes": 32 * 1024**3,
+                        "ecc": "Synchronous Registered (Buffered)",
+                        "rank": "2",
+                    }
+                ],
+            },
+            "gpus": [
+                {
+                    "index": 0,
+                    "vendor": "NVIDIA",
+                    "model": "NVIDIA A100-SXM4-80GB",
+                    "vram_bytes": 80 * 1024**3,
+                    "pci_bus": "00000000:01:00.0",
+                    "driver_version": "550.127.05",
+                }
+            ],
+            "pcie": {
+                "slots": [
+                    {
+                        "slot_designation": "Slot 1",
+                        "slot_type": "PCI Express 5 x16",
+                        "generation": "PCI Express 5 x16",
+                        "width": "16x or x16",
+                    }
+                ]
+            },
+            "storage": {"disks": [{"name": "nvme0n1", "capacity_bytes": 2 * 1024**4, "media_type": "NVMe"}]},
+        },
+    )
+    assert inv.status_code == 200, inv.text
+    metrics = await client.post(
+        "/api/agents/metrics",
+        headers=headers,
+        json={
+            "cpu_usage_pct": 11.0,
+            "ram_used_bytes": 40 * 1024**3,
+            "ram_total_bytes": 128 * 1024**3,
+            "disk_used_bytes": 400 * 1024**3,
+            "disk_total_bytes": 2 * 1024**4,
+            "gpus": [
+                {
+                    "index": 0,
+                    "utilization_pct": 80,
+                    "vram_used_bytes": 60 * 1024**3,
+                    "vram_total_bytes": 80 * 1024**3,
+                }
+            ],
+        },
+    )
+    assert metrics.status_code == 200, metrics.text

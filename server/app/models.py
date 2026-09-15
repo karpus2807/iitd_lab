@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, Uuid
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base, json_column, TZDateTime
@@ -76,15 +76,15 @@ class Machine(Base, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(255), default="")
     inventory_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     os_name: Mapped[str] = mapped_column(String(120), default="")
-    os_version: Mapped[str] = mapped_column(String(120), default="")
-    kernel_version: Mapped[str] = mapped_column(String(120), default="")
+    os_version: Mapped[str] = mapped_column(String(255), default="")
+    kernel_version: Mapped[str] = mapped_column(String(255), default="")
     architecture: Mapped[str] = mapped_column(String(64), default="")
     machine_uuid: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     system_uuid: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     motherboard_serial: Mapped[str | None] = mapped_column(String(128), nullable=True)
     system_serial: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_virtual: Mapped[bool] = mapped_column(Boolean, default=False)
-    virtualization: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    virtualization: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="NEVER_CONNECTED", index=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True, index=True)
     first_seen_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
@@ -179,13 +179,13 @@ class MemorySummary(Base, TimestampMixin):
     machine_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("machines.id", ondelete="CASCADE"), primary_key=True
     )
-    total_physical_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    max_supported_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    total_physical_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    max_supported_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     slot_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     occupied_slots: Mapped[int | None] = mapped_column(Integer, nullable=True)
     free_slots: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    used_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    available_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    available_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     usage_pct: Mapped[float | None] = mapped_column(nullable=True)
     topology_status: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
     unlocated_empty_slots: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -202,16 +202,16 @@ class MemorySlot(Base):
     slot_locator: Mapped[str] = mapped_column(String(120))
     bank_locator: Mapped[str | None] = mapped_column(String(120), nullable=True)
     occupied: Mapped[bool] = mapped_column(Boolean, default=False)
-    capacity_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     manufacturer: Mapped[str | None] = mapped_column(String(120), nullable=True)
     part_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    memory_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    memory_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     speed_mts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     configured_speed_mts: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    ecc: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ecc: Mapped[str | None] = mapped_column(String(120), nullable=True)
     form_factor: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    rank: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rank: Mapped[str | None] = mapped_column(String(64), nullable=True)
     locator_known: Mapped[bool] = mapped_column(Boolean, default=True)
     extra: Mapped[dict] = mapped_column(json_column(), default=dict)
 
@@ -226,12 +226,12 @@ class GpuDevice(Base, TimestampMixin):
     gpu_index: Mapped[int] = mapped_column(Integer, default=0)
     vendor: Mapped[str | None] = mapped_column(String(120), nullable=True)
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    vram_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    pci_bus: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vram_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pci_bus: Mapped[str | None] = mapped_column(String(128), nullable=True)
     pci_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     uuid: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    driver_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    driver_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     utilization_pct: Mapped[float | None] = mapped_column(nullable=True)
     temperature_c: Mapped[float | None] = mapped_column(nullable=True)
     power_w: Mapped[float | None] = mapped_column(nullable=True)
@@ -250,8 +250,8 @@ class PcieSlot(Base):
     )
     slot_designation: Mapped[str] = mapped_column(String(120))
     slot_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    width: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    generation: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    width: Mapped[str | None] = mapped_column(String(64), nullable=True)
     current_usage: Mapped[str | None] = mapped_column(String(120), nullable=True)
     occupied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_gpu_capable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -283,9 +283,9 @@ class StorageDevice(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(120), default="")
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
-    capacity_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    capacity_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     interface: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    media_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     smart_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     temperature_c: Mapped[float | None] = mapped_column(nullable=True)
     extra: Mapped[dict] = mapped_column(json_column(), default=dict)
@@ -301,8 +301,8 @@ class Filesystem(Base):
     mountpoint: Mapped[str] = mapped_column(String(255))
     fstype: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    total_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    used_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    total_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class NetworkInterface(Base):
@@ -318,8 +318,8 @@ class NetworkInterface(Base):
     ipv6: Mapped[list] = mapped_column(json_column(), default=list)
     is_up: Mapped[bool] = mapped_column(Boolean, default=False)
     speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    rx_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    tx_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    rx_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tx_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class Motherboard(Base, TimestampMixin):
@@ -331,7 +331,7 @@ class Motherboard(Base, TimestampMixin):
     manufacturer: Mapped[str | None] = mapped_column(String(120), nullable=True)
     model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
 class Bios(Base, TimestampMixin):
@@ -396,14 +396,14 @@ class MetricSample(Base):
     cpu_usage_pct: Mapped[float | None] = mapped_column(nullable=True)
     cpu_temp_c: Mapped[float | None] = mapped_column(nullable=True)
     cpu_freq_mhz: Mapped[float | None] = mapped_column(nullable=True)
-    ram_used_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    ram_total_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    ram_available_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    ram_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ram_total_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ram_available_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ram_usage_pct: Mapped[float | None] = mapped_column(nullable=True)
     disk_read_bps: Mapped[float | None] = mapped_column(nullable=True)
     disk_write_bps: Mapped[float | None] = mapped_column(nullable=True)
-    disk_used_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    disk_total_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    disk_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    disk_total_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     net_tx_bps: Mapped[float | None] = mapped_column(nullable=True)
     net_rx_bps: Mapped[float | None] = mapped_column(nullable=True)
 
@@ -421,8 +421,8 @@ class GpuMetricSample(Base):
     collected_at: Mapped[datetime] = mapped_column(TZDateTime(), default=utcnow, index=True)
     utilization_pct: Mapped[float | None] = mapped_column(nullable=True)
     temperature_c: Mapped[float | None] = mapped_column(nullable=True)
-    vram_used_bytes: Mapped[int | None] = mapped_column(nullable=True)
-    vram_total_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    vram_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    vram_total_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     power_w: Mapped[float | None] = mapped_column(nullable=True)
     graphics_clock_mhz: Mapped[float | None] = mapped_column(nullable=True)
     memory_clock_mhz: Mapped[float | None] = mapped_column(nullable=True)

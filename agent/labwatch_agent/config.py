@@ -80,15 +80,34 @@ def load_config(path: str | None = None) -> AgentConfig:
     return cfg
 
 
+def normalize_agent_state(state: dict | None) -> dict:
+    """Flatten `[agent]` TOML so callers can use state.get("agent_id")."""
+    if not state:
+        return {}
+    nested = state.get("agent")
+    flat = {k: v for k, v in state.items() if k != "agent"}
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            flat.setdefault(key, value)
+    return flat
+
+
 def read_state(cfg: AgentConfig) -> dict:
     if not cfg.state_file.exists():
         return {}
-    return tomllib.loads(cfg.state_file.read_text(encoding="utf-8"))
+    try:
+        raw = tomllib.loads(cfg.state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return normalize_agent_state(raw)
 
 
 def write_state(cfg: AgentConfig, state: dict) -> None:
+    state = normalize_agent_state(state)
     lines = ["# Managed by labwatch-agent. Do not share this file.", "[agent]"]
     for k, v in state.items():
+        if isinstance(v, (dict, list)):
+            continue
         if isinstance(v, bool):
             lines.append(f"{k} = {'true' if v else 'false'}")
         elif isinstance(v, (int, float)):
