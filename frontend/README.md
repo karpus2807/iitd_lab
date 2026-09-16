@@ -1,11 +1,9 @@
-# LabWatch dashboard
-
-React + TypeScript UI for the LabWatch API.
+# Dashboard
 
 ```bash
 npm install
-npm run dev     # proxies /api to http://127.0.0.1:8000
-npm run build
+npm run dev          # /api → http://127.0.0.1:8000
+npm run build:web-static
 ```
 
-Production builds are served by Nginx in `docker compose`.
+Production files go to `docker/web-static` and are served by Nginx.
