@@ -28,7 +28,7 @@ if __name__ == '__main__':
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
-if (-not $python) { throw "Python 3.10+ is required. Install from https://www.python.org/downloads/windows/ and re-run." }
+if (-not $python) { throw "Python 3.8+ is required. Install from https://www.python.org/downloads/windows/ and re-run." }
 
 & $python.Source -m venv "$InstallDir\venv"
 & "$InstallDir\venv\Scripts\python.exe" -m pip install -U pip

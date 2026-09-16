@@ -1,0 +1,8 @@
+# dmidecode from NVIDIA Jetson EDK II — array exists, no DIMM devices
+Handle 0x0020, DMI type 16, 23 bytes
+Physical Memory Array
+	Location: System Board Or Motherboard
+	Use: System Memory
+	Error Correction Type: None
+	Maximum Capacity: 60 GB
+	Number Of Devices: 1

@@ -354,3 +354,35 @@ def collect_storage_windows() -> dict[str, Any]:
             }
         )
     return {"disks": disks, "filesystems": filesystems, "notes": notes}
+
+
+def collect_metrics_windows(prev_net=None, prev_disk=None, prev_ts=None) -> tuple[dict[str, Any], dict]:
+    from labwatch_agent.collectors import linux as linux_col
+
+    payload, nxt = linux_col.collect_metrics(prev_net, prev_disk, prev_ts)
+    payload["cpu_temp_c"] = payload.get("cpu_temp_c")
+    nvsmi = which("nvidia-smi") or which(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe")
+    if payload.get("gpus") or not nvsmi:
+        return payload, nxt
+    query = "--query-gpu=index,uuid,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,clocks.gr,clocks.mem"
+    code, out, err = run_cmd([nvsmi, query, "--format=csv,noheader,nounits"])
+    if code != 0 or not out.strip():
+        return payload, nxt
+    gpus = []
+    for i, parsed in enumerate(parse_nvidia_smi_csv(linux_col._pad_metrics_csv(out))):
+        gpus.append(
+            {
+                "index": parsed.get("index", i),
+                "gpu_key": parsed.get("uuid") or str(i),
+                "utilization_pct": parsed.get("utilization_pct"),
+                "temperature_c": parsed.get("temperature_c"),
+                "vram_used_bytes": parsed.get("vram_used_bytes"),
+                "vram_total_bytes": parsed.get("vram_bytes"),
+                "power_w": parsed.get("power_w"),
+                "graphics_clock_mhz": parsed.get("graphics_clock_mhz"),
+                "memory_clock_mhz": parsed.get("memory_clock_mhz"),
+            }
+        )
+    if gpus:
+        payload["gpus"] = gpus
+    return payload, nxt

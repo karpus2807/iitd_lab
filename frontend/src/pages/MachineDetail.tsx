@@ -71,7 +71,10 @@ export default function MachineDetail() {
 
   useEffect(() => {
     if (!id || tab !== 'Metrics') return
-    api(`/api/machines/${id}/metrics?range=${range}`).then(setMetrics)
+    const load = () => api(`/api/machines/${id}/metrics?range=${range}`).then(setMetrics).catch(() => undefined)
+    load()
+    const timer = window.setInterval(load, 8000)
+    return () => window.clearInterval(timer)
   }, [id, tab, range])
 
   const mem = hw?.memory
@@ -138,7 +141,7 @@ export default function MachineDetail() {
             <div className="kv">
               <Kv label="CPU" value={cpu?.model} />
               <Kv label="RAM installed" value={bytes(mem?.total_physical_bytes)} />
-              <Kv label="RAM slots" value={mem?.slot_count ?? 'Unknown / Not reported'} />
+              <Kv label="RAM slots" value={mem?.slot_count ?? (mem?.total_physical_bytes ? 'Soldered / unified' : 'Unknown / Not reported')} />
               <Kv label="GPUs" value={machine.gpu_count} />
               <Kv label="Disks" value={hw?.storage?.disks?.length ?? '—'} />
             </div>
@@ -188,7 +191,7 @@ export default function MachineDetail() {
       {tab === 'Memory' && mem && (
         <div className="grid">
           <div className="grid stats">
-            <div className="card stat"><div className="label">Slots</div><div className="value">{mem.slot_count ?? '—'}</div></div>
+            <div className="card stat"><div className="label">Slots</div><div className="value">{mem.slot_count ?? (mem.total_physical_bytes ? 'SoC' : '—')}</div></div>
             <div className="card stat"><div className="label">Occupied</div><div className="value">{mem.occupied_slots ?? '—'}</div></div>
             <div className="card stat"><div className="label">Free</div><div className="value">{mem.free_slots ?? '—'}</div></div>
             <div className="card stat"><div className="label">Installed</div><div className="value" style={{ fontSize: 18 }}>{bytes(mem.total_physical_bytes)}</div></div>
@@ -212,7 +215,13 @@ export default function MachineDetail() {
                 </div>
               ))}
             </div>
-            {(!mem.slots || mem.slots.length === 0) && <p className="muted">Unknown / Not reported — firmware/OS did not expose DIMM topology.</p>}
+            {(!mem.slots || mem.slots.length === 0) && (
+              <p className="muted">
+                {mem.notes?.some((n: string) => n.toLowerCase().includes('soc') || n.toLowerCase().includes('unified'))
+                  ? 'Soldered / unified memory (Jetson, Pi, and similar boards have no DIMM map).'
+                  : 'Unknown / Not reported — firmware/OS did not expose DIMM topology.'}
+              </p>
+            )}
             {mem.notes?.length > 0 && <p className="muted">{mem.notes.join(' ')}</p>}
             <p className="muted" style={{ marginTop: 12 }}>
               Usage: {bytes(mem.used_bytes)} / {bytes(mem.total_physical_bytes)} available {bytes(mem.available_bytes)}
@@ -229,7 +238,13 @@ export default function MachineDetail() {
             {hw?.pcie?.gpu_capable_total != null && (
               <p>GPU-capable slots: {hw.pcie.gpu_capable_total} · occupied {hw.pcie.gpu_capable_occupied} · free {hw.pcie.gpu_capable_free}</p>
             )}
-            {hw?.pcie?.gpu_capable_total == null && <p className="muted">GPU-capable slot count not exposed; x16 PCIe is not assumed to be a GPU slot.</p>}
+            {hw?.pcie?.gpu_capable_total == null && (
+              <p className="muted">
+                {(hw?.pcie?.notes || []).some((n: string) => String(n).toLowerCase().includes('on-package') || String(n).toLowerCase().includes('soc'))
+                  ? 'Integrated GPU: there is no removable PCIe GPU slot on this board.'
+                  : 'GPU-capable slot count not exposed; x16 PCIe is not assumed to be a GPU slot.'}
+              </p>
+            )}
             {(hw?.pcie?.slots || []).length > 0 && (
               <table>
                 <thead><tr><th>Slot</th><th>Type</th><th>Width</th><th>Usage</th><th>GPU-capable</th><th>Device</th></tr></thead>
@@ -256,7 +271,14 @@ export default function MachineDetail() {
                 <p>Temperature: {g.temperature_c != null ? `${g.temperature_c} °C` : 'Unknown / Not reported'}</p>
                 <p>Utilization: {g.utilization_pct != null ? `${g.utilization_pct}%` : 'Unknown / Not reported'}</p>
                 <Meter value={g.utilization_pct} />
-                <p>VRAM: {g.vram_bytes ? bytes(g.vram_bytes) : 'Unknown / Not reported'}</p>
+                <p>
+                  VRAM:{' '}
+                  {g.extra?.memory_kind === 'unified'
+                    ? `Unified with system RAM${g.extra?.unified_ram_bytes ? ` (${bytes(g.extra.unified_ram_bytes)})` : ''}`
+                    : g.vram_bytes
+                      ? bytes(g.vram_bytes)
+                      : 'Unknown / Not reported'}
+                </p>
                 <p>Power: {g.power_w != null ? `${g.power_w} W` : 'Unknown / Not reported'}</p>
                 <p>Driver: {fmt(g.driver_version)}</p>
                 <p>PCI: {fmt(g.pci_bus)} · Serial {fmt(g.serial_number)}</p>

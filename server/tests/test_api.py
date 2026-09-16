@@ -231,7 +231,7 @@ async def test_agent_logs_levels_and_inventory_notes(client: AsyncClient, auth_h
         json={
             "registration_token": tok.json()["token"],
             "agent_uuid": "agent-logs-001",
-            "agent_version": "1.1.17",
+            "agent_version": "1.1.18",
             "identity": {"hostname": "LOG-PC", "os_name": "Linux", "architecture": "x86_64", "system_uuid": "sys-logs-001"},
         },
     )
@@ -288,7 +288,7 @@ async def test_inventory_metrics_accept_gpu_lab_sizes(client: AsyncClient, auth_
         json={
             "registration_token": tok.json()["token"],
             "agent_uuid": "agent-gpu-lab-001",
-            "agent_version": "1.1.17",
+            "agent_version": "1.1.18",
             "identity": {
                 "hostname": "CLOUD-GPU-1",
                 "os_name": "Linux",
@@ -360,3 +360,6 @@ async def test_inventory_metrics_accept_gpu_lab_sizes(client: AsyncClient, auth_
         },
     )
     assert metrics.status_code == 200, metrics.text
+    listed = await client.get(f"/api/machines/{reg.json()['machine_id']}/metrics?range=1h", headers=auth_headers)
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["samples"], listed.text

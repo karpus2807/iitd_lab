@@ -1,7 +1,10 @@
 from pathlib import Path
 
+from labwatch_agent.collectors.disks import is_physical_disk
+from labwatch_agent.collectors.linux import _sanitize_memory_topology
 from labwatch_agent.parsers.dmidecode import parse_memory_from_dmidecode, parse_slots_from_dmidecode, parse_system_from_dmidecode
 from labwatch_agent.parsers.nvidia import parse_nvidia_smi_csv
+from labwatch_agent.parsers.tegrastats import parse_tegrastats
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -60,3 +63,44 @@ def test_nvidia_smi_parser():
     assert gpus[0]["temperature_c"] == 57
     assert gpus[0]["vendor"] == "NVIDIA"
     assert gpus[0]["vram_bytes"] == int(24564 * 1024 * 1024)
+
+
+def test_nvidia_smi_jetson_na_fields():
+    csv = "0, Orin (nvgpu), [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], 540.5.0"
+    gpus = parse_nvidia_smi_csv(csv)
+    assert len(gpus) == 1
+    assert gpus[0]["model"] == "Orin (nvgpu)"
+    assert gpus[0]["driver_version"] == "540.5.0"
+    assert gpus[0]["utilization_pct"] is None
+    assert gpus[0]["vram_bytes"] is None
+
+
+def test_tegrastats_gpu_util_and_temp():
+    line = "RAM 1997/30698MB CPU [1%@1113] GR3D_FREQ 12% GPU@44.5C CPU@45C"
+    parsed = parse_tegrastats(line)
+    assert parsed["utilization_pct"] == 12
+    assert parsed["temperature_c"] == 44.5
+    assert parsed["ram_total_mb"] == 30698
+
+
+def test_physical_disk_filter_drops_zram_and_boot():
+    assert is_physical_disk("nvme0n1")
+    assert is_physical_disk("mmcblk0")
+    assert is_physical_disk("sda")
+    assert not is_physical_disk("zram0")
+    assert not is_physical_disk("mmcblk0boot0")
+    assert not is_physical_disk("mmcblk0rpmb")
+    assert not is_physical_disk("loop0")
+
+
+def test_jetson_dmidecode_does_not_invent_empty_dimm():
+    text = (FIX / "dmidecode_jetson_memory.txt").read_text()
+    parsed = parse_memory_from_dmidecode(text)
+    notes: list[str] = []
+    parsed["total_physical_bytes"] = 61 * 1024**3
+    _sanitize_memory_topology(parsed, notes)
+    assert parsed["modules"] == []
+    assert parsed["slot_count"] is None
+    assert parsed["free_slots"] is None
+    assert parsed["max_supported_bytes"] is None
+    assert any("unified" in n.lower() or "soc" in n.lower() or parsed["topology_status"] == "UNKNOWN" for n in notes) or parsed["topology_status"] == "UNKNOWN"

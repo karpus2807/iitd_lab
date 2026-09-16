@@ -93,10 +93,11 @@ def collect_inventory(agent_uuid: str) -> tuple[dict[str, Any], list[str]]:
 def collect_metrics(prev=None) -> tuple[dict[str, Any], dict]:
     prev = prev or {}
     try:
-        payload, nxt = linux_col.collect_metrics(prev.get("net"), prev.get("disk"), prev.get("ts"))
-        payload["collected_at"] = _now()
         if os.name == "nt":
-            payload["cpu_temp_c"] = None
+            payload, nxt = win_col.collect_metrics_windows(prev.get("net"), prev.get("disk"), prev.get("ts"))
+        else:
+            payload, nxt = linux_col.collect_metrics(prev.get("net"), prev.get("disk"), prev.get("ts"))
+        payload["collected_at"] = _now()
         return payload, nxt
     except Exception:
         return {"collected_at": _now(), "gpus": []}, {}

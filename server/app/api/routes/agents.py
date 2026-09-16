@@ -358,7 +358,7 @@ async def metrics(body: MetricsPayload, db: DbDep, agent: CurrentAgent):
     if not machine:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Machine not found")
     try:
-        collected = body.collected_at or utcnow()
+        collected = utcnow()
         db.add(
             MetricSample(
                 machine_id=machine.id,

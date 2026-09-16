@@ -3,12 +3,16 @@ from __future__ import annotations
 import glob
 import os
 import platform
+import re
 import socket
 import uuid
 from typing import Any
 
 import psutil
 
+from labwatch_agent.collectors.disks import is_physical_disk
+from labwatch_agent.collectors.jetson import collect_jetson_gpu, jetson_cpu_temp, merge_gpu
+from labwatch_agent.collectors.platform import board_model, device_tree_text, is_jetson, is_soc_board
 from labwatch_agent.parsers.dmidecode import parse_memory_from_dmidecode, parse_slots_from_dmidecode, parse_system_from_dmidecode
 from labwatch_agent.parsers.nvidia import parse_nvidia_smi_csv
 from labwatch_agent.util import is_virtual_from_dmi, read_int, read_text, run_cmd, which
@@ -119,8 +123,11 @@ def collect_cpu_linux() -> tuple[dict[str, Any], list[str]]:
             info["manufacturer"] = line.split(":", 1)[1].strip()
         elif line.startswith("cpu family") and not info.get("family"):
             info["family"] = line.split(":", 1)[1].strip()
-        elif line.startswith("physical id"):
-            pass
+        elif line.lower().startswith("hardware") and not info.get("family"):
+            info["family"] = line.split(":", 1)[1].strip()
+        elif line.lower().startswith("cpu implementer") and not info.get("manufacturer"):
+            impl = line.split(":", 1)[1].strip().lower()
+            info["manufacturer"] = {"0x41": "ARM", "0x4e": "NVIDIA", "0x51": "Qualcomm"}.get(impl, info.get("manufacturer"))
     physical_ids = {line.split(":", 1)[1].strip() for line in cpuinfo.splitlines() if line.startswith("physical id")}
     if physical_ids:
         info["physical_sockets"] = len(physical_ids)
@@ -147,12 +154,16 @@ def collect_cpu_linux() -> tuple[dict[str, Any], list[str]]:
 
 
 def _cpu_temp_linux() -> float | None:
+    named = jetson_cpu_temp()
+    if named is not None:
+        return named
     temps = []
     try:
         if hasattr(psutil, "sensors_temperatures"):
             data = psutil.sensors_temperatures() or {}
             for name, entries in data.items():
-                if name.lower() in {"coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz"}:
+                low = name.lower()
+                if any(token in low for token in ("coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-therm", "acpitz", "soc_thermal")):
                     for e in entries:
                         if e.current is not None:
                             temps.append(e.current)
@@ -160,12 +171,14 @@ def _cpu_temp_linux() -> float | None:
         pass
     if temps:
         return max(temps)
-    for path in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
-        raw = read_int(path)
-        if raw is not None:
-            value = raw / 1000.0 if raw > 200 else float(raw)
-            temps.append(value)
-    return max(temps) if temps else None
+    cpu_zones = []
+    for path in glob.glob("/sys/class/thermal/thermal_zone*"):
+        typ = (read_text(f"{path}/type") or "").lower()
+        if any(token in typ for token in ("cpu", "soc", "package", "x86")) and "gpu" not in typ:
+            raw = read_int(f"{path}/temp")
+            if raw is not None:
+                cpu_zones.append(raw / 1000.0 if raw > 200 else float(raw))
+    return max(cpu_zones) if cpu_zones else None
 
 
 def _lscpu_field(label: str) -> str | None:
@@ -247,8 +260,36 @@ def collect_memory_linux() -> tuple[dict[str, Any], list[str]]:
             notes.append("dmidecode memory query failed or permission denied; RAM topology marked unknown.")
     else:
         notes.append("dmidecode not installed; RAM slot topology not exposed.")
+    result.update(collect_memory_usage())
+    _sanitize_memory_topology(result, notes)
     result["notes"] = notes
     return result, notes
+
+
+def _sanitize_memory_topology(result: dict[str, Any], notes: list[str]) -> None:
+    total = result.get("total_physical_bytes")
+    mx = result.get("max_supported_bytes")
+    if total and mx and mx < total:
+        result["max_supported_bytes"] = None
+    occupied = [m for m in (result.get("modules") or []) if m.get("occupied")]
+    soc = is_soc_board() or is_jetson()
+    if soc and not occupied:
+        result["modules"] = []
+        result["slot_count"] = None
+        result["occupied_slots"] = None
+        result["free_slots"] = None
+        result["unlocated_empty_slots"] = None
+        result["topology_status"] = "UNKNOWN"
+        note = "SoC unified / soldered memory; DIMM slot map is not applicable."
+        if note not in notes:
+            notes.append(note)
+        return
+    if not occupied and not (result.get("modules") or []):
+        result["slot_count"] = None
+        result["occupied_slots"] = None
+        result["free_slots"] = None
+        result["unlocated_empty_slots"] = None
+        result["topology_status"] = "UNKNOWN"
 
 
 def collect_system_linux() -> dict[str, Any]:
@@ -284,6 +325,16 @@ def collect_system_linux() -> dict[str, Any]:
         notes.append("No DMI data (install dmidecode; /sys/class/dmi/id was empty).")
     elif not text:
         notes.append("dmidecode missing; using /sys/class/dmi/id for system identity.")
+    dt_model = board_model()
+    dt_serial = device_tree_text("serial-number")
+    if dt_model and not parsed.get("system_model"):
+        parsed["system_model"] = dt_model
+    if dt_serial and not parsed.get("system_serial"):
+        parsed["system_serial"] = dt_serial
+    if dt_model and not parsed.get("board_model"):
+        parsed["board_model"] = dt_model
+    if not parsed.get("system_manufacturer") and (is_jetson() or "nvidia" in (dt_model or "").lower()):
+        parsed["system_manufacturer"] = "NVIDIA"
     data["motherboard"] = {
         "manufacturer": parsed.get("board_manufacturer"),
         "model": parsed.get("board_model"),
@@ -315,7 +366,21 @@ def collect_pcie_linux() -> dict[str, Any]:
     if which("dmidecode"):
         code, out, err = run_cmd(["dmidecode", "-t", "slot"])
         if code == 0 and out.strip():
-            return parse_slots_from_dmidecode(out)
+            parsed = parse_slots_from_dmidecode(out)
+            if parsed.get("slots"):
+                parsed["pci_devices"] = _lspci_devices()
+                return parsed
+    if is_soc_board() or is_jetson():
+        return {
+            "topology_status": "UNKNOWN",
+            "topology_note": "Integrated SoC GPU; discrete PCIe GPU slots are not exposed.",
+            "slots": [],
+            "gpu_capable_total": None,
+            "gpu_capable_occupied": None,
+            "gpu_capable_free": None,
+            "pci_devices": _lspci_devices(),
+            "notes": ["This board uses an on-package GPU rather than a removable PCIe card."],
+        }
     return {
         "topology_status": "UNKNOWN",
         "topology_note": "Physical slot topology not exposed by firmware/OS",
@@ -375,73 +440,28 @@ def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
                     idx += 1
             if not gpus:
                 notes.append("No GPU devices reported by PCI enumeration.")
+    jetson = collect_jetson_gpu()
+    if jetson:
+        if gpus:
+            gpus[0] = merge_gpu(gpus[0], jetson)
+        else:
+            gpus = [jetson]
+        notes.append("Jetson/L4T GPU telemetry filled from sysfs/tegrastats (nvidia-smi fields are often N/A).")
     return gpus, notes
 
 
 def collect_storage_linux() -> dict[str, Any]:
     notes: list[str] = []
-    disks = []
-    if which("lsblk"):
-        code, out, err = run_cmd(["lsblk", "-b", "-d", "-J", "-o", "NAME,MODEL,SERIAL,SIZE,TRAN,TYPE,ROTA"])
-        if code == 0 and out.strip():
-            try:
-                import json
-
-                payload = json.loads(out)
-                for dev in payload.get("blockdevices", []):
-                    if dev.get("type") not in {"disk", None}:
-                        continue
-                    rota = dev.get("rota")
-                    tran = (dev.get("tran") or "").lower()
-                    media = None
-                    if tran == "nvme":
-                        media = "NVMe"
-                    elif str(rota) in {"0", "false"}:
-                        media = "SSD"
-                    elif str(rota) in {"1", "true"}:
-                        media = "HDD"
-                    disks.append(
-                        {
-                            "name": dev.get("name"),
-                            "model": dev.get("model") or None,
-                            "serial_number": dev.get("serial") or None,
-                            "capacity_bytes": int(dev["size"]) if dev.get("size") else None,
-                            "interface": dev.get("tran"),
-                            "media_type": media,
-                            "smart_status": None,
-                            "temperature_c": None,
-                        }
-                    )
-            except Exception as exc:
-                notes.append(f"lsblk parse failed: {exc}")
-        else:
-            notes.append("lsblk failed")
-    else:
-        notes.append("lsblk not installed")
+    disks = _lsblk_disks(notes)
+    disks = [d for d in disks if is_physical_disk(d.get("name"))]
     if which("smartctl"):
         for d in disks:
-            code, out, err = run_cmd(["smartctl", "-A", "-H", "-j", f"/dev/{d['name']}"])
-            if code not in {0, 4} or not out.strip():
-                continue
-            try:
-                import json
-
-                smart = json.loads(out)
-                health = smart.get("smart_status", {}).get("passed")
-                if health is True:
-                    d["smart_status"] = "PASSED"
-                elif health is False:
-                    d["smart_status"] = "FAILED"
-                temp = smart.get("temperature", {}).get("current")
-                if temp is not None:
-                    d["temperature_c"] = temp
-            except Exception:
-                continue
+            _fill_smart(d)
     else:
         notes.append("smartctl not installed; SMART health not collected.")
     filesystems = []
     for part in psutil.disk_partitions(all=False):
-        if part.fstype in {"squashfs", "overlay", "tmpfs"}:
+        if part.fstype in {"squashfs", "overlay", "tmpfs", "devtmpfs", "efivarfs"}:
             continue
         try:
             usage = psutil.disk_usage(part.mountpoint)
@@ -457,6 +477,112 @@ def collect_storage_linux() -> dict[str, Any]:
             }
         )
     return {"disks": disks, "filesystems": filesystems, "notes": notes}
+
+
+def _lsblk_disks(notes: list[str]) -> list[dict[str, Any]]:
+    if not which("lsblk"):
+        notes.append("lsblk not installed")
+        return []
+    code, out, err = run_cmd(["lsblk", "-b", "-d", "-J", "-o", "NAME,MODEL,SERIAL,SIZE,TRAN,TYPE,ROTA"])
+    if code == 0 and out.strip().startswith("{"):
+        try:
+            import json
+
+            payload = json.loads(out)
+            disks = []
+            for dev in payload.get("blockdevices", []):
+                if dev.get("type") not in {"disk", None}:
+                    continue
+                disks.append(_disk_from_lsblk(dev))
+            return disks
+        except Exception as exc:
+            notes.append(f"lsblk JSON parse failed: {exc}")
+    code, out, err = run_cmd(["lsblk", "-b", "-d", "-P", "-o", "NAME,MODEL,SERIAL,SIZE,TRAN,TYPE,ROTA"])
+    if code == 0 and out.strip():
+        disks = []
+        for line in out.splitlines():
+            fields = dict(re.findall(r'(\w+)="([^"]*)"', line))
+            if fields.get("TYPE") not in {"disk", "", None}:
+                continue
+            disks.append(
+                _disk_from_lsblk(
+                    {
+                        "name": fields.get("NAME"),
+                        "model": fields.get("MODEL") or None,
+                        "serial": fields.get("SERIAL") or None,
+                        "size": fields.get("SIZE") or None,
+                        "tran": fields.get("TRAN") or None,
+                        "rota": fields.get("ROTA"),
+                    }
+                )
+            )
+        return disks
+    notes.append("lsblk failed")
+    return []
+
+
+def _disk_from_lsblk(dev: dict[str, Any]) -> dict[str, Any]:
+    rota = dev.get("rota")
+    tran = (dev.get("tran") or "").lower()
+    media = None
+    if tran == "nvme":
+        media = "NVMe"
+    elif str(rota) in {"0", "false"}:
+        media = "SSD"
+    elif str(rota) in {"1", "true"}:
+        media = "HDD"
+    elif str(dev.get("name") or "").startswith("mmcblk"):
+        media = "eMMC"
+    size = dev.get("size")
+    try:
+        capacity = int(size) if size not in (None, "") else None
+    except (TypeError, ValueError):
+        capacity = None
+    return {
+        "name": dev.get("name"),
+        "model": dev.get("model") or None,
+        "serial_number": dev.get("serial") or None,
+        "capacity_bytes": capacity,
+        "interface": dev.get("tran"),
+        "media_type": media,
+        "smart_status": None,
+        "temperature_c": None,
+    }
+
+
+def _fill_smart(disk: dict[str, Any]) -> None:
+    name = disk.get("name")
+    if not name:
+        return
+    code, out, err = run_cmd(["smartctl", "-A", "-H", "-j", f"/dev/{name}"])
+    if code in {0, 4} and out.strip().startswith("{"):
+        try:
+            import json
+
+            smart = json.loads(out)
+            health = smart.get("smart_status", {}).get("passed")
+            if health is True:
+                disk["smart_status"] = "PASSED"
+            elif health is False:
+                disk["smart_status"] = "FAILED"
+            temp = smart.get("temperature", {}).get("current")
+            if temp is not None:
+                disk["temperature_c"] = temp
+            return
+        except Exception:
+            pass
+    code, out, err = run_cmd(["smartctl", "-H", "-A", f"/dev/{name}"])
+    blob = f"{out}\n{err}"
+    if "PASSED" in blob:
+        disk["smart_status"] = "PASSED"
+    elif "FAILED" in blob:
+        disk["smart_status"] = "FAILED"
+    for line in blob.splitlines():
+        if "temperature" in line.lower() and any(ch.isdigit() for ch in line):
+            nums = [int(p) for p in line.replace("C", " ").split() if p.isdigit()]
+            if nums:
+                disk["temperature_c"] = nums[0]
+                break
 
 
 def collect_network() -> dict[str, Any]:
@@ -575,6 +701,25 @@ def collect_metrics(prev_net=None, prev_disk=None, prev_ts=None) -> tuple[dict[s
                         "memory_clock_mhz": parsed.get("memory_clock_mhz"),
                     }
                 )
+    jetson = collect_jetson_gpu()
+    if jetson:
+        overlay = {
+            "index": jetson.get("index", 0),
+            "gpu_key": "jetson-nvgpu",
+            "utilization_pct": jetson.get("utilization_pct"),
+            "temperature_c": jetson.get("temperature_c"),
+            "vram_used_bytes": (jetson.get("extra") or {}).get("unified_ram_used_bytes"),
+            "vram_total_bytes": (jetson.get("extra") or {}).get("unified_ram_bytes"),
+            "power_w": jetson.get("power_w"),
+            "graphics_clock_mhz": jetson.get("graphics_clock_mhz"),
+            "memory_clock_mhz": jetson.get("memory_clock_mhz"),
+        }
+        if gpus:
+            for key, value in overlay.items():
+                if gpus[0].get(key) in (None, "") and value not in (None, ""):
+                    gpus[0][key] = value
+        else:
+            gpus = [overlay]
     payload = {
         "cpu_usage_pct": psutil.cpu_percent(interval=0.1),
         "cpu_temp_c": _cpu_temp_linux() if os.name != "nt" else None,

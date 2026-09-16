@@ -28,7 +28,16 @@ from app.models import (
     PcieSlot,
     PcieTopology,
     StorageDevice,
+    utcnow,
 )
+
+
+def _utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 from app.schemas.api import MachineListItem, MachineUpdate
 
 router = APIRouter(prefix="/api/machines", tags=["machines"])
@@ -297,6 +306,7 @@ async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:
                 "graphics_clock_mhz": g.graphics_clock_mhz,
                 "memory_clock_mhz": g.memory_clock_mhz,
                 "slot_designation": present(g.slot_designation),
+                "extra": g.extra or {},
             }
             for g in gpus
         ],
@@ -401,10 +411,10 @@ async def machine_metrics(
     now = datetime.now(timezone.utc)
     spans = {"1h": 1, "6h": 6, "24h": 24, "7d": 24 * 7, "30d": 24 * 30}
     if start and end:
-        t0, t1 = start, end
+        t0, t1 = _utc_naive(start), _utc_naive(end)
     else:
         hours = spans.get(range, 24)
-        t0, t1 = now - timedelta(hours=hours), now
+        t0, t1 = _utc_naive(now - timedelta(hours=hours)), _utc_naive(now)
     use_hourly = (t1 - t0) > timedelta(days=7)
     if use_hourly:
         rows = (
@@ -445,6 +455,34 @@ async def machine_metrics(
             }
             for r in rows
         ]
+        if not samples:
+            rows = (
+                await db.execute(
+                    select(MetricSample)
+                    .where(MetricSample.machine_id == machine_id)
+                    .order_by(MetricSample.collected_at.desc())
+                    .limit(240)
+                )
+            ).scalars().all()
+            samples = [
+                {
+                    "collected_at": r.collected_at,
+                    "cpu_usage_pct": r.cpu_usage_pct,
+                    "cpu_temp_c": r.cpu_temp_c,
+                    "cpu_freq_mhz": r.cpu_freq_mhz,
+                    "ram_usage_pct": r.ram_usage_pct,
+                    "ram_used_bytes": r.ram_used_bytes,
+                    "ram_total_bytes": r.ram_total_bytes,
+                    "disk_used_bytes": r.disk_used_bytes,
+                    "disk_total_bytes": r.disk_total_bytes,
+                    "disk_read_bps": r.disk_read_bps,
+                    "disk_write_bps": r.disk_write_bps,
+                    "net_tx_bps": r.net_tx_bps,
+                    "net_rx_bps": r.net_rx_bps,
+                    "source": "raw",
+                }
+                for r in reversed(list(rows))
+            ]
     gpus = (
         await db.execute(
             select(GpuMetricSample)

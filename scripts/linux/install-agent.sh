@@ -22,11 +22,26 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-_ensure_host_tools() {
-  if ! command -v apt-get >/dev/null; then
-    echo "apt-get not found. Install python3 python3-venv curl dmidecode pciutils util-linux smartmontools iproute2 by hand if fields are empty."
-    return 0
+_pkg_install() {
+  local pkgs=("$@")
+  ((${#pkgs[@]})) || return 0
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || true
+  elif command -v dnf >/dev/null; then
+    dnf install -y "${pkgs[@]}" || true
+  elif command -v yum >/dev/null; then
+    yum install -y "${pkgs[@]}" || true
+  elif command -v zypper >/dev/null; then
+    zypper --non-interactive install "${pkgs[@]}" || true
+  elif command -v pacman >/dev/null; then
+    pacman -Sy --noconfirm "${pkgs[@]}" || true
+  else
+    echo "Install these packages by hand if fields are empty: ${pkgs[*]}"
   fi
+}
+
+_ensure_host_tools() {
   local pkgs=()
   command -v python3 >/dev/null || pkgs+=(python3 python3-venv python3-pip)
   command -v curl >/dev/null || pkgs+=(curl)
@@ -41,20 +56,54 @@ _ensure_host_tools() {
     return 0
   fi
   echo "Installing missing collector tools: ${pkgs[*]}"
-  if ! DEBIAN_FRONTEND=noninteractive apt-get update -qq; then
-    echo "apt-get update failed. Install manually: ${pkgs[*]}"
+  _pkg_install "${pkgs[@]}"
+}
+
+_python_ok() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
+}
+
+_find_python() {
+  local c
+  for c in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
+    if command -v "$c" >/dev/null && _python_ok "$(command -v "$c")"; then
+      command -v "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_ensure_python() {
+  local found
+  found="$(_find_python || true)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
     return 0
   fi
-  DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || echo "Some packages failed to install: ${pkgs[*]}"
+  echo "Python 3.8+ not found. Trying to install a newer interpreter…"
+  if command -v apt-get >/dev/null; then
+    _pkg_install python3 python3-venv python3-pip python3.10 python3.10-venv python3.12 python3.12-venv || true
+  elif command -v dnf >/dev/null; then
+    _pkg_install python3 python3-pip python3-virtualenv || true
+  fi
+  found="$(_find_python || true)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+  echo "Need Python 3.8 or newer for the agent (Ubuntu 18.04+, Debian 10+, or Python 3.10 from deadsnakes)."
+  return 1
 }
 
 _ensure_host_tools
-if ! command -v python3 >/dev/null; then
-  echo "python3 is required. On Ubuntu: sudo apt-get install -y python3 python3-venv python3-pip curl dmidecode pciutils"
+PYTHON_BIN="$(_ensure_python)" || {
+  echo "python3 3.8+ is required."
   exit 1
-fi
+}
+echo "Using $($PYTHON_BIN -V)"
 if ! command -v curl >/dev/null; then
-  echo "curl is required. On Ubuntu: sudo apt-get install -y curl"
+  echo "curl is required."
   exit 1
 fi
 
@@ -271,7 +320,7 @@ fi
 echo "Installing LabWatch agent to $PREFIX"
 systemctl stop labwatch-agent 2>/dev/null || true
 mkdir -p "$PREFIX" "$CONFIG_DIR" "$STATE_DIR"
-python3 -m venv --without-pip "$PREFIX/venv" 2>/dev/null || python3 -m venv "$PREFIX/venv"
+"$PYTHON_BIN" -m venv --without-pip "$PREFIX/venv" 2>/dev/null || "$PYTHON_BIN" -m venv "$PREFIX/venv"
 if [[ ! -x "$PREFIX/venv/bin/pip" ]]; then
   curl -sS https://bootstrap.pypa.io/get-pip.py | "$PREFIX/venv/bin/python"
 fi

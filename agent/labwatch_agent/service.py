@@ -138,6 +138,7 @@ def run(cfg: AgentConfig) -> int:
     metric_state: dict = {}
     errors: list[str] = []
     identity: dict = _fallback_identity()
+    errors: list[str] = []
 
     tools = probe_host_tools()
     missing = [name for name, ok in tools.items() if not ok]
@@ -205,6 +206,7 @@ def run(cfg: AgentConfig) -> int:
                     metrics, metric_state = collect_metrics(metric_state)
                     client.metrics(metrics)
                     last_metrics = now
+                    logger.info("Metrics submitted")
                 except AgentAuthError:
                     state = _clear_creds(cfg, state)
                     client.agent_id = ""

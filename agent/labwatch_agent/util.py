@@ -20,6 +20,8 @@ def probe_host_tools() -> dict[str, bool]:
         "lsblk": bool(which("lsblk")),
         "smartctl": bool(which("smartctl")),
         "nvidia-smi": bool(which("nvidia-smi")),
+        "tegrastats": bool(which("tegrastats")),
+        "lshw": bool(which("lshw")),
         "ip": bool(which("ip")),
         "lscpu": bool(which("lscpu")),
     }
@@ -46,7 +48,7 @@ def run_cmd(args: list[str], timeout: int = 12) -> tuple[int, str, str]:
 def read_text(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
-            return f.read().strip()
+            return f.read().replace("\x00", "").strip()
     except OSError:
         return None
 
