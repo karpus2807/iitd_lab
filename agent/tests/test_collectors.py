@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from labwatch_agent.collectors.disks import is_physical_disk
+from labwatch_agent.collectors.jetson import merge_gpu
 from labwatch_agent.collectors.linux import _sanitize_memory_topology
 from labwatch_agent.parsers.dmidecode import parse_memory_from_dmidecode, parse_slots_from_dmidecode, parse_system_from_dmidecode
 from labwatch_agent.parsers.nvidia import parse_nvidia_smi_csv
@@ -98,9 +99,47 @@ def test_jetson_dmidecode_does_not_invent_empty_dimm():
     parsed = parse_memory_from_dmidecode(text)
     notes: list[str] = []
     parsed["total_physical_bytes"] = 61 * 1024**3
-    _sanitize_memory_topology(parsed, notes)
+    _sanitize_memory_topology(parsed, notes, soc=True)
     assert parsed["modules"] == []
     assert parsed["slot_count"] is None
     assert parsed["free_slots"] is None
     assert parsed["max_supported_bytes"] is None
-    assert any("unified" in n.lower() or "soc" in n.lower() or parsed["topology_status"] == "UNKNOWN" for n in notes) or parsed["topology_status"] == "UNKNOWN"
+    assert parsed["topology_status"] == "SOC"
+    assert parsed["extra"]["memory_kind"] == "unified"
+
+
+def test_tegrastats_orin_power_emc_and_clock():
+    line = (
+        "RAM 1997/62841MB CPU [1%@2201] EMC_FREQ 1%@3200 GR3D_FREQ 12%@1300 "
+        "GPU@44.5C CPU@45C VDD_GPU_SOC 1234mW/2345mW VDD_CPU_CV 890mW/900mW VDD_IN 5678mW/6000mW"
+    )
+    parsed = parse_tegrastats(line)
+    assert parsed["utilization_pct"] == 12
+    assert parsed["graphics_clock_mhz"] == 1300
+    assert parsed["emc_clock_mhz"] == 3200
+    assert parsed["ram_total_mb"] == 62841
+    assert parsed["power_rails"]["VDD_GPU_SOC"] == 1.234
+    assert parsed["power_rails"]["VDD_IN"] == 5.678
+
+
+def test_merge_gpu_soc_hides_pci():
+    base = {
+        "index": 0,
+        "model": "Orin (nvgpu)",
+        "pci_bus": "0001:00:00.0",
+        "serial_number": "N/A",
+        "driver_version": "540.5.0",
+        "vram_bytes": None,
+    }
+    overlay = {
+        "model": "NVIDIA Jetson AGX Orin",
+        "slot_designation": "SoC (nvgpu)",
+        "power_w": 4.2,
+        "extra": {"memory_kind": "unified", "bus": "soc", "unified_ram_bytes": 61 * 1024**3},
+    }
+    merged = merge_gpu(base, overlay)
+    assert merged["pci_bus"] is None
+    assert merged["serial_number"] is None
+    assert merged["model"] == "NVIDIA Jetson AGX Orin"
+    assert merged["vram_bytes"] == 61 * 1024**3
+    assert merged["extra"]["bus"] == "soc"

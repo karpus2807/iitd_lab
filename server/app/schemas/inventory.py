@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 Confidence = Literal["DETECTED", "REPORTED", "UNKNOWN"]
-Topology = Literal["DETECTED", "PARTIAL", "UNKNOWN"]
+Topology = Literal["DETECTED", "PARTIAL", "UNKNOWN", "SOC"]
 
 
 class IdentityInfo(BaseModel):
@@ -86,6 +86,7 @@ class MemoryInfo(BaseModel):
     unlocated_empty_slots: int | None = None
     modules: list[MemoryModule] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class GPUInfo(BaseModel):

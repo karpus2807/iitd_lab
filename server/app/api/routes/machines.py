@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
@@ -142,7 +142,7 @@ async def get_machine(machine_id: UUID, db: DbDep, user: CurrentUser):
         "last_seen_at": machine.last_seen_at,
         "first_seen_at": machine.first_seen_at,
         "is_virtual": machine.is_virtual,
-        "virtualization": machine.virtualization or "Unknown / Not reported",
+        "virtualization": machine.virtualization,
         "gpu_count": machine.gpu_count,
         "has_open_alerts": machine.has_open_alerts,
         "approved": machine.approved,
@@ -230,8 +230,8 @@ async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:
     mb = await db.get(Motherboard, machine_id)
     bios = await db.get(Bios, machine_id)
 
-    def present(v, fallback="Unknown / Not reported"):
-        return v if v not in (None, "") else fallback
+    def present(v):
+        return v if v not in (None, "") else None
 
     return {
         "cpu": None
@@ -269,6 +269,7 @@ async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:
             "topology_status": mem.topology_status,
             "unlocated_empty_slots": mem.unlocated_empty_slots,
             "notes": mem.notes,
+            "extra": mem.extra or {},
             "slots": [
                 {
                     "slot_locator": s.slot_locator,
@@ -295,9 +296,9 @@ async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:
                 "vendor": present(g.vendor),
                 "model": present(g.model),
                 "vram_bytes": g.vram_bytes,
-                "pci_bus": present(g.pci_bus),
+                "pci_bus": g.pci_bus if g.pci_bus not in (None, "", "Unknown / Not reported") else None,
                 "pci_device_id": present(g.pci_device_id),
-                "serial_number": present(g.serial_number),
+                "serial_number": g.serial_number if g.serial_number not in (None, "", "Unknown / Not reported") else None,
                 "uuid": present(g.uuid),
                 "driver_version": present(g.driver_version),
                 "utilization_pct": g.utilization_pct,
@@ -574,6 +575,40 @@ async def machine_logs(
         }
         for r in rows
     ]
+
+
+@router.delete("/{machine_id}/events")
+async def clear_machine_events(machine_id: UUID, db: DbDep, user: OperatorUser, request: Request):
+    machine = await db.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    result = await db.execute(delete(HardwareEvent).where(HardwareEvent.machine_id == machine_id))
+    await write_audit(db, "machine.clear_events", user=user, machine_id=machine.id, request=request)
+    await db.commit()
+    return {"ok": True, "deleted": result.rowcount or 0}
+
+
+@router.delete("/{machine_id}/logs")
+async def clear_machine_logs(machine_id: UUID, db: DbDep, user: OperatorUser, request: Request):
+    machine = await db.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    result = await db.execute(delete(AgentLog).where(AgentLog.machine_id == machine_id))
+    await write_audit(db, "machine.clear_logs", user=user, machine_id=machine.id, request=request)
+    await db.commit()
+    return {"ok": True, "deleted": result.rowcount or 0}
+
+
+@router.delete("/{machine_id}/history")
+async def clear_machine_history(machine_id: UUID, db: DbDep, user: OperatorUser, request: Request):
+    machine = await db.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(404, "Machine not found")
+    events = await db.execute(delete(HardwareEvent).where(HardwareEvent.machine_id == machine_id))
+    snaps = await db.execute(delete(HardwareSnapshot).where(HardwareSnapshot.machine_id == machine_id))
+    await write_audit(db, "machine.clear_history", user=user, machine_id=machine.id, request=request)
+    await db.commit()
+    return {"ok": True, "deleted_events": events.rowcount or 0, "deleted_snapshots": snaps.rowcount or 0}
 
 
 @router.get("/{machine_id}/snapshots")

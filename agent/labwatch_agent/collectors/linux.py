@@ -11,7 +11,7 @@ from typing import Any
 import psutil
 
 from labwatch_agent.collectors.disks import is_physical_disk
-from labwatch_agent.collectors.jetson import collect_jetson_gpu, jetson_cpu_temp, merge_gpu
+from labwatch_agent.collectors.jetson import collect_jetson_gpu, collect_jetson_memory, jetson_cpu_temp, merge_gpu
 from labwatch_agent.collectors.platform import board_model, device_tree_text, is_jetson, is_soc_board
 from labwatch_agent.parsers.dmidecode import parse_memory_from_dmidecode, parse_slots_from_dmidecode, parse_system_from_dmidecode
 from labwatch_agent.parsers.nvidia import parse_nvidia_smi_csv
@@ -249,6 +249,7 @@ def collect_memory_linux() -> tuple[dict[str, Any], list[str]]:
         "modules": [],
         "notes": notes,
         "unlocated_empty_slots": None,
+        "extra": {},
     }
     if which("dmidecode"):
         code, out, err = run_cmd(["dmidecode", "-t", "memory"])
@@ -266,24 +267,33 @@ def collect_memory_linux() -> tuple[dict[str, Any], list[str]]:
     return result, notes
 
 
-def _sanitize_memory_topology(result: dict[str, Any], notes: list[str]) -> None:
+def _sanitize_memory_topology(result: dict[str, Any], notes: list[str], soc: bool | None = None) -> None:
     total = result.get("total_physical_bytes")
     mx = result.get("max_supported_bytes")
     if total and mx and mx < total:
         result["max_supported_bytes"] = None
     occupied = [m for m in (result.get("modules") or []) if m.get("occupied")]
-    soc = is_soc_board() or is_jetson()
-    if soc and not occupied:
+    if soc is None:
+        soc = is_soc_board() or is_jetson()
+    extra = dict(result.get("extra") or {})
+    if soc:
+        extra.update(collect_jetson_memory())
+        extra["memory_kind"] = extra.get("memory_kind") or "unified"
+        extra["form_factor"] = extra.get("form_factor") or "soldered"
+        extra["unsupported"] = ["dimm_slots", "occupied_slots", "free_slots", "max_supported_bytes"]
+        result["extra"] = extra
         result["modules"] = []
         result["slot_count"] = None
         result["occupied_slots"] = None
         result["free_slots"] = None
         result["unlocated_empty_slots"] = None
-        result["topology_status"] = "UNKNOWN"
-        note = "SoC unified / soldered memory; DIMM slot map is not applicable."
+        result["max_supported_bytes"] = None
+        result["topology_status"] = "SOC"
+        note = "Unified soldered memory (SoC); DIMM slot map does not apply."
         if note not in notes:
             notes.append(note)
         return
+    result["extra"] = extra
     if not occupied and not (result.get("modules") or []):
         result["slot_count"] = None
         result["occupied_slots"] = None
@@ -363,24 +373,31 @@ def collect_system_linux() -> dict[str, Any]:
 
 
 def collect_pcie_linux() -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
     if which("dmidecode"):
         code, out, err = run_cmd(["dmidecode", "-t", "slot"])
         if code == 0 and out.strip():
             parsed = parse_slots_from_dmidecode(out)
-            if parsed.get("slots"):
-                parsed["pci_devices"] = _lspci_devices()
-                return parsed
+    slots = parsed.get("slots") or []
+    gpu_slots = [s for s in slots if s.get("is_gpu_capable")]
     if is_soc_board() or is_jetson():
-        return {
-            "topology_status": "UNKNOWN",
-            "topology_note": "Integrated SoC GPU; discrete PCIe GPU slots are not exposed.",
-            "slots": [],
-            "gpu_capable_total": None,
-            "gpu_capable_occupied": None,
-            "gpu_capable_free": None,
-            "pci_devices": _lspci_devices(),
-            "notes": ["This board uses an on-package GPU rather than a removable PCIe card."],
-        }
+        if not gpu_slots:
+            return {
+                "topology_status": "SOC",
+                "topology_note": "Integrated SoC GPU — there is no removable PCIe GPU slot.",
+                "slots": [],
+                "gpu_capable_total": 0,
+                "gpu_capable_occupied": 0,
+                "gpu_capable_free": 0,
+                "pci_devices": _lspci_devices(),
+                "notes": ["This board uses an on-package GPU rather than a removable PCIe card."],
+            }
+        parsed["pci_devices"] = _lspci_devices()
+        parsed.setdefault("notes", []).append("On-package GPU plus firmware PCIe slots.")
+        return parsed
+    if slots:
+        parsed["pci_devices"] = _lspci_devices()
+        return parsed
     return {
         "topology_status": "UNKNOWN",
         "topology_note": "Physical slot topology not exposed by firmware/OS",

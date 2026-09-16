@@ -56,7 +56,7 @@ export async function api<T = any>(path: string, init: RequestInit = {}): Promis
 }
 
 export function bytes(n?: number | null) {
-  if (n === null || n === undefined) return 'Unknown / Not reported'
+  if (n === null || n === undefined) return null
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = n
   let i = 0
@@ -80,7 +80,19 @@ export function ago(iso?: string | null) {
   return `${Math.floor(s / 86400)}d ago`
 }
 
+export function isBlank(v: unknown) {
+  if (v == null || v === false) return true
+  if (typeof v === 'number' && !Number.isFinite(v)) return true
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s || s === '—' || s === '-') return true
+    if (/^unknown(\s*\/\s*not reported)?$/i.test(s)) return true
+    if (/^(n\/a|none|null|not reported|not supported)$/i.test(s)) return true
+  }
+  return false
+}
+
 export function fmt(v: unknown) {
-  if (v === null || v === undefined || v === '') return 'Unknown / Not reported'
+  if (isBlank(v)) return ''
   return String(v)
 }

@@ -97,6 +97,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_machine_inventory_column)
         await conn.run_sync(ensure_lab_columns)
         await conn.run_sync(ensure_hardware_column_types)
+        await conn.run_sync(ensure_memory_extra_column)
 
 
 def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
@@ -247,3 +248,16 @@ def ensure_hardware_column_types(sync_conn) -> None:
         if current is not None and current >= length:
             continue
         sync_conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({length})"))
+
+
+def ensure_memory_extra_column(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "memory_summaries" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("memory_summaries")}
+    if "extra" in existing:
+        return
+    sql_type = "JSONB" if sync_conn.dialect.name == "postgresql" else "JSON"
+    sync_conn.execute(text(f"ALTER TABLE memory_summaries ADD COLUMN extra {sql_type}"))

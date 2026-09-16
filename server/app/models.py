@@ -190,6 +190,7 @@ class MemorySummary(Base, TimestampMixin):
     topology_status: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
     unlocated_empty_slots: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[list] = mapped_column(json_column(), default=list)
+    extra: Mapped[dict] = mapped_column(json_column(), default=dict)
 
 
 class MemorySlot(Base):

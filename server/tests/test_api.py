@@ -363,3 +363,98 @@ async def test_inventory_metrics_accept_gpu_lab_sizes(client: AsyncClient, auth_
     listed = await client.get(f"/api/machines/{reg.json()['machine_id']}/metrics?range=1h", headers=auth_headers)
     assert listed.status_code == 200, listed.text
     assert listed.json()["samples"], listed.text
+
+
+@pytest.mark.asyncio
+async def test_soc_inventory_and_clear_history_events_logs(client: AsyncClient, auth_headers):
+    tok = await client.post("/api/admin/tokens", headers=auth_headers, json={"label": "soc", "expires_hours": 24})
+    reg = await client.post(
+        "/api/agents/register",
+        json={
+            "registration_token": tok.json()["token"],
+            "agent_uuid": "agent-soc-orin-001",
+            "agent_version": "1.1.20",
+            "identity": {
+                "hostname": "orin-agx",
+                "os_name": "Linux",
+                "architecture": "aarch64",
+                "system_uuid": "sys-orin-001",
+            },
+        },
+    )
+    assert reg.status_code == 200, reg.text
+    headers = {"Authorization": f"Bearer {reg.json()['agent_id']}:{reg.json()['agent_secret']}"}
+    machine_id = reg.json()["machine_id"]
+    inv = await client.post(
+        "/api/agents/inventory",
+        headers=headers,
+        json={
+            "identity": {"hostname": "orin-agx", "os_name": "Linux", "architecture": "aarch64"},
+            "memory": {
+                "total_physical_bytes": 61 * 1024**3,
+                "used_bytes": 39 * 1024**3,
+                "available_bytes": 22 * 1024**3,
+                "usage_pct": 64.2,
+                "topology_status": "SOC",
+                "notes": ["Unified soldered memory (SoC); DIMM slot map does not apply."],
+                "extra": {"memory_kind": "unified", "form_factor": "soldered", "memory_type": "LPDDR5", "speed_mts": 3200},
+            },
+            "gpus": [
+                {
+                    "index": 0,
+                    "vendor": "NVIDIA",
+                    "model": "NVIDIA Jetson AGX Orin",
+                    "slot_designation": "SoC (nvgpu)",
+                    "utilization_pct": 1.0,
+                    "temperature_c": 38.375,
+                    "power_w": 4.2,
+                    "graphics_clock_mhz": 1300,
+                    "memory_clock_mhz": 3200,
+                    "driver_version": "540.5.0",
+                    "vram_bytes": 61 * 1024**3,
+                    "extra": {
+                        "memory_kind": "unified",
+                        "bus": "soc",
+                        "platform": "jetson",
+                        "unified_ram_bytes": 61 * 1024**3,
+                        "board_power_w": 12.1,
+                        "power_rails": {"VDD_GPU_SOC": 4.2, "VDD_IN": 12.1},
+                    },
+                }
+            ],
+            "pcie": {"topology_status": "SOC", "slots": [], "gpu_capable_total": 0},
+        },
+    )
+    assert inv.status_code == 200, inv.text
+    hw = await client.get(f"/api/machines/{machine_id}/hardware", headers=auth_headers)
+    assert hw.status_code == 200, hw.text
+    body = hw.json()
+    assert body["memory"]["topology_status"] == "SOC"
+    assert body["memory"]["extra"]["memory_kind"] == "unified"
+    assert body["memory"]["extra"]["memory_type"] == "LPDDR5"
+    assert body["gpus"][0]["pci_bus"] in (None, "")
+    assert body["gpus"][0]["power_w"] == 4.2
+    assert body["pcie"]["topology_status"] == "SOC"
+
+    await client.post(
+        "/api/agents/logs",
+        headers=headers,
+        json=[{"level": "info", "message": "agent started", "details": {"source": "agent"}}],
+    )
+    events = await client.get(f"/api/machines/{machine_id}/events", headers=auth_headers)
+    assert events.json()
+    logs = await client.get(f"/api/machines/{machine_id}/logs", headers=auth_headers)
+    assert logs.json()
+
+    cleared_events = await client.delete(f"/api/machines/{machine_id}/events", headers=auth_headers)
+    assert cleared_events.status_code == 200, cleared_events.text
+    assert (await client.get(f"/api/machines/{machine_id}/events", headers=auth_headers)).json() == []
+
+    await client.post("/api/agents/inventory", headers=headers, json={"identity": {"hostname": "orin-agx"}})
+    cleared_history = await client.delete(f"/api/machines/{machine_id}/history", headers=auth_headers)
+    assert cleared_history.status_code == 200
+    assert (await client.get(f"/api/machines/{machine_id}/events", headers=auth_headers)).json() == []
+
+    cleared_logs = await client.delete(f"/api/machines/{machine_id}/logs", headers=auth_headers)
+    assert cleared_logs.status_code == 200
+    assert (await client.get(f"/api/machines/{machine_id}/logs", headers=auth_headers)).json() == []

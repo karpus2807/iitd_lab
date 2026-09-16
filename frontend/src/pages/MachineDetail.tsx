@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ago, api, bytes, currentUser, fmt } from '../api'
+import { ago, api, bytes, currentUser, isBlank } from '../api'
 import { StatusBadge } from '../Layout'
 
 const TABS = ['Overview', 'CPU', 'Memory', 'GPU', 'Storage', 'Network', 'Motherboard', 'History', 'Metrics', 'Events', 'Logs'] as const
@@ -13,8 +13,29 @@ const RANGES = [
   ['30d', '30 days'],
 ]
 
+function isSocMemory(mem: any) {
+  const extra = mem?.extra || {}
+  const notes = (mem?.notes || []).join(' ').toLowerCase()
+  return (
+    mem?.topology_status === 'SOC' ||
+    extra.memory_kind === 'unified' ||
+    extra.form_factor === 'soldered' ||
+    notes.includes('soc') ||
+    notes.includes('unified')
+  )
+}
+
+function isSocGpu(g: any) {
+  const extra = g?.extra || {}
+  return extra.memory_kind === 'unified' || extra.bus === 'soc' || extra.platform === 'jetson'
+}
+
+function isSocPcie(pcie: any, gpus: any[]) {
+  return pcie?.topology_status === 'SOC' || (gpus || []).some(isSocGpu)
+}
+
 function Meter({ value }: { value?: number | null }) {
-  if (value == null) return <div className="muted">Unknown / Not reported</div>
+  if (value == null) return null
   const cls = value >= 90 ? 'crit' : value >= 75 ? 'warn' : ''
   return (
     <div>
@@ -25,12 +46,29 @@ function Meter({ value }: { value?: number | null }) {
 }
 
 function Kv({ label, value }: { label: string; value: unknown }) {
+  if (isBlank(value)) return null
   return (
     <>
       <span>{label}</span>
-      <div>{fmt(value)}</div>
+      <div>{String(value)}</div>
     </>
   )
+}
+
+function Stat({ label, value }: { label: string; value?: ReactNode }) {
+  if (value == null || value === '' || value === false) return null
+  return (
+    <div className="card stat">
+      <div className="label">{label}</div>
+      <div className="value" style={{ fontSize: 18 }}>{value}</div>
+    </div>
+  )
+}
+
+function Show({ label, value, supported = true }: { label: string; value?: unknown; supported?: boolean }) {
+  if (!supported) return null
+  if (isBlank(value)) return <p>{label}: Not reported</p>
+  return <p>{label}: {String(value)}</p>
 }
 
 export default function MachineDetail() {
@@ -47,6 +85,7 @@ export default function MachineDetail() {
   const [err, setErr] = useState('')
   const [logLevel, setLogLevel] = useState('ALL')
   const [logQuery, setLogQuery] = useState('')
+  const [busy, setBusy] = useState('')
   const canManage = ['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '')
 
   useEffect(() => {
@@ -79,6 +118,9 @@ export default function MachineDetail() {
 
   const mem = hw?.memory
   const cpu = hw?.cpu
+  const socMem = isSocMemory(mem)
+  const socPcie = isSocPcie(hw?.pcie, hw?.gpus)
+  const memExtra = mem?.extra || {}
 
   if (!machine) return <p className="muted">Loading machine…</p>
 
@@ -91,6 +133,26 @@ export default function MachineDetail() {
       nav('/machines')
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Could not remove machine')
+    }
+  }
+
+  async function clearKind(kind: 'history' | 'events' | 'logs') {
+    const labels = {
+      history: 'hardware history',
+      events: 'events',
+      logs: 'logs',
+    }
+    if (!confirm(`Clear all ${labels[kind]} for this machine? This cannot be undone.`)) return
+    setErr('')
+    setBusy(kind)
+    try {
+      await api(`/api/machines/${machine.id}/${kind}`, { method: 'DELETE' })
+      if (kind === 'logs') setLogs([])
+      else setEvents([])
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : `Could not clear ${labels[kind]}`)
+    } finally {
+      setBusy('')
     }
   }
 
@@ -132,7 +194,7 @@ export default function MachineDetail() {
               <Kv label="Last seen" value={ago(machine.last_seen_at)} />
               <Kv label="System UUID" value={machine.system_uuid} />
               <Kv label="Machine UUID" value={machine.machine_uuid} />
-              <Kv label="Agent" value={`${machine.agent?.status || '—'} ${machine.agent?.version || ''}`} />
+              <Kv label="Agent" value={`${machine.agent?.status || ''} ${machine.agent?.version || ''}`.trim()} />
               <Kv label="Virtualization" value={machine.is_virtual ? machine.virtualization : 'Physical'} />
             </div>
           </div>
@@ -141,9 +203,9 @@ export default function MachineDetail() {
             <div className="kv">
               <Kv label="CPU" value={cpu?.model} />
               <Kv label="RAM installed" value={bytes(mem?.total_physical_bytes)} />
-              <Kv label="RAM slots" value={mem?.slot_count ?? (mem?.total_physical_bytes ? 'Soldered / unified' : 'Unknown / Not reported')} />
+              <Kv label="RAM layout" value={socMem ? 'Soldered / unified' : mem?.slot_count} />
               <Kv label="GPUs" value={machine.gpu_count} />
-              <Kv label="Disks" value={hw?.storage?.disks?.length ?? '—'} />
+              <Kv label="Disks" value={hw?.storage?.disks?.length} />
             </div>
             {canManage && (
               <div className="field" style={{ marginTop: 16 }}>
@@ -184,106 +246,151 @@ export default function MachineDetail() {
             <Kv label="Load average" value={cpu.load_avg_1 != null ? `${cpu.load_avg_1} / ${cpu.load_avg_5} / ${cpu.load_avg_15}` : null} />
             <Kv label="Uptime" value={cpu.uptime_seconds != null ? `${Math.floor(cpu.uptime_seconds / 3600)} h` : null} />
           </div>
-          {cpu.notes?.length > 0 && <p className="muted">{cpu.notes.join(' ')}</p>}
         </div>
       )}
 
       {tab === 'Memory' && mem && (
         <div className="grid">
           <div className="grid stats">
-            <div className="card stat"><div className="label">Slots</div><div className="value">{mem.slot_count ?? (mem.total_physical_bytes ? 'SoC' : '—')}</div></div>
-            <div className="card stat"><div className="label">Occupied</div><div className="value">{mem.occupied_slots ?? '—'}</div></div>
-            <div className="card stat"><div className="label">Free</div><div className="value">{mem.free_slots ?? '—'}</div></div>
-            <div className="card stat"><div className="label">Installed</div><div className="value" style={{ fontSize: 18 }}>{bytes(mem.total_physical_bytes)}</div></div>
-            <div className="card stat"><div className="label">Maximum</div><div className="value" style={{ fontSize: 18 }}>{bytes(mem.max_supported_bytes)}</div></div>
-            <div className="card stat"><div className="label">Usage</div><div className="value" style={{ fontSize: 18 }}>{mem.usage_pct != null ? `${mem.usage_pct.toFixed(1)}%` : '—'}</div></div>
+            {socMem ? (
+              <>
+                <Stat label="Layout" value="SoC unified" />
+                <Stat label="Type" value={memExtra.memory_type} />
+                <Stat label="Speed" value={memExtra.speed_mts ? `${memExtra.speed_mts} MT/s` : null} />
+                <Stat label="Installed" value={bytes(mem.total_physical_bytes)} />
+                <Stat label="Used" value={bytes(mem.used_bytes)} />
+                <Stat label="Available" value={bytes(mem.available_bytes)} />
+                <Stat label="Usage" value={mem.usage_pct != null ? `${mem.usage_pct.toFixed(1)}%` : null} />
+              </>
+            ) : (
+              <>
+                <Stat label="Slots" value={mem.slot_count} />
+                <Stat label="Occupied" value={mem.occupied_slots} />
+                <Stat label="Free" value={mem.free_slots} />
+                <Stat label="Installed" value={bytes(mem.total_physical_bytes)} />
+                <Stat label="Maximum" value={bytes(mem.max_supported_bytes)} />
+                <Stat label="Usage" value={mem.usage_pct != null ? `${mem.usage_pct.toFixed(1)}%` : null} />
+              </>
+            )}
           </div>
           <div className="card">
-            <h3 className="section-title">RAM slots · topology {mem.topology_status}</h3>
-            {mem.unlocated_empty_slots ? <p className="muted">{mem.unlocated_empty_slots} additional empty slot(s) without firmware locators.</p> : null}
-            <div className="ram-grid">
-              {(mem.slots || []).map((s: any) => (
-                <div key={s.slot_locator} className={`ram-slot ${s.occupied ? 'occupied' : ''}`}>
-                  <div className="loc">{s.slot_locator}{s.bank_locator ? ` · ${s.bank_locator}` : ''}</div>
-                  <div className="cap">{s.occupied ? bytes(s.capacity_bytes) : 'EMPTY'}</div>
-                  <div className="meta">
-                    {s.occupied
-                      ? [s.manufacturer, s.memory_type, s.speed_mts ? `${s.speed_mts} MT/s` : null].filter(Boolean).join(' · ')
-                      : 'No module installed'}
-                  </div>
-                  {s.occupied && <div className="meta">{[s.part_number, s.serial_number, s.form_factor, s.ecc].filter((x: any) => x && x !== 'Unknown / Not reported').join(' · ')}</div>}
+            {socMem ? (
+              <>
+                <h3 className="section-title">Unified / soldered memory</h3>
+                <p className="muted">This board has no DIMM map. RAM is on-package with the SoC.</p>
+                <div className="kv" style={{ marginTop: 12 }}>
+                  <Kv label="Installed" value={bytes(mem.total_physical_bytes)} />
+                  <Kv label="Used" value={bytes(mem.used_bytes)} />
+                  <Kv label="Available" value={bytes(mem.available_bytes)} />
+                  <Kv label="Type" value={memExtra.memory_type} />
+                  <Kv label="Form factor" value={memExtra.form_factor} />
+                  <Kv label="EMC / speed" value={memExtra.speed_mts ? `${memExtra.speed_mts} MT/s` : (memExtra.emc_clock_mhz ? `${memExtra.emc_clock_mhz} MHz` : null)} />
                 </div>
-              ))}
-            </div>
-            {(!mem.slots || mem.slots.length === 0) && (
-              <p className="muted">
-                {mem.notes?.some((n: string) => n.toLowerCase().includes('soc') || n.toLowerCase().includes('unified'))
-                  ? 'Soldered / unified memory (Jetson, Pi, and similar boards have no DIMM map).'
-                  : 'Unknown / Not reported — firmware/OS did not expose DIMM topology.'}
-              </p>
+                <Meter value={mem.usage_pct} />
+              </>
+            ) : (
+              <>
+                <h3 className="section-title">RAM slots</h3>
+                {mem.unlocated_empty_slots ? <p className="muted">{mem.unlocated_empty_slots} additional empty slot(s) without firmware locators.</p> : null}
+                <div className="ram-grid">
+                  {(mem.slots || []).map((s: any) => (
+                    <div key={s.slot_locator} className={`ram-slot ${s.occupied ? 'occupied' : ''}`}>
+                      <div className="loc">{s.slot_locator}{s.bank_locator ? ` · ${s.bank_locator}` : ''}</div>
+                      <div className="cap">{s.occupied ? bytes(s.capacity_bytes) : 'EMPTY'}</div>
+                      <div className="meta">
+                        {s.occupied
+                          ? [s.manufacturer, s.memory_type, s.speed_mts ? `${s.speed_mts} MT/s` : null].filter(Boolean).join(' · ')
+                          : 'No module installed'}
+                      </div>
+                      {s.occupied && (
+                        <div className="meta">
+                          {[s.part_number, s.serial_number, s.form_factor, s.ecc].filter((x: any) => !isBlank(x)).join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {(!mem.slots || mem.slots.length === 0) && (
+                  <p className="muted">Firmware/OS did not expose DIMM topology.</p>
+                )}
+              </>
             )}
-            {mem.notes?.length > 0 && <p className="muted">{mem.notes.join(' ')}</p>}
-            <p className="muted" style={{ marginTop: 12 }}>
-              Usage: {bytes(mem.used_bytes)} / {bytes(mem.total_physical_bytes)} available {bytes(mem.available_bytes)}
-            </p>
           </div>
         </div>
       )}
 
       {tab === 'GPU' && (
         <div className="grid">
-          <div className="card">
-            <h3 className="section-title">PCIe / GPU slots · {hw?.pcie?.topology_status}</h3>
-            <p className="muted">{hw?.pcie?.topology_note || ''}</p>
-            {hw?.pcie?.gpu_capable_total != null && (
-              <p>GPU-capable slots: {hw.pcie.gpu_capable_total} · occupied {hw.pcie.gpu_capable_occupied} · free {hw.pcie.gpu_capable_free}</p>
-            )}
-            {hw?.pcie?.gpu_capable_total == null && (
-              <p className="muted">
-                {(hw?.pcie?.notes || []).some((n: string) => String(n).toLowerCase().includes('on-package') || String(n).toLowerCase().includes('soc'))
-                  ? 'Integrated GPU: there is no removable PCIe GPU slot on this board.'
-                  : 'GPU-capable slot count not exposed; x16 PCIe is not assumed to be a GPU slot.'}
-              </p>
-            )}
-            {(hw?.pcie?.slots || []).length > 0 && (
-              <table>
-                <thead><tr><th>Slot</th><th>Type</th><th>Width</th><th>Usage</th><th>GPU-capable</th><th>Device</th></tr></thead>
-                <tbody>
-                  {hw.pcie.slots.map((s: any) => (
-                    <tr key={s.slot_designation}>
-                      <td>{s.slot_designation}</td>
-                      <td>{s.slot_type}</td>
-                      <td>{s.width}</td>
-                      <td>{s.current_usage}</td>
-                      <td>{s.is_gpu_capable == null ? 'Unknown' : s.is_gpu_capable ? 'Yes' : 'No'}</td>
-                      <td>{s.attached_device}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          {!socPcie && (
+            <div className="card">
+              <h3 className="section-title">PCIe GPU slots</h3>
+              {(hw?.pcie?.slots || []).length > 0 ? (
+                <>
+                  {hw?.pcie?.gpu_capable_total != null && (
+                    <p>GPU-capable slots: {hw.pcie.gpu_capable_total} · occupied {hw.pcie.gpu_capable_occupied} · free {hw.pcie.gpu_capable_free}</p>
+                  )}
+                  <table>
+                    <thead><tr><th>Slot</th><th>Type</th><th>Width</th><th>Usage</th><th>GPU-capable</th><th>Device</th></tr></thead>
+                    <tbody>
+                      {hw.pcie.slots.map((s: any) => (
+                        <tr key={s.slot_designation}>
+                          <td>{s.slot_designation}</td>
+                          <td>{s.slot_type}</td>
+                          <td>{s.width}</td>
+                          <td>{s.current_usage}</td>
+                          <td>{s.is_gpu_capable == null ? '—' : s.is_gpu_capable ? 'Yes' : 'No'}</td>
+                          <td>{s.attached_device}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : (
+                <p className="muted">PCIe slot map was not exposed by firmware.</p>
+              )}
+            </div>
+          )}
           <div className="gpu-grid">
-            {(hw?.gpus || []).map((g: any) => (
-              <div className="card" key={g.index}>
-                <h3 style={{ marginTop: 0 }}>GPU {g.index} · {g.model}</h3>
-                <div className="muted">{g.vendor} · {g.slot_designation}</div>
-                <p>Temperature: {g.temperature_c != null ? `${g.temperature_c} °C` : 'Unknown / Not reported'}</p>
-                <p>Utilization: {g.utilization_pct != null ? `${g.utilization_pct}%` : 'Unknown / Not reported'}</p>
-                <Meter value={g.utilization_pct} />
-                <p>
-                  VRAM:{' '}
-                  {g.extra?.memory_kind === 'unified'
-                    ? `Unified with system RAM${g.extra?.unified_ram_bytes ? ` (${bytes(g.extra.unified_ram_bytes)})` : ''}`
-                    : g.vram_bytes
-                      ? bytes(g.vram_bytes)
-                      : 'Unknown / Not reported'}
-                </p>
-                <p>Power: {g.power_w != null ? `${g.power_w} W` : 'Unknown / Not reported'}</p>
-                <p>Driver: {fmt(g.driver_version)}</p>
-                <p>PCI: {fmt(g.pci_bus)} · Serial {fmt(g.serial_number)}</p>
-              </div>
-            ))}
+            {(hw?.gpus || []).map((g: any) => {
+              const soc = isSocGpu(g)
+              const extra = g.extra || {}
+              const rails = extra.power_rails || {}
+              const railText = Object.entries(rails)
+                .map(([name, watts]) => `${name} ${Number(watts).toFixed(2)} W`)
+                .join(' · ')
+              const unified = extra.unified_ram_bytes || (soc ? g.vram_bytes : null)
+              const unifiedUsed = extra.unified_ram_used_bytes
+              return (
+                <div className="card" key={g.index}>
+                  <h3 style={{ marginTop: 0 }}>GPU {g.index} · {g.model}</h3>
+                  <div className="muted">{[g.vendor, soc ? 'SoC (nvgpu)' : g.slot_designation].filter((x) => !isBlank(x)).join(' · ')}</div>
+                  <Show label="Temperature" value={g.temperature_c != null ? `${g.temperature_c} °C` : null} />
+                  <Show label="Utilization" value={g.utilization_pct != null ? `${g.utilization_pct}%` : null} />
+                  <Meter value={g.utilization_pct} />
+                  {soc ? (
+                    <Show
+                      label="Memory"
+                      value={
+                        unified
+                          ? `Unified with system RAM ${bytes(unified)}${unifiedUsed != null ? ` · used ${bytes(unifiedUsed)}` : ''}`
+                          : null
+                      }
+                    />
+                  ) : (
+                    <Show label="VRAM" value={bytes(g.vram_bytes)} />
+                  )}
+                  <Show label="GPU power" value={g.power_w != null ? `${g.power_w} W` : null} />
+                  <Show label="Board power" value={extra.board_power_w != null ? `${extra.board_power_w} W` : null} supported={soc} />
+                  {soc && railText ? <p className="muted">{railText}</p> : null}
+                  <Show label="Graphics clock" value={g.graphics_clock_mhz != null ? `${g.graphics_clock_mhz} MHz` : null} />
+                  <Show label={soc ? 'EMC / memory clock' : 'Memory clock'} value={g.memory_clock_mhz != null ? `${g.memory_clock_mhz} MHz` : null} />
+                  <Show label="Driver" value={g.driver_version} />
+                  <Show label="L4T" value={extra.l4t_version} supported={Boolean(soc && extra.l4t_version && extra.l4t_version !== g.driver_version)} />
+                  <Show label="PCI" value={g.pci_bus} supported={!soc} />
+                  <Show label="Serial" value={g.serial_number} supported={!soc} />
+                </div>
+              )
+            })}
             {(!hw?.gpus || hw.gpus.length === 0) && <div className="card muted">No GPUs detected.</div>}
           </div>
         </div>
@@ -299,7 +406,8 @@ export default function MachineDetail() {
                 <tr key={d.name + d.serial_number}>
                   <td>{d.name}</td><td>{d.model}</td><td className="mono">{d.serial_number}</td>
                   <td>{bytes(d.capacity_bytes)}</td><td>{d.interface}</td><td>{d.media_type}</td>
-                  <td>{d.smart_status}</td><td>{d.temperature_c != null ? `${d.temperature_c}°C` : '—'}</td>
+                  <td>{isBlank(d.smart_status) ? '—' : d.smart_status}</td>
+                  <td>{d.temperature_c != null ? `${d.temperature_c}°C` : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -360,7 +468,14 @@ export default function MachineDetail() {
 
       {tab === 'History' && (
         <div className="card">
-          <h3 className="section-title">Hardware history</h3>
+          <div className="section-head">
+            <h3 className="section-title">Hardware history</h3>
+            {canManage && (
+              <button className="btn danger" type="button" disabled={busy === 'history'} onClick={() => clearKind('history')}>
+                Clear history
+              </button>
+            )}
+          </div>
           <div className="timeline">
             {events.map((e) => (
               <div className="tl-item" key={e.id}>
@@ -391,17 +506,34 @@ export default function MachineDetail() {
 
       {tab === 'Events' && (
         <div className="card">
+          <div className="section-head">
+            <h3 className="section-title">Events</h3>
+            {canManage && (
+              <button className="btn danger" type="button" disabled={busy === 'events'} onClick={() => clearKind('events')}>
+                Clear events
+              </button>
+            )}
+          </div>
           {events.map((e) => (
             <div key={e.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--line)' }}>
               <span className={`badge ${e.severity}`}>{e.event_type}</span> {e.summary}
               <div className="muted">{ago(e.created_at)}</div>
             </div>
           ))}
+          {events.length === 0 && <p className="muted">No events for this machine.</p>}
         </div>
       )}
 
       {tab === 'Logs' && (
         <div className="card">
+          <div className="section-head">
+            <h3 className="section-title">Logs</h3>
+            {canManage && (
+              <button className="btn danger" type="button" disabled={busy === 'logs'} onClick={() => clearKind('logs')}>
+                Clear logs
+              </button>
+            )}
+          </div>
           <div className="toolbar">
             {['ALL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'CRITICAL'].map((lvl) => (
               <button
@@ -472,21 +604,19 @@ function Charts({ metrics }: { metrics: any }) {
 }
 
 function ChartBlock({ title, data, dataKey }: { title: string; data: any[]; dataKey: string }) {
+  const has = data.some((row) => row[dataKey] != null)
+  if (!has) return null
   return (
     <div style={{ height: 220 }}>
       <h3 className="section-title">{title}</h3>
-      {data.length === 0 ? (
-        <p className="muted">No samples in this range.</p>
-      ) : (
-        <ResponsiveContainer width="100%" height={180}>
-          <LineChart data={data}>
-            <XAxis dataKey="t" hide />
-            <YAxis width={40} />
-            <Tooltip />
-            <Line type="monotone" dataKey={dataKey} stroke="#3dbe9a" dot={false} strokeWidth={2} />
-          </LineChart>
-        </ResponsiveContainer>
-      )}
+      <ResponsiveContainer width="100%" height={180}>
+        <LineChart data={data}>
+          <XAxis dataKey="t" hide />
+          <YAxis width={40} />
+          <Tooltip />
+          <Line type="monotone" dataKey={dataKey} stroke="#3dbe9a" dot={false} strokeWidth={2} />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   )
 }

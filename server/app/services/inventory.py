@@ -157,6 +157,7 @@ async def _replace_normalized(db: AsyncSession, machine_id: UUID, payload: Inven
         topology_status=mem.topology_status,
         unlocated_empty_slots=mem.unlocated_empty_slots,
         notes=mem.notes,
+        extra=mem.extra or {},
     )
     if existing_mem:
         for k, v in mem_data.items():

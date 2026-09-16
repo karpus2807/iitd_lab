@@ -77,7 +77,7 @@ code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
 .topbar p { margin: 0; color: var(--muted); }
 
 .grid { display: grid; gap: 16px; }
-.stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.stats { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .card {
   background: var(--bg-elev);
   border: 1px solid var(--line);
@@ -139,6 +139,8 @@ select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
 .kv { display: grid; grid-template-columns: 180px 1fr; gap: 8px 16px; }
 .kv span { color: var(--muted); }
 .section-title { margin: 0 0 12px; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.section-head .section-title { margin: 0; }
 
 .ram-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
 .ram-slot {
