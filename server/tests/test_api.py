@@ -458,3 +458,50 @@ async def test_soc_inventory_and_clear_history_events_logs(client: AsyncClient, 
     cleared_logs = await client.delete(f"/api/machines/{machine_id}/logs", headers=auth_headers)
     assert cleared_logs.status_code == 200
     assert (await client.get(f"/api/machines/{machine_id}/logs", headers=auth_headers)).json() == []
+
+
+@pytest.mark.asyncio
+async def test_alert_count_drops_on_resolve_and_clear(client: AsyncClient, auth_headers):
+    tok = await client.post("/api/admin/tokens", headers=auth_headers, json={"label": "alert", "expires_hours": 24})
+    reg = await client.post(
+        "/api/agents/register",
+        json={
+            "registration_token": tok.json()["token"],
+            "agent_uuid": "agent-alert-001",
+            "agent_version": "1.1.21",
+            "identity": {"hostname": "ALERT-PC", "os_name": "Linux", "architecture": "x86_64", "system_uuid": "sys-alert-001"},
+        },
+    )
+    assert reg.status_code == 200, reg.text
+    headers = {"Authorization": f"Bearer {reg.json()['agent_id']}:{reg.json()['agent_secret']}"}
+    first = await client.post(
+        "/api/agents/inventory",
+        headers=headers,
+        json={
+            "identity": {"hostname": "ALERT-PC"},
+            "gpus": [{"index": 0, "vendor": "NVIDIA", "model": "RTX 4090", "pci_bus": "0000:01:00.0"}],
+        },
+    )
+    assert first.status_code == 200, first.text
+    second = await client.post(
+        "/api/agents/inventory",
+        headers=headers,
+        json={"identity": {"hostname": "ALERT-PC"}, "gpus": []},
+    )
+    assert second.status_code == 200, second.text
+    opened = await client.get("/api/alerts?status=OPEN", headers=auth_headers)
+    assert opened.status_code == 200
+    assert opened.json(), opened.text
+    summary = await client.get("/api/alerts/summary", headers=auth_headers)
+    assert summary.status_code == 200
+    assert summary.json()["active"] >= 1
+    alert_id = opened.json()[0]["id"]
+    resolved = await client.post(f"/api/alerts/{alert_id}/resolve", headers=auth_headers)
+    assert resolved.status_code == 200, resolved.text
+    after = await client.get("/api/alerts/summary", headers=auth_headers)
+    assert after.json()["open"] == 0
+    assert after.json()["active"] == 0
+    cleared = await client.delete("/api/alerts?status=RESOLVED", headers=auth_headers)
+    assert cleared.status_code == 200
+    listed = await client.get("/api/alerts?status=RESOLVED", headers=auth_headers)
+    assert listed.json() == []

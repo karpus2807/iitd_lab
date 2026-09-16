@@ -1,14 +1,64 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy import delete, func, select
 
 from app.api.deps import AdminUser, CurrentUser, DbDep, OperatorUser, write_audit
 from app.enums import AlertStatus
-from app.models import Alert, AlertRule, Machine, utcnow
+from app.models import Alert, AlertRule, Machine, Notification, utcnow
 from app.schemas.api import AlertRuleIn
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
+
+
+async def _sync_open_alert_flag(db, machine_id: UUID | None) -> None:
+    if machine_id is None:
+        return
+    machine = await db.get(Machine, machine_id)
+    if machine is None:
+        return
+    remaining = (
+        await db.execute(
+            select(func.count())
+            .select_from(Alert)
+            .where(
+                Alert.machine_id == machine_id,
+                Alert.status.in_([AlertStatus.OPEN.value, AlertStatus.ACKNOWLEDGED.value]),
+            )
+        )
+    ).scalar_one()
+    machine.has_open_alerts = bool(remaining)
+
+
+async def _mark_related_notifications_read(db, machine_id: UUID | None) -> None:
+    if machine_id is None:
+        return
+    mid = str(machine_id)
+    rows = (await db.execute(select(Notification).where(Notification.read.is_(False)))).scalars().all()
+    for row in rows:
+        if str((row.payload or {}).get("machine_id") or "") == mid:
+            row.read = True
+
+
+@router.get("/summary")
+async def alert_summary(db: DbDep, user: CurrentUser):
+    open_n = (
+        await db.execute(select(func.count()).select_from(Alert).where(Alert.status == AlertStatus.OPEN.value))
+    ).scalar_one()
+    ack_n = (
+        await db.execute(
+            select(func.count()).select_from(Alert).where(Alert.status == AlertStatus.ACKNOWLEDGED.value)
+        )
+    ).scalar_one()
+    resolved_n = (
+        await db.execute(select(func.count()).select_from(Alert).where(Alert.status == AlertStatus.RESOLVED.value))
+    ).scalar_one()
+    return {
+        "open": int(open_n or 0),
+        "acknowledged": int(ack_n or 0),
+        "resolved": int(resolved_n or 0),
+        "active": int(open_n or 0) + int(ack_n or 0),
+    }
 
 
 @router.get("")
@@ -54,6 +104,7 @@ async def acknowledge(alert_id: UUID, db: DbDep, user: OperatorUser):
     alert.status = AlertStatus.ACKNOWLEDGED.value
     alert.acknowledged_by_id = user.id
     alert.acknowledged_at = utcnow()
+    await _sync_open_alert_flag(db, alert.machine_id)
     await write_audit(db, "alert.acknowledge", user=user, machine_id=alert.machine_id, details={"alert_id": str(alert_id)})
     await db.commit()
     return {"ok": True}
@@ -66,19 +117,54 @@ async def resolve(alert_id: UUID, db: DbDep, user: OperatorUser):
         raise HTTPException(404, "Alert not found")
     alert.status = AlertStatus.RESOLVED.value
     alert.resolved_at = utcnow()
-    machine = await db.get(Machine, alert.machine_id) if alert.machine_id else None
-    if machine:
-        remaining = (
-            await db.execute(
-                select(Alert).where(
-                    Alert.machine_id == machine.id,
-                    Alert.id != alert.id,
-                    Alert.status.in_([AlertStatus.OPEN.value, AlertStatus.ACKNOWLEDGED.value]),
-                )
-            )
-        ).scalars().all()
-        machine.has_open_alerts = bool(remaining)
+    await _sync_open_alert_flag(db, alert.machine_id)
+    await _mark_related_notifications_read(db, alert.machine_id)
     await write_audit(db, "alert.resolve", user=user, machine_id=alert.machine_id)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("")
+async def clear_alerts(
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    status_filter: str | None = Query(None, alias="status"),
+):
+    stmt = delete(Alert)
+    wanted = (status_filter or "").strip().upper()
+    if wanted:
+        if wanted not in {AlertStatus.OPEN.value, AlertStatus.ACKNOWLEDGED.value, AlertStatus.RESOLVED.value}:
+            raise HTTPException(400, "status must be OPEN, ACKNOWLEDGED, or RESOLVED")
+        stmt = stmt.where(Alert.status == wanted)
+    result = await db.execute(stmt)
+    machines = (await db.execute(select(Machine))).scalars().all()
+    for machine in machines:
+        await _sync_open_alert_flag(db, machine.id)
+    if not wanted:
+        notes = (await db.execute(select(Notification).where(Notification.read.is_(False)))).scalars().all()
+        for row in notes:
+            row.read = True
+    await write_audit(
+        db,
+        "alert.clear",
+        user=user,
+        details={"status": wanted or "ALL", "deleted": result.rowcount or 0},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True, "deleted": result.rowcount or 0}
+
+
+@router.delete("/{alert_id}")
+async def delete_alert(alert_id: UUID, db: DbDep, user: OperatorUser, request: Request):
+    alert = await db.get(Alert, alert_id)
+    if not alert:
+        raise HTTPException(404, "Alert not found")
+    machine_id = alert.machine_id
+    await db.delete(alert)
+    await _sync_open_alert_flag(db, machine_id)
+    await write_audit(db, "alert.delete", user=user, machine_id=machine_id, details={"alert_id": str(alert_id)}, request=request)
     await db.commit()
     return {"ok": True}
 

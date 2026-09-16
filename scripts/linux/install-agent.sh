@@ -65,7 +65,7 @@ _python_ok() {
 
 _find_python() {
   local c
-  for c in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
+  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
     if command -v "$c" >/dev/null && _python_ok "$(command -v "$c")"; then
       command -v "$c"
       return 0
@@ -111,12 +111,7 @@ TTY=""
 if [[ -c /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
   TTY="/dev/tty"
 fi
-_restore_echo() {
-  if [[ -n "$TTY" ]]; then
-    stty -F "$TTY" echo 2>/dev/null || stty echo <"$TTY" 2>/dev/null || true
-  fi
-}
-trap _restore_echo EXIT
+REPLY_TTY=""
 
 _say() {
   if [[ -n "$TTY" ]]; then
@@ -126,8 +121,11 @@ _say() {
   fi
 }
 
-_read_tty() {
-  local prompt="$1" silent="${2:-0}" value=""
+_ask() {
+  # Read from the real keyboard, not from `curl | sudo` stdin (that is the script).
+  # Do not run this inside $(...) — a subshell + stty/read on /dev/tty can hang.
+  local prompt="$1" silent="${2:-0}"
+  REPLY_TTY=""
   if [[ -z "$TTY" ]]; then
     _say "No terminal attached (curl | sudo bash needs a real TTY)."
     _say "Save the script first:"
@@ -138,14 +136,19 @@ _read_tty() {
   fi
   printf '%s' "$prompt" >"$TTY"
   if [[ "$silent" == "1" ]]; then
-    stty -F "$TTY" -echo 2>/dev/null || stty -echo <"$TTY" 2>/dev/null || true
-    IFS= read -r -t 180 value <"$TTY" || true
-    stty -F "$TTY" echo 2>/dev/null || stty echo <"$TTY" 2>/dev/null || true
+    if ! IFS= read -r -s -t 180 REPLY_TTY <"$TTY"; then
+      printf '\n' >"$TTY"
+      _say "No password entered (timeout). Run again, or: sudo bash /tmp/labwatch-install.sh"
+      return 1
+    fi
     printf '\n' >"$TTY"
   else
-    IFS= read -r -t 180 value <"$TTY" || true
+    if ! IFS= read -r -t 180 REPLY_TTY <"$TTY"; then
+      _say "No input entered (timeout). Run again, or: sudo bash /tmp/labwatch-install.sh"
+      return 1
+    fi
   fi
-  printf '%s' "$value"
+  return 0
 }
 
 if systemctl is-active --quiet labwatch-agent 2>/dev/null || [[ -f "${CONFIG_DIR}/config.toml" ]]; then
@@ -179,21 +182,25 @@ fi
 
 _say ""
 _say "Login for ${SERVER_URL}"
-_say "Password is hidden (no dots). Type it and press Enter."
+_say "Multiple devices can use the same admin login. That does not block install."
 if [[ -z "$USERNAME" ]]; then
-  USERNAME="$(_read_tty 'LabWatch username: ')" || exit 1
-  _say "Username: ${USERNAME}"
+  _ask "Username: " || exit 1
+  USERNAME="$REPLY_TTY"
 fi
 if [[ -z "$PASSWORD" ]]; then
-  PASSWORD="$(_read_tty 'LabWatch password (hidden): ' 1)" || exit 1
-  if [[ -n "$PASSWORD" ]]; then
-    _say "Password received."
+  _say "Type the LabWatch password now. Nothing will appear (no dots). Then press Enter."
+  _ask "Password: " 1 || exit 1
+  PASSWORD="$REPLY_TTY"
+  if [[ -z "$PASSWORD" ]]; then
+    _say "Password was empty. Run the installer again."
+    exit 1
   fi
+  _say "Password received. Asking for machine ID next…"
 fi
 if [[ -z "${LABWATCH_INVENTORY_ID:-}" && -z "${2:-}" ]]; then
-  TYPED="$(_read_tty "Machine ID [${EXISTING_INVENTORY:-example 12345/2012/12}]: ")" || exit 1
-  if [[ -n "$TYPED" ]]; then
-    INVENTORY_ID="$TYPED"
+  _ask "Machine ID [${EXISTING_INVENTORY:-example 12345/2012/12}]: " || exit 1
+  if [[ -n "$REPLY_TTY" ]]; then
+    INVENTORY_ID="$REPLY_TTY"
   fi
 fi
 
@@ -278,7 +285,8 @@ PY
     CHOICE="$LABWATCH_LAB"
     _say "$CHOICE"
   else
-    CHOICE="$(_read_tty '')" || exit 1
+    _ask "" || exit 1
+    CHOICE="$REPLY_TTY"
   fi
   LAB_PICK="$(
     CHOICE="$CHOICE" python3 - "$LABS_JSON" <<'PY'

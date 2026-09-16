@@ -1,5 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { clearSession, currentUser } from './api'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { api, clearSession, currentUser } from './api'
 import { useEffect, useState } from 'react'
 
 const links = [
@@ -11,6 +11,7 @@ const links = [
 
 export default function Layout() {
   const nav = useNavigate()
+  const location = useLocation()
   const user = currentUser()
   const [theme, setTheme] = useState(localStorage.getItem('lw_theme') || 'dark')
   const [unread, setUnread] = useState(0)
@@ -21,11 +22,19 @@ export default function Layout() {
   }, [theme])
 
   useEffect(() => {
-    fetch('/api/notifications?unread=true', { headers: { Authorization: `Bearer ${localStorage.getItem('lw_access')}` } })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows) => setUnread(Array.isArray(rows) ? rows.length : 0))
-      .catch(() => undefined)
-  }, [])
+    function loadCount() {
+      api<{ active?: number }>('/api/alerts/summary')
+        .then((s) => setUnread(s.active || 0))
+        .catch(() => undefined)
+    }
+    loadCount()
+    const timer = window.setInterval(loadCount, 10000)
+    window.addEventListener('lw-alerts-changed', loadCount)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('lw-alerts-changed', loadCount)
+    }
+  }, [location.pathname])
 
   return (
     <div className="app">
