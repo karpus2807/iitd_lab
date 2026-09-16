@@ -107,28 +107,49 @@ if ! command -v curl >/dev/null; then
   exit 1
 fi
 
+TTY=""
+if [[ -c /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
+  TTY="/dev/tty"
+fi
+_restore_echo() {
+  if [[ -n "$TTY" ]]; then
+    stty -F "$TTY" echo 2>/dev/null || stty echo <"$TTY" 2>/dev/null || true
+  fi
+}
+trap _restore_echo EXIT
+
+_say() {
+  if [[ -n "$TTY" ]]; then
+    printf '%s\n' "$*" >"$TTY"
+  else
+    printf '%s\n' "$*" >&2
+  fi
+}
+
 _read_tty() {
   local prompt="$1" silent="${2:-0}" value=""
-  if [[ -r /dev/tty ]]; then
-    if [[ "$silent" == "1" ]]; then
-      read -r -s -p "$prompt" value </dev/tty || true
-      echo >/dev/tty
-    else
-      read -r -p "$prompt" value </dev/tty || true
-    fi
+  if [[ -z "$TTY" ]]; then
+    _say "No terminal attached (curl | sudo bash needs a real TTY)."
+    _say "Save the script first:"
+    _say "  curl -fsSL ${SERVER_URL}/install-agent.sh -o /tmp/labwatch-install.sh"
+    _say "  sudo bash /tmp/labwatch-install.sh"
+    _say "Or set LABWATCH_USER, LABWATCH_PASSWORD, LABWATCH_INVENTORY_ID, LABWATCH_LAB."
+    return 1
+  fi
+  printf '%s' "$prompt" >"$TTY"
+  if [[ "$silent" == "1" ]]; then
+    stty -F "$TTY" -echo 2>/dev/null || stty -echo <"$TTY" 2>/dev/null || true
+    IFS= read -r -t 180 value <"$TTY" || true
+    stty -F "$TTY" echo 2>/dev/null || stty echo <"$TTY" 2>/dev/null || true
+    printf '\n' >"$TTY"
   else
-    if [[ "$silent" == "1" ]]; then
-      read -r -s -p "$prompt" value || true
-      echo
-    else
-      read -r -p "$prompt" value || true
-    fi
+    IFS= read -r -t 180 value <"$TTY" || true
   fi
   printf '%s' "$value"
 }
 
 if systemctl is-active --quiet labwatch-agent 2>/dev/null || [[ -f "${CONFIG_DIR}/config.toml" ]]; then
-  echo "Existing LabWatch agent found. Enter keeps the current machine ID and lab."
+  _say "Existing LabWatch agent found. Enter keeps the current machine ID and lab."
   systemctl stop labwatch-agent 2>/dev/null || true
 fi
 
@@ -156,14 +177,21 @@ if [[ -z "$INVENTORY_ID" && -n "$EXISTING_INVENTORY" ]]; then
   INVENTORY_ID="$EXISTING_INVENTORY"
 fi
 
+_say ""
+_say "Login for ${SERVER_URL}"
+_say "Password is hidden (no dots). Type it and press Enter."
 if [[ -z "$USERNAME" ]]; then
-  USERNAME="$(_read_tty 'LabWatch username: ')"
+  USERNAME="$(_read_tty 'LabWatch username: ')" || exit 1
+  _say "Username: ${USERNAME}"
 fi
 if [[ -z "$PASSWORD" ]]; then
-  PASSWORD="$(_read_tty 'LabWatch password: ' 1)"
+  PASSWORD="$(_read_tty 'LabWatch password (hidden): ' 1)" || exit 1
+  if [[ -n "$PASSWORD" ]]; then
+    _say "Password received."
+  fi
 fi
 if [[ -z "${LABWATCH_INVENTORY_ID:-}" && -z "${2:-}" ]]; then
-  TYPED="$(_read_tty "Machine ID [${EXISTING_INVENTORY:-example 12345/2012/12}]: ")"
+  TYPED="$(_read_tty "Machine ID [${EXISTING_INVENTORY:-example 12345/2012/12}]: ")" || exit 1
   if [[ -n "$TYPED" ]]; then
     INVENTORY_ID="$TYPED"
   fi
@@ -175,9 +203,9 @@ if [[ -z "$USERNAME" || -z "$PASSWORD" || -z "$INVENTORY_ID" ]]; then
 fi
 
 if [[ -z "$LAB_ID" ]]; then
-  echo "Fetching labs from ${SERVER_URL}…"
-  LAB_PICK="$(
-    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" LABWATCH_LAB="$LAB_NAME" INVENTORY_ID="$INVENTORY_ID" EXISTING_LAB_ID="$EXISTING_LAB_ID" EXISTING_LAB_NAME="$EXISTING_LAB_NAME" python3 - <<'PY'
+  _say "Fetching labs from ${SERVER_URL} (direct, 20s timeout)…"
+  LABS_JSON="$(
+    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" EXISTING_LAB_ID="$EXISTING_LAB_ID" EXISTING_LAB_NAME="$EXISTING_LAB_NAME" python3 - <<'PY'
 import json, os, sys, urllib.error, urllib.parse, urllib.request
 
 def call(method, path, data=None, token=None):
@@ -186,8 +214,9 @@ def call(method, path, data=None, token=None):
         headers["Authorization"] = "Bearer " + token
     raw = None if data is None else json.dumps(data).encode()
     req = urllib.request.Request(os.environ["SERVER_URL"] + path, data=raw, headers=headers, method=method)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with opener.open(req, timeout=20) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
@@ -195,11 +224,12 @@ def call(method, path, data=None, token=None):
     except urllib.error.URLError as exc:
         raise SystemExit(f"Cannot reach {os.environ['SERVER_URL']}: {exc}")
 
-tty_out = open("/dev/tty", "w") if os.path.exists("/dev/tty") else sys.stderr
-tty_in = open("/dev/tty", "r") if os.path.exists("/dev/tty") else sys.stdin
-
+sys.stderr.write("Logging in…\n")
+sys.stderr.flush()
 login = call("POST", "/api/auth/login", {"username": os.environ["USERNAME"], "password": os.environ["PASSWORD"]})
 token = login["access_token"]
+sys.stderr.write("Loading lab list…\n")
+sys.stderr.flush()
 labs = call("GET", "/api/labs", token=token)
 if not isinstance(labs, list) or not labs:
     raise SystemExit("No labs found. Create labs in Admin first.")
@@ -223,45 +253,70 @@ if current is None:
     if name:
         current = next((row for row in labs if str(row.get("name") or "").lower() == name), None)
 
-tty_out.write("\nLabs:\n")
-for i, lab in enumerate(labs, 1):
-    extra = f"  ({lab.get('machine_count') or 0} hosts)" if lab.get("machine_count") is not None else ""
-    mark = "  [current]" if current and lab["id"] == current["id"] else ""
-    tty_out.write(f"  {i}) {lab['name']}{extra}{mark}\n")
-tty_out.flush()
-preset = (os.environ.get("LABWATCH_LAB") or "").strip()
-choice = None
-if preset.isdigit():
-    choice = int(preset)
-elif preset:
-    for i, lab in enumerate(labs, 1):
-        if lab["name"].lower() == preset.lower():
-            choice = i
-            break
-    if choice is None:
-        raise SystemExit(f"Unknown lab '{preset}'")
-else:
-    keep = current["name"] if current else unassigned["name"]
-    tty_out.write(f"Select lab number (Enter keeps {keep}): ")
-    tty_out.flush()
-    raw = tty_in.readline().strip()
-    if not raw:
-        chosen = current or unassigned
-        tty_out.write(f"Keeping {chosen['name']}\n")
-        print(json.dumps({"lab_id": chosen["id"], "lab": chosen["name"]}))
-        raise SystemExit
-    if not raw.isdigit():
-        raise SystemExit("Select a lab by number, for example 1")
-    choice = int(raw)
-if choice < 1 or choice > len(labs):
-    raise SystemExit(f"Lab number must be between 1 and {len(labs)}")
-chosen = labs[choice - 1]
-tty_out.write(f"Selected {choice}) {chosen['name']}\n")
-print(json.dumps({"lab_id": chosen["id"], "lab": chosen["name"]}))
+print(json.dumps({
+    "labs": [{"id": row["id"], "name": row["name"], "machine_count": row.get("machine_count") or 0} for row in labs],
+    "current_id": current["id"] if current else unassigned["id"],
+    "current_name": current["name"] if current else unassigned["name"],
+}))
 PY
-  )"
+  )" || {
+    echo "Could not fetch labs. Check username/password and that ${SERVER_URL} is reachable."
+    exit 1
+  }
+  python3 - "$LABS_JSON" <<'PY' >"${TTY:-/dev/stderr}"
+import json, sys
+data = json.loads(sys.argv[1])
+print("\nLabs:")
+for i, lab in enumerate(data["labs"], 1):
+    extra = "  (%s hosts)" % lab.get("machine_count", 0)
+    mark = "  [current]" if lab["id"] == data.get("current_id") else ""
+    print("  %s) %s%s%s" % (i, lab["name"], extra, mark))
+print("Select lab number (Enter keeps %s): " % data["current_name"], end="")
+sys.stdout.flush()
+PY
+  if [[ -n "${LABWATCH_LAB:-}" ]]; then
+    CHOICE="$LABWATCH_LAB"
+    _say "$CHOICE"
+  else
+    CHOICE="$(_read_tty '')" || exit 1
+  fi
+  LAB_PICK="$(
+    CHOICE="$CHOICE" python3 - "$LABS_JSON" <<'PY'
+import json, os, sys
+data = json.loads(sys.argv[1])
+labs = data["labs"]
+raw = (os.environ.get("CHOICE") or "").strip()
+preset = (os.environ.get("LABWATCH_LAB") or "").strip()
+if preset.isdigit():
+    raw = preset
+elif preset:
+    match = next((i for i, lab in enumerate(labs, 1) if lab["name"].lower() == preset.lower()), None)
+    if match is None:
+        raise SystemExit("Unknown lab '%s'" % preset)
+    raw = str(match)
+if not raw:
+    chosen = next(lab for lab in labs if lab["id"] == data["current_id"])
+    print(json.dumps({"lab_id": chosen["id"], "lab": chosen["name"], "kept": True}))
+    raise SystemExit
+if not raw.isdigit():
+    raise SystemExit("Select a lab by number, for example 1")
+choice = int(raw)
+if choice < 1 or choice > len(labs):
+    raise SystemExit("Lab number must be between 1 and %s" % len(labs))
+chosen = labs[choice - 1]
+print(json.dumps({"lab_id": chosen["id"], "lab": chosen["name"], "kept": False, "n": choice}))
+PY
+  )" || {
+    echo "Invalid lab choice."
+    exit 1
+  }
   LAB_ID="$(printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lab_id"])')"
   LAB_NAME="$(printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lab"])')"
+  if printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("kept") else 1)'; then
+    _say "Keeping ${LAB_NAME}"
+  else
+    _say "Selected ${LAB_NAME}"
+  fi
   echo "Using lab: ${LAB_NAME}"
 fi
 
@@ -283,12 +338,15 @@ req = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 try:
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with opener.open(req, timeout=20) as resp:
         print(resp.read().decode())
 except urllib.error.HTTPError as exc:
     body = exc.read().decode(errors="replace")
     raise SystemExit(f"Enroll failed ({exc.code}): {body}")
+except urllib.error.URLError as exc:
+    raise SystemExit(f"Enroll failed: {exc}")
 PY
 )"
 TOKEN="$(printf '%s' "$ENROLL_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["registration_token"])')"
