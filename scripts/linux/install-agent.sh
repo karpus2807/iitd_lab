@@ -6,15 +6,19 @@ set -euo pipefail
 PREFIX="${PREFIX:-/opt/labwatch-agent}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/labwatch-agent}"
 STATE_DIR="${STATE_DIR:-/var/lib/labwatch-agent}"
-# install.py replaces __SERVER_URL__ with the public URL (includes :8080).
-# Do not compare against that replaced value — that used to strip the port.
-SERVER_URL="${LABWATCH_SERVER_URL:-${1:-__SERVER_URL__}}"
+# API replaces only the marker below with LABWATCH_PUBLIC_URL (e.g. …:8080).
+SERVER_URL="${LABWATCH_SERVER_URL:-${1:-}}"
+if [[ -z "$SERVER_URL" ]]; then
+  SERVER_URL="__SERVER_URL__"
+fi
 SERVER_URL="${SERVER_URL%/}"
-if [[ -z "$SERVER_URL" || "$SERVER_URL" == *"__SERVER_URL__"* ]]; then
+# Unreplaced marker (git checkout) → default hobbit URL with port.
+if [[ "$SERVER_URL" == "__SERVER_URL__" ]]; then
   SERVER_URL="http://hobbit2.cse.iitd.ac.in:8080"
 fi
 SERVER_HOST="${SERVER_URL#*://}"
 SERVER_HOST="${SERVER_HOST%%/*}"
+# Keep port in NO_PROXY host list only as hostname (no port).
 SERVER_HOST="${SERVER_HOST%%:*}"
 export NO_PROXY="${SERVER_HOST},localhost,127.0.0.1"
 export no_proxy="${NO_PROXY}"
