@@ -246,10 +246,36 @@ def psutil_boot() -> float:
         return time.time()
 
 
+def register_once(cfg: AgentConfig) -> int:
+    """Login token from installer → register machine + push first inventory (same as Linux first start)."""
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    _bypass_campus_proxy(cfg.server_url)
+    state = read_state(cfg)
+    client = AgentClient(cfg, state.get("agent_id", ""), state.get("agent_secret", ""))
+    try:
+        inventory, errors = collect_inventory(_agent_uuid(cfg, state))
+        identity = inventory.get("identity") or _fallback_identity()
+        state = _ensure_registered(cfg, client, state, identity)
+        client.inventory(inventory)
+        print(f"registered machine_id={state.get('machine_id', '')} agent_id={state.get('agent_id', '')}")
+        print(f"hostname={identity.get('hostname', '')}")
+        for err in errors:
+            print(f"collector_error={err}")
+        return 0
+    except Exception as exc:
+        print(f"register_failed={exc}", file=sys.stderr)
+        return 1
+    finally:
+        client.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="labwatch-agent", description="LabWatch monitoring agent")
     parser.add_argument("--config", help="Path to config.toml")
-    parser.add_argument("command", nargs="?", default="run", choices=["run", "once", "status", "version"])
+    parser.add_argument("command", nargs="?", default="run", choices=["run", "once", "register", "status", "version"])
     args = parser.parse_args(argv)
     if args.command == "version":
         print(__version__)
@@ -269,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             print("missing_tools=" + ",".join(missing))
         return 0
+    if args.command == "register":
+        return register_once(cfg)
     if args.command == "once":
         state = read_state(cfg)
         inv, errors = collect_inventory(_agent_uuid(cfg, state))

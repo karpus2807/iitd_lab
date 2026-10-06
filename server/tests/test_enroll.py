@@ -117,6 +117,8 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "DefaultWebProxy" in ps1.text
     assert "WindowsApps" in ps1.text
     assert "tar.exe" in ps1.text
+    assert "register" in ps1.text
+    assert "do not need to copy" in ps1.text.lower() or "Token is created" in ps1.text
 
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200

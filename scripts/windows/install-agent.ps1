@@ -1,10 +1,9 @@
 #Requires -RunAsAdministrator
-# LabWatch Windows installer for Windows 10 / 11 (Windows PowerShell 5.1+)
-# Recommended:
+# LabWatch Windows installer — same flow as Linux install-agent.sh:
+#   username + password → machine ID → lab → server mints one-use token → register machine
+# Recommended (Admin PowerShell):
 #   Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
 #   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
-# Short form (Admin PowerShell):
-#   irm http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 | iex
 param(
   [string]$ServerUrl = ""
 )
@@ -12,7 +11,6 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-# Windows PowerShell 5.1 on older Win10 builds may default to TLS 1.0.
 try {
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
@@ -29,7 +27,6 @@ if ($ServerUrl -eq "__SERVER_URL__" -or -not $ServerUrl) {
 $ServerUrl = $ServerUrl.TrimEnd("/")
 $ServerHost = ([Uri]$ServerUrl).Host
 
-# Campus system proxy must not intercept the LabWatch host.
 $env:NO_PROXY = (($env:NO_PROXY, $ServerHost, "localhost", "127.0.0.1") -join ",").Trim(",")
 $env:no_proxy = $env:NO_PROXY
 try {
@@ -62,9 +59,7 @@ function Invoke-LwJson {
     UseBasicParsing = $true
     TimeoutSec      = 60
   }
-  if ($Body) {
-    $params.Body = ($Body | ConvertTo-Json -Compress -Depth 8)
-  }
+  if ($Body) { $params.Body = ($Body | ConvertTo-Json -Compress -Depth 8) }
   try {
     return Invoke-RestMethod @params
   } catch {
@@ -87,7 +82,6 @@ function Find-PythonExe {
       $exe = & $cmd.Source @($t.Args + @("-c", "import sys; assert sys.version_info >= (3, 8); print(sys.executable)")) 2>$null
       if (-not $exe) { continue }
       $exe = ([string]$exe).Trim()
-      # Reject the Microsoft Store alias stub (opens Store instead of running).
       if ($exe -match '\\WindowsApps\\') { continue }
       if (Test-Path -LiteralPath $exe) { return $exe }
     } catch { }
@@ -98,19 +92,33 @@ function Find-PythonExe {
 function Expand-AgentPack([string]$Archive, [string]$Dest) {
   New-Item -ItemType Directory -Force -Path $Dest | Out-Null
   $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-  if ($tar) {
-    & $tar.Source -xzf $Archive -C $Dest
-    if ($LASTEXITCODE -ne 0) { throw "tar failed to extract agent-pack.tgz (exit $LASTEXITCODE)" }
-    return
+  if (-not $tar) {
+    throw "tar.exe not found. Windows 10 (1803+) and Windows 11 include it."
   }
-  throw "tar.exe not found. Windows 10 (1803+) and Windows 11 include it. Install 'bsdtar' or update Windows, then re-run."
+  & $tar.Source -xzf $Archive -C $Dest
+  if ($LASTEXITCODE -ne 0) { throw "tar failed to extract agent-pack.tgz (exit $LASTEXITCODE)" }
 }
 
-Write-Host "LabWatch agent install → $ServerUrl"
-Write-Host "Windows 10 / 11 · Admin PowerShell · password typing is invisible."
+# --- same prerequisites order as Linux ---
+$pythonExe = Find-PythonExe
+if (-not $pythonExe) {
+  throw @"
+Python 3.8+ is required and must be on PATH (same idea as Linux python3).
+1) Download https://www.python.org/downloads/windows/
+2) Enable 'Add python.exe to PATH'
+3) Close this window, open a NEW Admin PowerShell, re-run the installer.
+Do not use the Microsoft Store python stub.
+"@
+}
+Write-Host "Using Python: $pythonExe"
 
-$Username = Read-Host "LabWatch username (admin or operator)"
-$Secure = Read-Host "Password" -AsSecureString
+Write-Host ""
+Write-Host "LabWatch agent install → $ServerUrl"
+Write-Host "Same process as Linux: login → machine ID → lab. Token is created for you (do not paste an Admin token)."
+Write-Host "Multiple PCs can use the same admin/operator login."
+
+$Username = Read-Host "Username"
+$Secure = Read-Host "Password (nothing will appear)" -AsSecureString
 $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
 try {
   $Password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($BSTR)
@@ -118,22 +126,31 @@ try {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR) | Out-Null
 }
 if (-not $Username -or -not $Password) { throw "Username and password are required." }
+Write-Host "Password received. Asking for machine ID next…"
 
 $ExistingId = ""
+$ExistingLabId = ""
+$ExistingLabName = ""
 if (Test-Path -LiteralPath $ConfigPath) {
+  Write-Host "Existing LabWatch agent found. Enter keeps the current machine ID and lab."
   $m = Select-String -Path $ConfigPath -Pattern '^\s*inventory_id\s*=\s*"([^"]+)"' | Select-Object -First 1
   if ($m) { $ExistingId = $m.Matches[0].Groups[1].Value.Trim() }
+  $m = Select-String -Path $ConfigPath -Pattern '^\s*lab_id\s*=\s*"([^"]+)"' | Select-Object -First 1
+  if ($m) { $ExistingLabId = $m.Matches[0].Groups[1].Value.Trim() }
+  $m = Select-String -Path $ConfigPath -Pattern '^\s*lab\s*=\s*"([^"]+)"' | Select-Object -First 1
+  if ($m) { $ExistingLabName = $m.Matches[0].Groups[1].Value.Trim() }
 }
 $hint = if ($ExistingId) { $ExistingId } else { "example 12345/2012/12" }
 $InventoryId = Read-Host "Machine ID [$hint]"
 if (-not $InventoryId) { $InventoryId = $ExistingId }
-if (-not $InventoryId) { throw "Machine ID is required." }
+if (-not $InventoryId) { throw "Username, password, and machine ID are required (Enter keeps the previous machine ID if one exists)." }
 
-Write-Host "Logging in and loading labs…"
+Write-Host "Logging in…"
 $login = Invoke-LwJson -Method POST -Path "/api/auth/login" -Body @{ username = $Username; password = $Password }
 $access = [string]$login.access_token
-if (-not $access) { throw "Login did not return an access token. Check username/password." }
+if (-not $access) { throw "Login failed. Use a LabWatch ADMIN or OPERATOR account (not SSH)." }
 
+Write-Host "Loading lab list…"
 $labs = @(Invoke-LwJson -Method GET -Path "/api/labs" -Token $access)
 if ($labs.Count -eq 0) { throw "No labs found. Create labs in Admin first." }
 $labs = @($labs | Sort-Object { if (("" + $_.name).Trim().ToLower() -eq "unassigned") { 0 } else { 1 } }, name)
@@ -142,6 +159,12 @@ $currentLab = $null
 $listed = @(Invoke-LwJson -Method GET -Path ("/api/machines?inventory_id=" + [uri]::EscapeDataString($InventoryId)) -Token $access)
 if ($listed.Count -gt 0 -and $listed[0].lab_id) {
   $currentLab = $labs | Where-Object { [string]$_.id -eq [string]$listed[0].lab_id } | Select-Object -First 1
+}
+if (-not $currentLab -and $ExistingLabId) {
+  $currentLab = $labs | Where-Object { [string]$_.id -eq $ExistingLabId } | Select-Object -First 1
+}
+if (-not $currentLab -and $ExistingLabName) {
+  $currentLab = $labs | Where-Object { ("" + $_.name).Trim().ToLower() -eq $ExistingLabName.ToLower() } | Select-Object -First 1
 }
 if (-not $currentLab) {
   $currentLab = $labs | Where-Object { ("" + $_.name).Trim().ToLower() -eq "unassigned" } | Select-Object -First 1
@@ -163,9 +186,12 @@ if ($choice) {
     throw "Lab number must be between 1 and $($labs.Count)"
   }
   $lab = $labs[$n - 1]
+  Write-Host "Selected $($lab.name)"
+} else {
+  Write-Host "Keeping $($lab.name)"
 }
 
-Write-Host "Enrolling $InventoryId in $($lab.name)…"
+Write-Host "Logging in to $ServerUrl and enrolling $InventoryId…"
 $enroll = Invoke-LwJson -Method POST -Path "/api/agents/enroll" -Body @{
   username     = $Username
   password     = $Password
@@ -173,46 +199,31 @@ $enroll = Invoke-LwJson -Method POST -Path "/api/agents/enroll" -Body @{
   lab_id       = [string]$lab.id
 }
 $Password = $null
+$Username = $null
 $Token = [string]$enroll.registration_token
 if ($enroll.server_url) { $ServerUrl = ([string]$enroll.server_url).TrimEnd("/") }
 if (-not $Token) { throw "Enroll did not return a registration token." }
-
-$pythonExe = Find-PythonExe
-if (-not $pythonExe) {
-  throw @"
-Python 3.8+ is required and must be on PATH.
-1) Download https://www.python.org/downloads/windows/
-2) Enable 'Add python.exe to PATH'
-3) Close this window, open a NEW Admin PowerShell, re-run the installer.
-Do not rely on the Microsoft Store 'python' stub.
-"@
-}
-Write-Host "Using Python: $pythonExe"
+Write-Host "Enrollment token created (one-use, kept in config — you do not need to copy it)."
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $StateDir | Out-Null
 $work = Join-Path $env:TEMP ("labwatch-agent-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
   $pack = Join-Path $work "agent-pack.tgz"
-  Write-Host "Downloading agent pack…"
+  Write-Host "Downloading agent from $ServerUrl/agent-pack.tgz"
   Invoke-WebRequest -Uri "$ServerUrl/agent-pack.tgz" -OutFile $pack -UseBasicParsing -TimeoutSec 120
   $src = Join-Path $work "src"
   Expand-AgentPack -Archive $pack -Dest $src
   if (-not (Test-Path -LiteralPath (Join-Path $src "labwatch_agent"))) {
     throw "agent-pack.tgz did not contain labwatch_agent"
   }
-  if (-not (Test-Path -LiteralPath (Join-Path $src "requirements.txt"))) {
-    throw "agent-pack.tgz did not contain requirements.txt"
-  }
 
-  Write-Host "Installing to $InstallDir"
+  Write-Host "Installing LabWatch agent to $InstallDir"
   Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue |
     Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
 
   $venvDir = Join-Path $InstallDir "venv"
-  if (Test-Path -LiteralPath $venvDir) {
-    Remove-Item -LiteralPath $venvDir -Recurse -Force
-  }
+  if (Test-Path -LiteralPath $venvDir) { Remove-Item -LiteralPath $venvDir -Recurse -Force }
   & $pythonExe -m venv $venvDir
   $py = Join-Path $venvDir "Scripts\python.exe"
   if (-not (Test-Path -LiteralPath $py)) { throw "venv python missing at $py" }
@@ -240,7 +251,7 @@ if __name__ == '__main__':
   Write-Utf8NoBom (Join-Path $site.Trim() "labwatch.pth") $InstallDir
 
   $labToml = ([string]$lab.name).Replace('\', '\\').Replace('"', '\"')
-  $configText = @"
+  Write-Utf8NoBom $ConfigPath @"
 [server]
 url = "$ServerUrl"
 registration_token = "$Token"
@@ -259,11 +270,17 @@ verify = true
 [logging]
 level = "INFO"
 "@
-  Write-Utf8NoBom $ConfigPath $configText
   icacls $ConfigPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
   Remove-Item -Force (Join-Path $StateDir "state.toml") -ErrorAction SilentlyContinue
 
-  # Agent defaults to %ProgramData%\LabWatch\config.toml — no env wrapper required.
+  Write-Host "Registering machine with server (same as Linux agent first start)…"
+  $env:LABWATCH_CONFIG = $ConfigPath
+  $env:LABWATCH_STATE_DIR = $StateDir
+  & $py $runPy register
+  if ($LASTEXITCODE -ne 0) {
+    throw "Machine registration failed. Check server URL $ServerUrl and try again."
+  }
+
   $action = New-ScheduledTaskAction -Execute $py -Argument "`"$runPy`" run" -WorkingDirectory $InstallDir
   $trigger = New-ScheduledTaskTrigger -AtStartup
   $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
@@ -278,11 +295,11 @@ level = "INFO"
   Start-ScheduledTask -TaskName "LabWatchAgent"
   Start-Sleep -Seconds 2
   $task = Get-ScheduledTask -TaskName "LabWatchAgent"
-  $info = Get-ScheduledTaskInfo -TaskName "LabWatchAgent"
+
   Write-Host "Installed $InventoryId ($($lab.name)) → $ServerUrl"
-  Write-Host ("Scheduled task: {0} (last result {1})" -f $task.State, $info.LastTaskResult)
-  Write-Host "Check: Get-ScheduledTask -TaskName LabWatchAgent"
-  Write-Host "Open LabWatch → Machines to confirm this PC appears."
+  Write-Host ("Scheduled task: {0}" -f $task.State)
+  Write-Host "Update later with the same PowerShell command; Enter keeps this machine ID and lab."
+  Write-Host "Commands: `"$py`" `"$runPy`" status"
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

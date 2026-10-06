@@ -110,10 +110,11 @@ export default function Install() {
         <h3 className="section-title">Before you start</h3>
         <ul className="install-list">
           <li>Server URL for this portal: <code className="mono">{base}</code> (keep the port if shown).</li>
-          <li>Login asks for LabWatch username/password, machine ID, then lab number.</li>
+          <li><strong>Linux and Windows use the same flow:</strong> username → password → machine ID → lab number.</li>
+          <li>The installer logs in and creates a one-use token itself — do not copy a token from Admin.</li>
           <li>Password typing is invisible — type and press Enter.</li>
           <li>Re-run keeps machine ID and lab when you press Enter.</li>
-          <li>Only <strong>ADMIN</strong> or <strong>OPERATOR</strong> can enroll a PC.</li>
+          <li>Only <strong>ADMIN</strong> or <strong>OPERATOR</strong> can enroll a PC. Same login works on many PCs.</li>
         </ul>
       </div>
 
