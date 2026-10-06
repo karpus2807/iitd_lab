@@ -26,7 +26,7 @@ It is waiting for the **password**. Nothing is printed while you type. Press Ent
 Prefer:
 
 ```bash
-curl -fsSL http://hobbit2.cse.iitd.ac.in/install-agent.sh -o /tmp/labwatch-install.sh
+curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
 sudo bash /tmp/labwatch-install.sh
 ```
 
@@ -58,7 +58,7 @@ Optional: `./scripts/linux/prefetch-pypi-wheels.sh` then `docker compose up -d -
 
 ```bash
 labwatch-agent status
-curl -sS http://hobbit2.cse.iitd.ac.in/health
+curl -sS http://hobbit2.cse.iitd.ac.in:8080/health
 sudo journalctl -u labwatch-agent -n 50 --no-pager
 ```
 

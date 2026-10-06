@@ -22,6 +22,13 @@ def test_hostname_server_url_ignores_lan_ip(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_hostname_server_url_keeps_non_default_port(monkeypatch):
+    monkeypatch.setenv("LABWATCH_PUBLIC_URL", "http://hobbit2.cse.iitd.ac.in:8080")
+    get_settings.cache_clear()
+    assert hostname_server_url() == "http://hobbit2.cse.iitd.ac.in:8080"
+    get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_enroll_mints_token_and_register_sets_inventory_id(client: AsyncClient):
     denied = await client.post(

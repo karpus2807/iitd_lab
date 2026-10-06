@@ -4,12 +4,12 @@ Monitor lab PCs from one website: hardware, live stats, alerts, and history.
 
 Linux and Windows. A machine is identified by hardware IDs, not its IP. DHCP changes do not create a new host.
 
-**Server:** [hobbit2.cse.iitd.ac.in](http://hobbit2.cse.iitd.ac.in)
+**Server:** [hobbit2.cse.iitd.ac.in:8080](http://hobbit2.cse.iitd.ac.in:8080)
 
 ## Install an agent (lab PC)
 
 ```bash
-curl -fsSL http://hobbit2.cse.iitd.ac.in/install-agent.sh -o /tmp/labwatch-install.sh
+curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
 sudo bash /tmp/labwatch-install.sh
 ```
 
@@ -36,12 +36,12 @@ Windows (admin PowerShell), from this repo:
 
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process
-.\scripts\windows\install.ps1 -ServerUrl http://hobbit2.cse.iitd.ac.in -RegistrationToken <token>
+.\scripts\windows\install.ps1 -ServerUrl http://hobbit2.cse.iitd.ac.in:8080 -RegistrationToken <token>
 ```
 
 ## Use the site
 
-Sign in at `http://hobbit2.cse.iitd.ac.in`.
+Sign in at `http://hobbit2.cse.iitd.ac.in:8080`.
 
 | Page | What it shows |
 | --- | --- |
@@ -64,7 +64,7 @@ cd ~/iitd_lab
 git fetch origin --tags
 git checkout -f v1.1.21
 sudo docker compose up -d --force-recreate --no-deps api web
-curl -sS http://127.0.0.1/health
+curl -sS http://127.0.0.1:8080/health
 ```
 
 Then refresh the browser (`Ctrl+Shift+R`). Recreate **api** for the installer/agent pack; **web** for the UI.
