@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## Windows install downloads HTML (`<!doctype html>`)
+
+nginx was falling through to the website. Update to **v1.1.28+** and recreate **web**. Verify:
+
+```powershell
+(Get-Content $env:TEMP\labwatch-install.ps1 -TotalCount 2)
+# must start with #Requires or # LabWatch — not <!doctype html>
+```
+
 ## Connection refused on agent install
 
 LabWatch listens on **8080**, not 80. Re-download the script:
