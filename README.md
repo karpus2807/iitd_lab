@@ -62,7 +62,7 @@ Postgres data stays in Docker. `.env` is not in git.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.21
+git checkout -f v1.1.22
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
