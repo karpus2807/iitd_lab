@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # LabWatch one-command installer (served from hobbit as /install-agent.sh)
-# curl -fsSL http://hobbit2.cse.iitd.ac.in/install-agent.sh | sudo bash
+# curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh | sudo bash
 
 PREFIX="${PREFIX:-/opt/labwatch-agent}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/labwatch-agent}"
 STATE_DIR="${STATE_DIR:-/var/lib/labwatch-agent}"
+# install.py replaces __SERVER_URL__ with the public URL (includes :8080).
+# Do not compare against that replaced value — that used to strip the port.
 SERVER_URL="${LABWATCH_SERVER_URL:-${1:-__SERVER_URL__}}"
-if [[ "$SERVER_URL" == "__SERVER_URL__" || -z "$SERVER_URL" ]]; then
-  SERVER_URL="http://hobbit2.cse.iitd.ac.in"
-fi
 SERVER_URL="${SERVER_URL%/}"
+if [[ -z "$SERVER_URL" || "$SERVER_URL" == *"__SERVER_URL__"* ]]; then
+  SERVER_URL="http://hobbit2.cse.iitd.ac.in:8080"
+fi
 SERVER_HOST="${SERVER_URL#*://}"
 SERVER_HOST="${SERVER_HOST%%/*}"
 SERVER_HOST="${SERVER_HOST%%:*}"
