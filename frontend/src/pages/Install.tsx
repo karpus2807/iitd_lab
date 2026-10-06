@@ -85,11 +85,11 @@ export default function Install() {
   const linuxRun = 'sudo bash /tmp/labwatch-install.sh'
   const linuxOne = `${linuxDownload}\n${linuxRun}`
 
-  const winRun = `irm ${base}/install-agent.ps1 | iex`
-  const winAlt = `Invoke-WebRequest -Uri ${base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1\npowershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1`
+  const winRun = `Invoke-WebRequest -Uri ${base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1\npowershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1`
+  const winAlt = `irm ${base}/install-agent.ps1 | iex`
 
   const linuxStatus = 'labwatch-agent status\nsudo systemctl status labwatch-agent'
-  const winStatus = 'Get-ScheduledTask -TaskName LabWatchAgent'
+  const winStatus = 'Get-ScheduledTask -TaskName LabWatchAgent\nGet-ScheduledTaskInfo -TaskName LabWatchAgent'
 
   return (
     <>
@@ -132,12 +132,12 @@ export default function Install() {
         <div>
           <div className="topbar" style={{ marginBottom: 12 }}>
             <div>
-              <h2 style={{ fontSize: 20 }}>Windows</h2>
-              <p>Admin PowerShell. Needs Python 3.8+ on PATH.</p>
+              <h2 style={{ fontSize: 20 }}>Windows 10 / 11</h2>
+              <p>Right-click Start → Windows PowerShell (Admin). Python 3.8+ from python.org with “Add to PATH”.</p>
             </div>
           </div>
-          <CopyBlock label="Install (Admin PowerShell)" text={winRun} onResult={onResult} />
-          <CopyBlock label="If irm is blocked" text={winAlt} onResult={onResult} />
+          <CopyBlock label="Install (recommended)" text={winRun} onResult={onResult} />
+          <CopyBlock label="Short form (also OK)" text={winAlt} onResult={onResult} />
           <CopyBlock label="Check status" text={winStatus} onResult={onResult} />
         </div>
       </div>

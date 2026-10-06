@@ -113,6 +113,10 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "/api/agents/enroll" in ps1.text
     assert "LabWatchAgent" in ps1.text
     assert "/agent-pack.tgz" in ps1.text
+    assert "Find-PythonExe" in ps1.text
+    assert "DefaultWebProxy" in ps1.text
+    assert "WindowsApps" in ps1.text
+    assert "tar.exe" in ps1.text
 
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200

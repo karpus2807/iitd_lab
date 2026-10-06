@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.25](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.25)
+**Latest release:** [v1.1.26](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.26)
 
 ## Agent install (lab PC)
 
@@ -18,10 +18,11 @@ curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-
 sudo bash /tmp/labwatch-install.sh
 ```
 
-**Windows** (Admin PowerShell, Python 3.8+ on PATH)
+**Windows 10 / 11** (Admin PowerShell, Python 3.8+ from python.org on PATH)
 
 ```powershell
-irm http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 | iex
+Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 ```
 
 - Login with a LabWatch **admin** or **operator** account (not SSH)
@@ -56,7 +57,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.25
+git checkout -f v1.1.26
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
