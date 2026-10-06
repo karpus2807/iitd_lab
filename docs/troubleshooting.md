@@ -1,60 +1,58 @@
 # Troubleshooting
 
-## Login is Bad Gateway
+## Connection refused on agent install
 
-Nginx is up; the API is not.
-
-```bash
-cd ~/iitd_lab
-sudo docker compose ps
-sudo docker compose logs api --tail 80
-curl -sS http://127.0.0.1/health
-```
-
-Health must return JSON with `"status":"ok"`. Then:
-
-```bash
-sudo docker compose up -d --force-recreate --no-deps api
-```
-
-In `.env`, `NO_PROXY` must include `db` so Postgres is not sent through the campus proxy.
-
-## Agent install looks stuck after username
-
-It is waiting for the **password**. Nothing is printed while you type. Press Enter when done.
-
-Prefer:
+LabWatch listens on **8080**, not 80. Re-download the script:
 
 ```bash
 curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
 sudo bash /tmp/labwatch-install.sh
 ```
 
-Same admin login can be used on many PCs.
+The login line must show `…:8080`.
 
-## UI did not change after git checkout
+## Login is Bad Gateway
 
-Recreate **web** and hard-refresh the browser:
+UI is up; API is down.
 
 ```bash
-sudo docker compose up -d --force-recreate --no-deps web
+cd ~/iitd_lab
+sudo docker compose ps
+sudo docker compose logs api --tail 80
+curl -sS http://127.0.0.1:8080/health
+sudo docker compose up -d --force-recreate --no-deps api
 ```
 
-Installer / agent pack: recreate **api**.
+`.env`: `NO_PROXY` must include `db`.
 
-## Campus proxy breaks pip / npm
+## Install looks stuck after username
 
-Keep proxy login alive. In `.env`:
+It is waiting for the **password** (nothing is printed). Type it and press Enter.
 
+## Admin password changed — agents still OK?
+
+Yes. Agents use `agent_id` + `agent_secret` after enroll. Admin login is only for the website and new installs.
+
+## UI / installer not updating after git checkout
+
+```bash
+sudo docker compose up -d --force-recreate --no-deps api web
 ```
-HTTP_PROXY=http://10.10.78.21:3128/
-HTTPS_PROXY=http://10.10.78.21:3128/
-NO_PROXY=localhost,127.0.0.1,db,web,api
+
+Then hard-refresh the browser (`Ctrl+Shift+R`).
+
+## Campus proxy / Docker build
+
+Keep `iitd-proxy` logged in. Prefetch wheels if needed:
+
+```bash
+./scripts/linux/prefetch-pypi-wheels.sh
+sudo docker compose up -d --build
 ```
 
-Optional: `./scripts/linux/prefetch-pypi-wheels.sh` then `docker compose up -d --build`.
+API needs `greenlet` (in `server/requirements.txt`).
 
-## Agent is NEVER_CONNECTED or enrolled=no
+## Agent NEVER_CONNECTED / enrolled=no
 
 ```bash
 labwatch-agent status
@@ -62,22 +60,16 @@ curl -sS http://hobbit2.cse.iitd.ac.in:8080/health
 sudo journalctl -u labwatch-agent -n 50 --no-pager
 ```
 
-Check `server.url`, campus proxy (`NO_PROXY` for hobbit), and that enroll finished.
+Check `server.url` includes `:8080` and hobbit is reachable (set `NO_PROXY` for the hostname if needed).
 
-## RAM / GPU fields empty
+## Empty RAM / GPU fields
 
-Missing tools or a board that has no DIMM/PCIe map (Jetson). Install `dmidecode`, `lspci`, `smartctl` as needed. The agent should run as root (systemd does).
+Install `dmidecode` / `lspci` / `smartctl` as needed. Jetson has no DIMM/PCIe map — that is expected; the UI hides those fields.
 
-The UI hides fields the device cannot report.
+## Cloned disk → duplicate host
 
-## Duplicate hosts after cloning a disk
+Wipe `/var/lib/labwatch-agent` on the clone, or remove the old host in the UI and reinstall.
 
-Clear `/var/lib/labwatch-agent` on the clone, or remove the old host in the UI and reinstall.
+## Online PC shows OFFLINE
 
-## Host is ON but marked OFFLINE
-
-Agent not running, or the PC cannot reach the server. Offline delay should be at least 3× the heartbeat (default 30s).
-
-## Email not sent
-
-Set `SMTP_ENABLED=true` and `SMTP_*` in `.env`. The website still works without email.
+Agent not running, or PC cannot reach `:8080`. Offline timeout should be ≥ 3× heartbeat (default 30s).

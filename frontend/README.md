@@ -2,8 +2,6 @@
 
 ```bash
 npm install
-npm run dev          # /api → http://127.0.0.1:8000
-npm run build:web-static
+npm run dev               # /api → :8000
+npm run build:web-static  # → docker/web-static
 ```
-
-Production files go to `docker/web-static` and are served by Nginx.

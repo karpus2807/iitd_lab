@@ -1,28 +1,32 @@
 # LabWatch
 
-Monitor lab PCs from one website: hardware, live stats, alerts, and history.
+Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 
-Linux and Windows. A machine is identified by hardware IDs, not its IP. DHCP changes do not create a new host.
+Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
-**Server:** [hobbit2.cse.iitd.ac.in:8080](http://hobbit2.cse.iitd.ac.in:8080)
+**Live server:** http://hobbit2.cse.iitd.ac.in:8080  
+**Latest release:** [v1.1.23](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.23)
 
-## Install an agent (lab PC)
+## Agent install (lab PC)
+
+Always use **port 8080**. Port 80 will fail with Connection refused.
 
 ```bash
 curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
 sudo bash /tmp/labwatch-install.sh
 ```
 
-Sign in with a LabWatch admin/operator account. Enter keeps the old machine ID and lab on reinstall or update.
-
-Password typing is invisible. If `curl | sudo bash` looks stuck, use the two-line form above.
+- Login with a LabWatch **admin** or **operator** account
+- Password typing is invisible (no dots)
+- On reinstall/update, Enter keeps machine ID and lab
+- After enroll, the agent uses its own secret — changing the admin password does **not** disconnect agents
 
 ```bash
 labwatch-agent status
 sudo systemctl status labwatch-agent
 ```
 
-Remove the agent:
+Remove agent:
 
 ```bash
 sudo systemctl disable --now labwatch-agent
@@ -30,34 +34,31 @@ sudo rm -f /etc/systemd/system/labwatch-agent.service /usr/local/bin/labwatch-ag
 sudo rm -rf /opt/labwatch-agent /etc/labwatch-agent /var/lib/labwatch-agent
 ```
 
-Then delete the host in **Machines → Remove from LabWatch**.
+Then **Machines → Remove from LabWatch** on the website.
 
-Windows (admin PowerShell), from this repo:
+Windows (admin PowerShell, from this repo):
 
 ```powershell
-Set-ExecutionPolicy Bypass -Scope Process
 .\scripts\windows\install.ps1 -ServerUrl http://hobbit2.cse.iitd.ac.in:8080 -RegistrationToken <token>
 ```
 
-## Use the site
+## Website
 
-Sign in at `http://hobbit2.cse.iitd.ac.in:8080`.
-
-| Page | What it shows |
+| Page | Use |
 | --- | --- |
-| Dashboard | counts and recent hardware changes |
-| Machines | list, search, assign lab, delete |
-| Machine | CPU, RAM, GPU, disks, charts, history, events, logs |
-| Alerts | open issues; Resolve / Clear |
+| Dashboard | fleet counts |
+| Machines | search, assign lab, delete |
+| Machine | CPU / RAM / GPU / disks / charts / history / events / logs |
+| Alerts | open alerts; Resolve / Clear |
 | Admin | users (admin only) |
 
-SoC boards (Jetson) show soldered RAM and an on-package GPU. DIMM/PCIe fields that do not exist are hidden.
+SoC boards (Jetson): unified RAM + on-package GPU. Unsupported DIMM/PCIe fields are hidden.
 
 Roles: `ADMIN`, `OPERATOR`, `VIEWER`.
 
-## Update the server
+## Update server (hobbit2)
 
-Postgres data stays in Docker. `.env` is not in git.
+Postgres volume and `.env` are kept.
 
 ```bash
 cd ~/iitd_lab
@@ -67,57 +68,40 @@ sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
 
-Then refresh the browser (`Ctrl+Shift+R`). Recreate **api** for the installer/agent pack; **web** for the UI.
+Hard-refresh the browser. Recreate **api** for installer/agent pack; **web** for UI.
 
-## First-time server install
+`LABWATCH_PUBLIC_URL` in `.env` must be `http://hobbit2.cse.iitd.ac.in:8080`.
+
+## First-time server
 
 ```bash
-cp .env.example .env   # set LABWATCH_SECRET_KEY and ADMIN_PASSWORD
+cp .env.example .env   # SECRET_KEY, ADMIN_PASSWORD, PUBLIC_URL=:8080
 docker compose up -d --build
 ```
 
-Open `http://<server>/`. API docs: `/api/docs`. Health: `/health`.
-
-If login is **Bad Gateway**, the UI is up but `api` is not: `sudo docker compose logs api --tail 80`.
-
-Local run without Docker:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r server/requirements.txt
-cp .env.example .env
-./scripts/run-api.sh
-cd frontend && npm install && npm run dev
-```
+Compose maps host **8080 →** nginx. Health: `http://127.0.0.1:8080/health`.
 
 ## Layout
 
 ```
-server/     API
-agent/      Linux + Windows agent (Python 3.8+)
-frontend/   dashboard
-docker/     containers + static UI
+server/     FastAPI
+agent/      Python agent (3.8+)
+frontend/   React UI → docker/web-static
 scripts/    installers
-docs/       extra notes
+docs/       troubleshooting, hardware
 ```
 
-Linux extras (optional): `dmidecode`, `lspci`, `lsblk`, `smartctl`, `nvidia-smi`.
+Optional Linux tools: `dmidecode`, `lspci`, `lsblk`, `smartctl`, `nvidia-smi`.
 
-## Backup
+## Backup / tests
 
 ```bash
 ./scripts/backup.sh ./backups
-./scripts/restore.sh ./backups/<file>.sql.gz
-```
-
-## Tests
-
-```bash
 cd server && ../.venv/bin/python -m pytest
 cd agent && PYTHONPATH=. ../.venv/bin/python -m pytest
 ```
 
-## More
+## Docs
 
 - [Troubleshooting](docs/troubleshooting.md)
-- [Hardware sources](docs/hardware.md)
+- [Hardware](docs/hardware.md)

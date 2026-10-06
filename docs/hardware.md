@@ -1,20 +1,21 @@
 # Hardware
 
-LabWatch does not invent missing data. If firmware or the OS does not expose a field, the UI hides it (or shows Not reported for a sensor that should exist).
+Do not invent missing data. Unsupported fields are hidden; missing sensors show Not reported.
 
-**SoC** (Jetson, Pi): soldered / unified RAM, on-package GPU. No DIMM map, no removable GPU slot.
-
-**PC / server:** DIMM slots and PCIe GPUs when SMBIOS / `nvidia-smi` provide them.
+| Board | Memory | GPU |
+| --- | --- | --- |
+| SoC (Jetson, Pi) | Unified / soldered | On-package (nvgpu / tegrastats) |
+| PC / server | DIMM map when SMBIOS exists | PCIe + `nvidia-smi` when present |
 
 | Data | Linux | Windows |
 | --- | --- | --- |
 | CPU | `/proc/cpuinfo`, psutil | `Win32_Processor` |
 | RAM usage | psutil | psutil |
 | RAM slots | `dmidecode -t memory` | `Win32_PhysicalMemory` |
-| GPU NVIDIA | `nvidia-smi`, Jetson sysfs / tegrastats | `nvidia-smi` |
-| Other GPU | `lspci` name only | `Win32_VideoController` |
+| NVIDIA GPU | `nvidia-smi`, Jetson sysfs | `nvidia-smi` |
+| Other GPU | `lspci` name | `Win32_VideoController` |
 | Disks | `lsblk`, `smartctl` | `Win32_DiskDrive` |
-| Board / BIOS | dmidecode, `/sys/class/dmi` | CIM |
+| Board / BIOS | dmidecode, sysfs DMI | CIM |
 | Network | psutil | psutil + CIM |
 
-Hardware changes (`RAM_REMOVED`, `GPU_CHANGED`, …) are stored as events. Virtual machines are flagged and not treated as physical DIMM maps.
+Changes (`RAM_REMOVED`, `GPU_CHANGED`, …) become events. VMs are flagged; virtual DIMM maps are not treated as physical.
