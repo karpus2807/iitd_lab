@@ -106,6 +106,14 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "dmidecode" in text
     assert "pciutils" in text
 
+    ps1 = await client.get("/install-agent.ps1")
+    assert ps1.status_code == 200, ps1.text
+    assert "hobbit2.cse.iitd.ac.in" in ps1.text
+    assert "__SERVER_URL__" not in ps1.text
+    assert "/api/agents/enroll" in ps1.text
+    assert "LabWatchAgent" in ps1.text
+    assert "/agent-pack.tgz" in ps1.text
+
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200
     assert pack.content[:2] == b"\x1f\x8b"

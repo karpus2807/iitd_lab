@@ -15,21 +15,40 @@ from app.services.updates import repo_dir
 router = APIRouter(tags=["install"])
 
 
-def _script_path() -> Path:
+def _linux_script_path() -> Path:
     return repo_dir() / "scripts" / "linux" / "install-agent.sh"
+
+
+def _windows_script_path() -> Path:
+    return repo_dir() / "scripts" / "windows" / "install-agent.ps1"
+
+
+def _bake_server_url(path: Path, request: Request) -> str:
+    server = hostname_server_url(request)
+    return path.read_text(encoding="utf-8").replace("__SERVER_URL__", server)
 
 
 @router.get("/install-agent.sh")
 async def install_agent_script(request: Request):
-    path = _script_path()
+    path = _linux_script_path()
     if not path.is_file():
         return PlainTextResponse("install-agent.sh missing on server\n", status_code=404)
-    server = hostname_server_url(request)
-    text = path.read_text(encoding="utf-8").replace("__SERVER_URL__", server)
     return PlainTextResponse(
-        text,
+        _bake_server_url(path, request),
         media_type="text/x-shellscript; charset=utf-8",
         headers={"Content-Disposition": "inline; filename=install-agent.sh"},
+    )
+
+
+@router.get("/install-agent.ps1")
+async def install_agent_ps1(request: Request):
+    path = _windows_script_path()
+    if not path.is_file():
+        return PlainTextResponse("install-agent.ps1 missing on server\n", status_code=404)
+    return PlainTextResponse(
+        _bake_server_url(path, request),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": "inline; filename=install-agent.ps1"},
     )
 
 

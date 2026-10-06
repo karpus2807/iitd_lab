@@ -5,41 +5,33 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.23](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.23)
+**Latest release:** [v1.1.24](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.24)
 
 ## Agent install (lab PC)
 
-Always use **port 8080**. Port 80 will fail with Connection refused.
+In the portal: **Install** (copy-paste commands). Always use **port 8080**.
+
+**Linux**
 
 ```bash
 curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
 sudo bash /tmp/labwatch-install.sh
 ```
 
-- Login with a LabWatch **admin** or **operator** account
-- Password typing is invisible (no dots)
-- On reinstall/update, Enter keeps machine ID and lab
-- After enroll, the agent uses its own secret — changing the admin password does **not** disconnect agents
+**Windows** (Admin PowerShell, Python 3.8+ on PATH)
+
+```powershell
+irm http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 | iex
+```
+
+- Login with a LabWatch **admin** or **operator** account (not SSH)
+- Password typing is invisible
+- Enter keeps machine ID and lab on reinstall
+- After enroll, the agent secret is independent of the website password
 
 ```bash
 labwatch-agent status
 sudo systemctl status labwatch-agent
-```
-
-Remove agent:
-
-```bash
-sudo systemctl disable --now labwatch-agent
-sudo rm -f /etc/systemd/system/labwatch-agent.service /usr/local/bin/labwatch-agent
-sudo rm -rf /opt/labwatch-agent /etc/labwatch-agent /var/lib/labwatch-agent
-```
-
-Then **Machines → Remove from LabWatch** on the website.
-
-Windows (admin PowerShell, from this repo):
-
-```powershell
-.\scripts\windows\install.ps1 -ServerUrl http://hobbit2.cse.iitd.ac.in:8080 -RegistrationToken <token>
 ```
 
 ## Website
@@ -50,6 +42,7 @@ Windows (admin PowerShell, from this repo):
 | Machines | search, assign lab, delete |
 | Machine | CPU / RAM / GPU / disks / charts / history / events / logs |
 | Alerts | open alerts; Resolve / Clear |
+| Install | Linux / Windows agent commands |
 | Admin | users (admin only) |
 
 SoC boards (Jetson): unified RAM + on-package GPU. Unsupported DIMM/PCIe fields are hidden.
@@ -63,7 +56,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.23
+git checkout -f v1.1.24
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
