@@ -219,6 +219,7 @@ select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
   gap: 8px;
 }
 .install-list code { font-size: 12px; }
+.install-hint { margin: 0 0 10px; font-size: 13px; }
 .install-toast {
   position: fixed;
   top: 20px;

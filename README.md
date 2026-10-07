@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.31](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.31)
+**Latest release:** [v1.1.32](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.32)
 
 ## Agent install (lab PC)
 
@@ -18,16 +18,29 @@ curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-
 sudo bash /tmp/labwatch-install.sh
 ```
 
-**Windows 10 / 11** — install from **GitHub** (Admin PowerShell, Python 3.8+ on PATH). Agent code comes from the release; only login talks to hobbit.
+**Windows 10 / 11** — from **GitHub** (Admin PowerShell). Run **one command at a time**. Do not paste `PS C:\…>` or `>>`.
 
 ```powershell
 Remove-Item $env:TEMP\labwatch-install.ps1 -ErrorAction SilentlyContinue
-Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/download/v1.1.31/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+```
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/download/v1.1.32/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+```
+
+```powershell
 Get-Content $env:TEMP\labwatch-install.ps1 -TotalCount 3
+```
+
+```powershell
+Select-String -Path $env:TEMP\labwatch-install.ps1 -Pattern "ConvertTo-ObjectArray|v1.1.32" | Select-Object -First 5
+```
+
+```powershell
 powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 ```
 
-Line 2 must say `ASCII-only` or `same flow as Linux` with plain `-` (not `â€`).
+Preview must say `ASCII-only`. Confirm must show `ConvertTo-ObjectArray`. Then login → machine ID → lab number.
 
 - Login with a LabWatch **admin** or **operator** account (not SSH)
 - Password typing is invisible
@@ -61,7 +74,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.31
+git checkout -f v1.1.32
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```

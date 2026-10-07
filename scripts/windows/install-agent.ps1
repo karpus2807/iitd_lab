@@ -3,14 +3,14 @@
 # Same flow as Linux: username -> password -> machine ID -> lab -> auto token -> register.
 #
 # Install FROM GITHUB (recommended - no hobbit script download):
-#   $u = "https://github.com/karpus2807/iitd_lab/releases/download/v1.1.31/install-agent.ps1"
+#   $u = "https://github.com/karpus2807/iitd_lab/releases/download/v1.1.32/install-agent.ps1"
 #   Invoke-WebRequest -Uri $u -OutFile $env:TEMP\labwatch-install.ps1
 #   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 #
 # Agent code is downloaded from GitHub. Only login/enroll talk to the LabWatch server.
 param(
   [string]$ServerUrl = "http://hobbit2.cse.iitd.ac.in:8080",
-  [string]$Version = "v1.1.31",
+  [string]$Version = "v1.1.32",
   [string]$GitHubRepo = "karpus2807/iitd_lab"
 )
 
