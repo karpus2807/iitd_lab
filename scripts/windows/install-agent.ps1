@@ -2,15 +2,20 @@
 # LabWatch Windows installer (ASCII-only for Windows PowerShell 5.1).
 # Same flow as Linux: username -> password -> machine ID -> lab -> auto token -> register.
 #
-# Install FROM GITHUB (recommended - no hobbit script download):
-#   $u = "https://github.com/karpus2807/iitd_lab/releases/download/v1.1.32/install-agent.ps1"
-#   Invoke-WebRequest -Uri $u -OutFile $env:TEMP\labwatch-install.ps1
+# Primary (lab PCs / campus proxy) - download script from LabWatch server:
+#   Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
 #   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 #
-# Agent code is downloaded from GitHub. Only login/enroll talk to the LabWatch server.
+# Optional (no campus proxy / GitHub reachable) - always latest release asset:
+#   Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/latest/download/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+#   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1 -FromGitHub
+#
+# Default: agent pack from LabWatch server /agent-pack.tgz (same host as ServerUrl).
+# -FromGitHub: agent zip from GitHub latest release tag.
 param(
-  [string]$ServerUrl = "http://hobbit2.cse.iitd.ac.in:8080",
-  [string]$Version = "v1.1.32",
+  [string]$ServerUrl = "",
+  [switch]$FromGitHub,
+  [string]$Version = "latest",
   [string]$GitHubRepo = "karpus2807/iitd_lab"
 )
 
@@ -26,12 +31,12 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   throw "Run this in an elevated Admin PowerShell (right-click PowerShell -> Run as administrator)."
 }
 
+if (-not $ServerUrl) { $ServerUrl = "__SERVER_URL__" }
 if ($ServerUrl -eq "__SERVER_URL__" -or -not $ServerUrl) {
   $ServerUrl = "http://hobbit2.cse.iitd.ac.in:8080"
 }
 $ServerUrl = $ServerUrl.TrimEnd("/")
 $ServerHost = ([Uri]$ServerUrl).Host
-if (-not $Version.StartsWith("v")) { $Version = "v$Version" }
 
 $InstallDir = Join-Path $env:ProgramFiles "LabWatch Agent"
 $DataDir = Join-Path $env:ProgramData "LabWatch"
@@ -43,6 +48,18 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, $enc)
 }
 
+function Invoke-DirectWebRequest {
+  # Bypass campus proxy for LabWatch host downloads.
+  param([string]$Uri, [string]$OutFile, [int]$TimeoutSec = 120)
+  $oldProxy = [System.Net.WebRequest]::DefaultWebProxy
+  try {
+    [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($null)
+    Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec $TimeoutSec
+  } finally {
+    [System.Net.WebRequest]::DefaultWebProxy = $oldProxy
+  }
+}
+
 function Invoke-LwJson {
   param(
     [string]$Method,
@@ -50,7 +67,6 @@ function Invoke-LwJson {
     [hashtable]$Body = $null,
     [string]$Token = ""
   )
-  # Bypass campus proxy only for LabWatch host; GitHub downloads keep system proxy.
   $oldProxy = [System.Net.WebRequest]::DefaultWebProxy
   try {
     [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($null)
@@ -95,28 +111,57 @@ function Find-PythonExe {
 }
 
 function ConvertTo-ObjectArray {
-  # PowerShell 5.1: keep JSON lists as a flat object array (never one nested Object[]).
   param($InputObject)
   if ($null -eq $InputObject) { return @() }
   if ($InputObject -is [System.Array]) { return @($InputObject) }
   return @($InputObject)
 }
 
+function Resolve-GitHubVersion {
+  if ($Version -and $Version.ToLower() -ne "latest") {
+    if (-not $Version.StartsWith("v")) { return "v$Version" }
+    return $Version
+  }
+  $api = "https://api.github.com/repos/$GitHubRepo/releases/latest"
+  Write-Host "Resolving latest GitHub release..."
+  $rel = Invoke-RestMethod -Uri $api -UseBasicParsing -TimeoutSec 60
+  $tag = [string]$rel.tag_name
+  if (-not $tag) { throw "Could not resolve latest GitHub release for $GitHubRepo" }
+  return $tag
+}
+
+function Get-AgentSourceFromServer([string]$DestRoot) {
+  $pack = Join-Path $DestRoot "agent-pack.tgz"
+  $url = "$ServerUrl/agent-pack.tgz"
+  Write-Host "Downloading agent pack from LabWatch server..."
+  Write-Host "  $url"
+  Invoke-DirectWebRequest -Uri $url -OutFile $pack -TimeoutSec 180
+  $src = Join-Path $DestRoot "src"
+  New-Item -ItemType Directory -Force -Path $src | Out-Null
+  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+  if (-not $tar) { throw "tar.exe not found. Windows 10 (1803+) and Windows 11 include it." }
+  & $tar.Source -xzf $pack -C $src
+  if ($LASTEXITCODE -ne 0) { throw "tar failed to extract agent-pack.tgz (exit $LASTEXITCODE)" }
+  if (-not (Test-Path -LiteralPath (Join-Path $src "labwatch_agent"))) {
+    throw "agent-pack.tgz did not contain labwatch_agent"
+  }
+  return $src
+}
+
 function Get-AgentSourceFromGitHub([string]$DestRoot) {
-  $zipUrl = "https://github.com/$GitHubRepo/archive/refs/tags/$Version.zip"
+  $tag = Resolve-GitHubVersion
+  $zipUrl = "https://github.com/$GitHubRepo/archive/refs/tags/$tag.zip"
   $zipPath = Join-Path $DestRoot "repo.zip"
-  Write-Host "Downloading agent $Version from GitHub..."
+  Write-Host "Downloading agent $tag from GitHub..."
   Write-Host "  $zipUrl"
   Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 300
   $extract = Join-Path $DestRoot "extract"
   New-Item -ItemType Directory -Force -Path $extract | Out-Null
   Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
   $repoName = ($GitHubRepo -split "/")[-1]
-  $tagFolder = Join-Path $extract ($repoName + "-" + $Version.TrimStart("v"))
-  # GitHub uses tag without v sometimes, or repo-tagname
   $candidates = @(
-    $tagFolder,
-    (Join-Path $extract ($repoName + "-" + $Version)),
+    (Join-Path $extract ($repoName + "-" + $tag.TrimStart("v"))),
+    (Join-Path $extract ($repoName + "-" + $tag)),
     (Get-ChildItem -LiteralPath $extract -Directory | Select-Object -First 1 -ExpandProperty FullName)
   )
   $root = $null
@@ -126,7 +171,7 @@ function Get-AgentSourceFromGitHub([string]$DestRoot) {
       break
     }
   }
-  if (-not $root) { throw "GitHub zip did not contain agent/labwatch_agent (tag $Version)." }
+  if (-not $root) { throw "GitHub zip did not contain agent/labwatch_agent (tag $tag)." }
   return (Join-Path $root "agent")
 }
 
@@ -144,7 +189,11 @@ Write-Host "Using Python: $pythonExe"
 Write-Host ""
 Write-Host "LabWatch Windows install"
 Write-Host "  Server : $ServerUrl"
-Write-Host "  Agent  : GitHub $GitHubRepo @$Version"
+if ($FromGitHub) {
+  Write-Host "  Agent  : GitHub $GitHubRepo (latest unless -Version set)"
+} else {
+  Write-Host "  Agent  : $ServerUrl/agent-pack.tgz (LabWatch server)"
+}
 Write-Host "Same as Linux: login -> machine ID -> lab. Token is automatic."
 Write-Host "Multiple PCs can use the same admin/operator login."
 
@@ -184,7 +233,6 @@ if (-not $access) { throw "Login failed. Use a LabWatch ADMIN or OPERATOR accoun
 Write-Host "Loading lab list..."
 $labs = ConvertTo-ObjectArray (Invoke-LwJson -Method GET -Path "/api/labs" -Token $access)
 if ($labs.Count -eq 0) { throw "No labs found. Create labs in Admin first." }
-# IMPORTANT: do not write Sort-Object {..}, name inside @() - the comma nests the whole list as one Object[].
 $labs = ConvertTo-ObjectArray (
   $labs | Sort-Object -Property @(
     @{ Expression = { if (("" + $_.name).Trim().ToLower() -eq "unassigned") { 0 } else { 1 } } },
@@ -260,9 +308,13 @@ New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $StateDir | Out
 $work = Join-Path $env:TEMP ("labwatch-agent-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
-  $agentSrc = Get-AgentSourceFromGitHub -DestRoot $work
+  if ($FromGitHub) {
+    $agentSrc = Get-AgentSourceFromGitHub -DestRoot $work
+  } else {
+    $agentSrc = Get-AgentSourceFromServer -DestRoot $work
+  }
   if (-not (Test-Path -LiteralPath (Join-Path $agentSrc "requirements.txt"))) {
-    throw "agent/requirements.txt missing in GitHub download"
+    throw "agent/requirements.txt missing in agent download"
   }
 
   Write-Host "Installing LabWatch agent to $InstallDir"

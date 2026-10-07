@@ -5,11 +5,11 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.32](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.32)
+**Latest release:** [v1.1.33](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.33)
 
 ## Agent install (lab PC)
 
-In the portal: **Install** (copy-paste commands). Always use **port 8080**.
+In the portal: **Install** (copy-paste commands). Always use **port 8080**. Commands do not pin a version number.
 
 **Linux**
 
@@ -18,14 +18,14 @@ curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-
 sudo bash /tmp/labwatch-install.sh
 ```
 
-**Windows 10 / 11** — from **GitHub** (Admin PowerShell). Run **one command at a time**. Do not paste `PS C:\…>` or `>>`.
+**Windows 10 / 11 — primary (LabWatch / hobbit2)** — Admin PowerShell, one command at a time. Do not paste `PS C:\…>` or `>>`. Best for lab PCs with campus proxy.
 
 ```powershell
 Remove-Item $env:TEMP\labwatch-install.ps1 -ErrorAction SilentlyContinue
 ```
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/download/v1.1.32/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
 ```
 
 ```powershell
@@ -33,14 +33,24 @@ Get-Content $env:TEMP\labwatch-install.ps1 -TotalCount 3
 ```
 
 ```powershell
-Select-String -Path $env:TEMP\labwatch-install.ps1 -Pattern "ConvertTo-ObjectArray|v1.1.32" | Select-Object -First 5
+Select-String -Path $env:TEMP\labwatch-install.ps1 -Pattern "ConvertTo-ObjectArray|agent-pack.tgz" | Select-Object -First 5
 ```
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 ```
 
-Preview must say `ASCII-only`. Confirm must show `ConvertTo-ObjectArray`. Then login → machine ID → lab number.
+Agent pack comes from the same server (`/agent-pack.tgz`). Login → machine ID → lab number.
+
+**Windows — optional GitHub** (only if GitHub works; always latest release):
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/latest/download/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1 -FromGitHub
+```
 
 - Login with a LabWatch **admin** or **operator** account (not SSH)
 - Password typing is invisible
@@ -51,6 +61,52 @@ Preview must say `ASCII-only`. Confirm must show `ConvertTo-ObjectArray`. Then l
 labwatch-agent status
 sudo systemctl status labwatch-agent
 ```
+
+### Uninstall (Linux) — one command at a time
+
+```bash
+sudo systemctl disable --now labwatch-agent
+```
+
+```bash
+sudo rm -f /etc/systemd/system/labwatch-agent.service /usr/local/bin/labwatch-agent
+```
+
+```bash
+sudo systemctl daemon-reload
+```
+
+```bash
+sudo rm -rf /opt/labwatch-agent
+```
+
+```bash
+sudo rm -rf /etc/labwatch-agent /var/lib/labwatch-agent
+```
+
+(Last line optional — wipes saved machine ID / lab.)
+
+### Uninstall (Windows) — Admin PowerShell, one at a time
+
+```powershell
+Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue
+```
+
+```powershell
+Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue
+```
+
+```powershell
+Remove-Item -Recurse -Force "$env:ProgramFiles\LabWatch Agent" -ErrorAction SilentlyContinue
+```
+
+```powershell
+Remove-Item -Recurse -Force "$env:ProgramData\LabWatch" -ErrorAction SilentlyContinue
+```
+
+(Last line optional — wipes saved machine ID / lab.)
+
+Then on the website: machine page → **Remove from LabWatch**.
 
 ## Website
 
@@ -74,7 +130,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.32
+git checkout -f v1.1.33
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```

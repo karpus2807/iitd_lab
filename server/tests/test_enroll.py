@@ -118,9 +118,10 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "Find-PythonExe" in body
     assert "DefaultWebProxy" in body
     assert "WindowsApps" in body
-    assert "github.com" in body
     assert "ConvertTo-ObjectArray" in body
-    assert "Expand-Archive" in body
+    assert "/agent-pack.tgz" in body
+    assert "FromGitHub" in body
+    assert "latest" in body
     assert "register" in body
     assert "Enrollment OK" in body or "Token is created" in body
     assert all(ord(ch) < 128 for ch in body), "install-agent.ps1 must stay ASCII-only"

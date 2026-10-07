@@ -66,8 +66,8 @@ function CopyBlock({
 
 type Toast = { kind: 'ok' | 'err'; message: string }
 
-const WIN_TAG = 'v1.1.32'
-const WIN_SCRIPT = `https://github.com/karpus2807/iitd_lab/releases/download/${WIN_TAG}/install-agent.ps1`
+const GH_LATEST_PS1 =
+  'https://github.com/karpus2807/iitd_lab/releases/latest/download/install-agent.ps1'
 
 export default function Install() {
   const base = useMemo(() => window.location.origin.replace(/\/$/, ''), [])
@@ -89,17 +89,30 @@ export default function Install() {
 
   const linuxDownload = `curl -fsSL ${base}/install-agent.sh -o /tmp/labwatch-install.sh`
   const linuxRun = 'sudo bash /tmp/labwatch-install.sh'
-
-  const win1 = 'Remove-Item $env:TEMP\\labwatch-install.ps1 -ErrorAction SilentlyContinue'
-  const win2 = `Invoke-WebRequest -Uri ${WIN_SCRIPT} -OutFile $env:TEMP\\labwatch-install.ps1`
-  const win3 = 'Get-Content $env:TEMP\\labwatch-install.ps1 -TotalCount 3'
-  const win4 = 'Select-String -Path $env:TEMP\\labwatch-install.ps1 -Pattern "ConvertTo-ObjectArray|v1.1.32" | Select-Object -First 5'
-  const win5 = 'powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1'
-
   const linuxStatus = 'labwatch-agent status'
   const linuxStatus2 = 'sudo systemctl status labwatch-agent'
+  const linuxUn1 = 'sudo systemctl disable --now labwatch-agent'
+  const linuxUn2 = 'sudo rm -f /etc/systemd/system/labwatch-agent.service /usr/local/bin/labwatch-agent'
+  const linuxUn3 = 'sudo systemctl daemon-reload'
+  const linuxUn4 = 'sudo rm -rf /opt/labwatch-agent'
+  const linuxUn5 = 'sudo rm -rf /etc/labwatch-agent /var/lib/labwatch-agent'
+
+  const win1 = 'Remove-Item $env:TEMP\\labwatch-install.ps1 -ErrorAction SilentlyContinue'
+  const win2 = `Invoke-WebRequest -Uri ${base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1`
+  const win3 = 'Get-Content $env:TEMP\\labwatch-install.ps1 -TotalCount 3'
+  const win4 =
+    'Select-String -Path $env:TEMP\\labwatch-install.ps1 -Pattern "ConvertTo-ObjectArray|agent-pack.tgz" | Select-Object -First 5'
+  const win5 = 'powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1'
   const winStatus = 'Get-ScheduledTask -TaskName LabWatchAgent'
   const winStatus2 = 'Get-ScheduledTaskInfo -TaskName LabWatchAgent'
+  const winUn1 = 'Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue'
+  const winUn2 = 'Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue'
+  const winUn3 = 'Remove-Item -Recurse -Force "$env:ProgramFiles\\LabWatch Agent" -ErrorAction SilentlyContinue'
+  const winUn4 = 'Remove-Item -Recurse -Force "$env:ProgramData\\LabWatch" -ErrorAction SilentlyContinue'
+
+  const winGh2 = `Invoke-WebRequest -Uri ${GH_LATEST_PS1} -OutFile $env:TEMP\\labwatch-install.ps1`
+  const winGh5 =
+    'powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1 -FromGitHub'
 
   return (
     <>
@@ -119,11 +132,22 @@ export default function Install() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Before you start</h3>
         <ul className="install-list">
-          <li>LabWatch server: <code className="mono">{base}</code> (login / enroll only).</li>
-          <li><strong>Windows:</strong> download installer from <strong>GitHub</strong> — do not paste prompts like <code>PS C:\…&gt;</code> or <code>&gt;&gt;</code>.</li>
-          <li><strong>Linux and Windows:</strong> username → password → machine ID → lab number. Token is automatic.</li>
-          <li>Password typing is invisible. Re-run: press Enter to keep machine ID and lab.</li>
-          <li>Only <strong>ADMIN</strong> or <strong>OPERATOR</strong> can enroll. Same login works on many PCs.</li>
+          <li>
+            LabWatch server: <code className="mono">{base}</code> — main install path for lab PCs (works with campus
+            proxy).
+          </li>
+          <li>
+            <strong>Windows primary:</strong> download installer + agent pack from this server. Commands stay the same
+            when versions change.
+          </li>
+          <li>
+            <strong>GitHub:</strong> optional only (no campus proxy / GitHub reachable). Always pulls the latest
+            release.
+          </li>
+          <li>
+            <strong>Linux and Windows:</strong> username → password → machine ID → lab number. Token is automatic.
+          </li>
+          <li>Do not paste prompts like <code>PS C:\…&gt;</code> or <code>&gt;&gt;</code>.</li>
         </ul>
       </div>
 
@@ -131,41 +155,63 @@ export default function Install() {
         <div>
           <div className="topbar" style={{ marginBottom: 12 }}>
             <div>
-              <h2 style={{ fontSize: 20 }}>Linux</h2>
-              <p>Root / sudo. Needs curl and Python 3.8+. Run step 1, then step 2.</p>
+              <h2 style={{ fontSize: 20 }}>Linux — install</h2>
+              <p>Root / sudo. Needs curl and Python 3.8+.</p>
             </div>
           </div>
           <CopyBlock label="1) Download" text={linuxDownload} onResult={onResult} />
-          <CopyBlock label="2) Install" text={linuxRun} onResult={onResult} hint="Asks username, password, machine ID, then lab number." />
+          <CopyBlock
+            label="2) Install"
+            text={linuxRun}
+            onResult={onResult}
+            hint="Asks username, password, machine ID, then lab number."
+          />
           <CopyBlock label="3) Status" text={linuxStatus} onResult={onResult} />
           <CopyBlock label="4) Service status" text={linuxStatus2} onResult={onResult} />
+
+          <div className="topbar" style={{ margin: '28px 0 12px' }}>
+            <div>
+              <h2 style={{ fontSize: 20 }}>Linux — uninstall</h2>
+              <p>Run in order. Then remove the host on the website if needed.</p>
+            </div>
+          </div>
+          <CopyBlock label="U1) Stop service" text={linuxUn1} onResult={onResult} />
+          <CopyBlock label="U2) Remove unit + binary" text={linuxUn2} onResult={onResult} />
+          <CopyBlock label="U3) Reload systemd" text={linuxUn3} onResult={onResult} />
+          <CopyBlock label="U4) Remove agent files" text={linuxUn4} onResult={onResult} />
+          <CopyBlock
+            label="U5) Wipe config + state (optional)"
+            text={linuxUn5}
+            onResult={onResult}
+            hint="Skip this if you want the next install to keep the same machine ID and lab."
+          />
         </div>
 
         <div>
           <div className="topbar" style={{ marginBottom: 12 }}>
             <div>
-              <h2 style={{ fontSize: 20 }}>Windows 10 / 11</h2>
-              <p>Admin PowerShell. Python 3.8+ from python.org (Add to PATH). One step at a time.</p>
+              <h2 style={{ fontSize: 20 }}>Windows — install (primary: LabWatch server)</h2>
+              <p>Admin PowerShell. Python 3.8+ from python.org (Add to PATH). Best for lab PCs with campus proxy.</p>
             </div>
           </div>
           <CopyBlock label="1) Delete old installer" text={win1} onResult={onResult} />
           <CopyBlock
-            label={`2) Download from GitHub (${WIN_TAG})`}
+            label="2) Download from LabWatch server"
             text={win2}
             onResult={onResult}
-            hint="Do not use the hobbit /install-agent.ps1 URL for Windows."
+            hint="Uses this portal host. Agent pack also comes from the same server."
           />
           <CopyBlock
             label="3) Preview file"
             text={win3}
             onResult={onResult}
-            hint="Must say ASCII-only and same flow as Linux (plain - arrows, not â€)."
+            hint="Must say ASCII-only (plain - arrows, not â€)."
           />
           <CopyBlock
-            label="4) Confirm version"
+            label="4) Confirm script"
             text={win4}
             onResult={onResult}
-            hint="Must show ConvertTo-ObjectArray and v1.1.32. If not, repeat steps 1–2."
+            hint="Must show ConvertTo-ObjectArray and agent-pack.tgz. If not, repeat steps 1–2."
           />
           <CopyBlock
             label="5) Run installer"
@@ -175,14 +221,46 @@ export default function Install() {
           />
           <CopyBlock label="6) Task status" text={winStatus} onResult={onResult} />
           <CopyBlock label="7) Last run result" text={winStatus2} onResult={onResult} />
+
+          <div className="topbar" style={{ margin: '28px 0 12px' }}>
+            <div>
+              <h2 style={{ fontSize: 20 }}>Windows — optional GitHub path</h2>
+              <p>Only if GitHub works on that PC. Always downloads the latest release (no version number in the URL).</p>
+            </div>
+          </div>
+          <CopyBlock label="G1) Delete old installer" text={win1} onResult={onResult} />
+          <CopyBlock label="G2) Download latest from GitHub" text={winGh2} onResult={onResult} />
+          <CopyBlock label="G3) Preview file" text={win3} onResult={onResult} />
+          <CopyBlock
+            label="G4) Run with -FromGitHub"
+            text={winGh5}
+            onResult={onResult}
+            hint="Pulls the latest agent zip from GitHub; login still goes to the LabWatch server."
+          />
+
+          <div className="topbar" style={{ margin: '28px 0 12px' }}>
+            <div>
+              <h2 style={{ fontSize: 20 }}>Windows — uninstall</h2>
+              <p>Admin PowerShell. One step at a time.</p>
+            </div>
+          </div>
+          <CopyBlock label="U1) Stop task" text={winUn1} onResult={onResult} />
+          <CopyBlock label="U2) Remove scheduled task" text={winUn2} onResult={onResult} />
+          <CopyBlock label="U3) Remove Program Files" text={winUn3} onResult={onResult} />
+          <CopyBlock
+            label="U4) Wipe ProgramData (optional)"
+            text={winUn4}
+            onResult={onResult}
+            hint="Skip this if you want the next install to keep the same machine ID and lab."
+          />
         </div>
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h3 className="section-title">After install</h3>
+        <h3 className="section-title">After install / uninstall</h3>
         <p className="muted" style={{ margin: 0 }}>
-          Open <strong>Machines</strong> — the PC should appear with your machine ID.
-          Remove a host from Machines if you wipe the agent on that PC.
+          After install, open <strong>Machines</strong> — the PC should appear with your machine ID. After uninstall,
+          open the machine page and click <strong>Remove from LabWatch</strong> so it leaves the fleet list.
         </p>
       </div>
     </>
