@@ -63,6 +63,9 @@ function CopyBlock({
 
 type Toast = { kind: 'ok' | 'err'; message: string }
 
+const WIN_TAG = 'v1.1.30'
+const WIN_SCRIPT = `https://github.com/karpus2807/iitd_lab/releases/download/${WIN_TAG}/install-agent.ps1`
+
 export default function Install() {
   const base = useMemo(() => window.location.origin.replace(/\/$/, ''), [])
   const [toast, setToast] = useState<Toast | null>(null)
@@ -85,8 +88,12 @@ export default function Install() {
   const linuxRun = 'sudo bash /tmp/labwatch-install.sh'
   const linuxOne = `${linuxDownload}\n${linuxRun}`
 
-  const winRun = `Invoke-WebRequest -Uri ${base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1\npowershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1`
-  const winAlt = `irm ${base}/install-agent.ps1 | iex`
+  const winRun = [
+    'Remove-Item $env:TEMP\\labwatch-install.ps1 -ErrorAction SilentlyContinue',
+    `Invoke-WebRequest -Uri ${WIN_SCRIPT} -OutFile $env:TEMP\\labwatch-install.ps1`,
+    'Get-Content $env:TEMP\\labwatch-install.ps1 -TotalCount 3',
+    'powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1',
+  ].join('\n')
 
   const linuxStatus = 'labwatch-agent status\nsudo systemctl status labwatch-agent'
   const winStatus = 'Get-ScheduledTask -TaskName LabWatchAgent\nGet-ScheduledTaskInfo -TaskName LabWatchAgent'
@@ -109,12 +116,11 @@ export default function Install() {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Before you start</h3>
         <ul className="install-list">
-          <li>Server URL for this portal: <code className="mono">{base}</code> (keep the port if shown).</li>
-          <li><strong>Linux and Windows use the same flow:</strong> username → password → machine ID → lab number.</li>
-          <li>The installer logs in and creates a one-use token itself — do not copy a token from Admin.</li>
-          <li>Password typing is invisible — type and press Enter.</li>
-          <li>Re-run keeps machine ID and lab when you press Enter.</li>
-          <li>Only <strong>ADMIN</strong> or <strong>OPERATOR</strong> can enroll a PC. Same login works on many PCs.</li>
+          <li>LabWatch server: <code className="mono">{base}</code> (login/enroll only).</li>
+          <li><strong>Windows:</strong> installer + agent code come from <strong>GitHub</strong> (no hobbit script download).</li>
+          <li><strong>Linux and Windows:</strong> username → password → machine ID → lab. Token is automatic.</li>
+          <li>Password typing is invisible. Re-run: Enter keeps machine ID and lab.</li>
+          <li>Only <strong>ADMIN</strong> or <strong>OPERATOR</strong> can enroll. Same login works on many PCs.</li>
         </ul>
       </div>
 
@@ -123,7 +129,7 @@ export default function Install() {
           <div className="topbar" style={{ marginBottom: 12 }}>
             <div>
               <h2 style={{ fontSize: 20 }}>Linux</h2>
-              <p>Root / sudo on the lab PC. Needs curl and Python 3.8+.</p>
+              <p>Root / sudo. Needs curl and Python 3.8+.</p>
             </div>
           </div>
           <CopyBlock label="Download + install" text={linuxOne} onResult={onResult} />
@@ -134,11 +140,10 @@ export default function Install() {
           <div className="topbar" style={{ marginBottom: 12 }}>
             <div>
               <h2 style={{ fontSize: 20 }}>Windows 10 / 11</h2>
-              <p>Right-click Start → Windows PowerShell (Admin). Python 3.8+ from python.org with “Add to PATH”.</p>
+              <p>Admin PowerShell. Python 3.8+ from python.org with Add to PATH. Run lines in order.</p>
             </div>
           </div>
-          <CopyBlock label="Install (recommended)" text={winRun} onResult={onResult} />
-          <CopyBlock label="Short form (also OK)" text={winAlt} onResult={onResult} />
+          <CopyBlock label={`Install from GitHub (${WIN_TAG})`} text={winRun} onResult={onResult} />
           <CopyBlock label="Check status" text={winStatus} onResult={onResult} />
         </div>
       </div>
@@ -146,7 +151,7 @@ export default function Install() {
       <div className="card" style={{ marginTop: 16 }}>
         <h3 className="section-title">After install</h3>
         <p className="muted" style={{ margin: 0 }}>
-          Open <strong>Machines</strong> — the PC should appear with your machine ID. Agent credentials stay after you change the website password.
+          Open <strong>Machines</strong> — the PC should appear with your machine ID.
           Remove a host from Machines if you wipe the agent on that PC.
         </p>
       </div>

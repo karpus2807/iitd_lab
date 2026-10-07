@@ -1,12 +1,17 @@
 #Requires -RunAsAdministrator
-# LabWatch Windows installer - same flow as Linux install-agent.sh:
-#   username + password -> machine ID -> lab -> server mints one-use token -> register machine
-# Recommended (Admin PowerShell):
-#   Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+# LabWatch Windows installer (ASCII-only for Windows PowerShell 5.1).
+# Same flow as Linux: username -> password -> machine ID -> lab -> auto token -> register.
+#
+# Install FROM GITHUB (recommended - no hobbit script download):
+#   $u = "https://github.com/karpus2807/iitd_lab/releases/download/v1.1.30/install-agent.ps1"
+#   Invoke-WebRequest -Uri $u -OutFile $env:TEMP\labwatch-install.ps1
 #   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
-# ASCII-only file: Windows PowerShell 5.1 mis-parses UTF-8 em-dashes without a BOM.
+#
+# Agent code is downloaded from GitHub. Only login/enroll talk to the LabWatch server.
 param(
-  [string]$ServerUrl = ""
+  [string]$ServerUrl = "http://hobbit2.cse.iitd.ac.in:8080",
+  [string]$Version = "v1.1.30",
+  [string]$GitHubRepo = "karpus2807/iitd_lab"
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,18 +26,12 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   throw "Run this in an elevated Admin PowerShell (right-click PowerShell -> Run as administrator)."
 }
 
-if (-not $ServerUrl) { $ServerUrl = "__SERVER_URL__" }
 if ($ServerUrl -eq "__SERVER_URL__" -or -not $ServerUrl) {
   $ServerUrl = "http://hobbit2.cse.iitd.ac.in:8080"
 }
 $ServerUrl = $ServerUrl.TrimEnd("/")
 $ServerHost = ([Uri]$ServerUrl).Host
-
-$env:NO_PROXY = (($env:NO_PROXY, $ServerHost, "localhost", "127.0.0.1") -join ",").Trim(",")
-$env:no_proxy = $env:NO_PROXY
-try {
-  [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($null)
-} catch { }
+if (-not $Version.StartsWith("v")) { $Version = "v$Version" }
 
 $InstallDir = Join-Path $env:ProgramFiles "LabWatch Agent"
 $DataDir = Join-Path $env:ProgramData "LabWatch"
@@ -51,22 +50,27 @@ function Invoke-LwJson {
     [hashtable]$Body = $null,
     [string]$Token = ""
   )
-  $headers = @{ "Content-Type" = "application/json"; "Accept" = "application/json" }
-  if ($Token) { $headers["Authorization"] = "Bearer $Token" }
-  $params = @{
-    Method          = $Method
-    Uri             = "$ServerUrl$Path"
-    Headers         = $headers
-    UseBasicParsing = $true
-    TimeoutSec      = 60
-  }
-  if ($Body) { $params.Body = ($Body | ConvertTo-Json -Compress -Depth 8) }
+  # Bypass campus proxy only for LabWatch host; GitHub downloads keep system proxy.
+  $oldProxy = [System.Net.WebRequest]::DefaultWebProxy
   try {
+    [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($null)
+    $headers = @{ "Content-Type" = "application/json"; "Accept" = "application/json" }
+    if ($Token) { $headers["Authorization"] = "Bearer $Token" }
+    $params = @{
+      Method          = $Method
+      Uri             = "$ServerUrl$Path"
+      Headers         = $headers
+      UseBasicParsing = $true
+      TimeoutSec      = 60
+    }
+    if ($Body) { $params.Body = ($Body | ConvertTo-Json -Compress -Depth 8) }
     return Invoke-RestMethod @params
   } catch {
     $msg = $_.Exception.Message
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $msg = $_.ErrorDetails.Message }
     throw "Request failed ($Method $Path): $msg"
+  } finally {
+    [System.Net.WebRequest]::DefaultWebProxy = $oldProxy
   }
 }
 
@@ -90,21 +94,38 @@ function Find-PythonExe {
   return $null
 }
 
-function Expand-AgentPack([string]$Archive, [string]$Dest) {
-  New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-  if (-not $tar) {
-    throw "tar.exe not found. Windows 10 (1803+) and Windows 11 include it."
+function Get-AgentSourceFromGitHub([string]$DestRoot) {
+  $zipUrl = "https://github.com/$GitHubRepo/archive/refs/tags/$Version.zip"
+  $zipPath = Join-Path $DestRoot "repo.zip"
+  Write-Host "Downloading agent $Version from GitHub..."
+  Write-Host "  $zipUrl"
+  Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 300
+  $extract = Join-Path $DestRoot "extract"
+  New-Item -ItemType Directory -Force -Path $extract | Out-Null
+  Expand-Archive -LiteralPath $zipPath -DestinationPath $extract -Force
+  $repoName = ($GitHubRepo -split "/")[-1]
+  $tagFolder = Join-Path $extract ($repoName + "-" + $Version.TrimStart("v"))
+  # GitHub uses tag without v sometimes, or repo-tagname
+  $candidates = @(
+    $tagFolder,
+    (Join-Path $extract ($repoName + "-" + $Version)),
+    (Get-ChildItem -LiteralPath $extract -Directory | Select-Object -First 1 -ExpandProperty FullName)
+  )
+  $root = $null
+  foreach ($c in $candidates) {
+    if ($c -and (Test-Path -LiteralPath (Join-Path $c "agent\labwatch_agent"))) {
+      $root = $c
+      break
+    }
   }
-  & $tar.Source -xzf $Archive -C $Dest
-  if ($LASTEXITCODE -ne 0) { throw "tar failed to extract agent-pack.tgz (exit $LASTEXITCODE)" }
+  if (-not $root) { throw "GitHub zip did not contain agent/labwatch_agent (tag $Version)." }
+  return (Join-Path $root "agent")
 }
 
-# --- same prerequisites order as Linux ---
 $pythonExe = Find-PythonExe
 if (-not $pythonExe) {
   throw @"
-Python 3.8+ is required and must be on PATH (same idea as Linux python3).
+Python 3.8+ is required and must be on PATH.
 1) Download https://www.python.org/downloads/windows/
 2) Enable 'Add python.exe to PATH'
 3) Close this window, open a NEW Admin PowerShell, re-run the installer.
@@ -112,10 +133,11 @@ Do not use the Microsoft Store python stub.
 "@
 }
 Write-Host "Using Python: $pythonExe"
-
 Write-Host ""
-Write-Host "LabWatch agent install -> $ServerUrl"
-Write-Host "Same process as Linux: login -> machine ID -> lab. Token is created for you (do not paste an Admin token)."
+Write-Host "LabWatch Windows install"
+Write-Host "  Server : $ServerUrl"
+Write-Host "  Agent  : GitHub $GitHubRepo @$Version"
+Write-Host "Same as Linux: login -> machine ID -> lab. Token is automatic."
 Write-Host "Multiple PCs can use the same admin/operator login."
 
 $Username = Read-Host "Username"
@@ -144,9 +166,9 @@ if (Test-Path -LiteralPath $ConfigPath) {
 $hint = if ($ExistingId) { $ExistingId } else { "example 12345/2012/12" }
 $InventoryId = Read-Host "Machine ID [$hint]"
 if (-not $InventoryId) { $InventoryId = $ExistingId }
-if (-not $InventoryId) { throw "Username, password, and machine ID are required (Enter keeps the previous machine ID if one exists)." }
+if (-not $InventoryId) { throw "Username, password, and machine ID are required." }
 
-Write-Host "Logging in..."
+Write-Host "Logging in to LabWatch (direct, no campus proxy)..."
 $login = Invoke-LwJson -Method POST -Path "/api/auth/login" -Body @{ username = $Username; password = $Password }
 $access = [string]$login.access_token
 if (-not $access) { throw "Login failed. Use a LabWatch ADMIN or OPERATOR account (not SSH)." }
@@ -192,7 +214,7 @@ if ($choice) {
   Write-Host "Keeping $($lab.name)"
 }
 
-Write-Host "Logging in to $ServerUrl and enrolling $InventoryId..."
+Write-Host "Enrolling $InventoryId..."
 $enroll = Invoke-LwJson -Method POST -Path "/api/agents/enroll" -Body @{
   username     = $Username
   password     = $Password
@@ -204,19 +226,15 @@ $Username = $null
 $Token = [string]$enroll.registration_token
 if ($enroll.server_url) { $ServerUrl = ([string]$enroll.server_url).TrimEnd("/") }
 if (-not $Token) { throw "Enroll did not return a registration token." }
-Write-Host "Enrollment token created (one-use, kept in config - you do not need to copy it)."
+Write-Host "Enrollment OK (token kept in config - you do not copy it)."
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $StateDir | Out-Null
 $work = Join-Path $env:TEMP ("labwatch-agent-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
-  $pack = Join-Path $work "agent-pack.tgz"
-  Write-Host "Downloading agent from $ServerUrl/agent-pack.tgz"
-  Invoke-WebRequest -Uri "$ServerUrl/agent-pack.tgz" -OutFile $pack -UseBasicParsing -TimeoutSec 120
-  $src = Join-Path $work "src"
-  Expand-AgentPack -Archive $pack -Dest $src
-  if (-not (Test-Path -LiteralPath (Join-Path $src "labwatch_agent"))) {
-    throw "agent-pack.tgz did not contain labwatch_agent"
+  $agentSrc = Get-AgentSourceFromGitHub -DestRoot $work
+  if (-not (Test-Path -LiteralPath (Join-Path $agentSrc "requirements.txt"))) {
+    throw "agent/requirements.txt missing in GitHub download"
   }
 
   Write-Host "Installing LabWatch agent to $InstallDir"
@@ -231,15 +249,14 @@ try {
 
   & $py -m pip install -U pip
   if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
-  & $py -m pip install -r (Join-Path $src "requirements.txt")
-  if ($LASTEXITCODE -ne 0) { throw "pip install requirements failed (check campus proxy / network)" }
+  & $py -m pip install -r (Join-Path $agentSrc "requirements.txt")
+  if ($LASTEXITCODE -ne 0) { throw "pip install requirements failed (check network / campus proxy for pypi.org)" }
 
   $destPkg = Join-Path $InstallDir "labwatch_agent"
   if (Test-Path -LiteralPath $destPkg) { Remove-Item -LiteralPath $destPkg -Recurse -Force }
-  Copy-Item -Recurse -Force (Join-Path $src "labwatch_agent") $InstallDir
+  Copy-Item -Recurse -Force (Join-Path $agentSrc "labwatch_agent") $InstallDir
 
   $runPy = Join-Path $InstallDir "run.py"
-  # Single-quoted here-string so PowerShell never parses the Python source.
   Write-Utf8NoBom $runPy @'
 import sys
 from pathlib import Path
@@ -276,12 +293,12 @@ level = "INFO"
   icacls $ConfigPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
   Remove-Item -Force (Join-Path $StateDir "state.toml") -ErrorAction SilentlyContinue
 
-  Write-Host "Registering machine with server (same as Linux agent first start)..."
+  Write-Host "Registering machine with LabWatch server..."
   $env:LABWATCH_CONFIG = $ConfigPath
   $env:LABWATCH_STATE_DIR = $StateDir
   & $py $runPy register
   if ($LASTEXITCODE -ne 0) {
-    throw "Machine registration failed. Check server URL $ServerUrl and try again."
+    throw "Machine registration failed. Check that $ServerUrl is reachable from this PC."
   }
 
   $action = New-ScheduledTaskAction -Execute $py -Argument "`"$runPy`" run" -WorkingDirectory $InstallDir
@@ -301,8 +318,7 @@ level = "INFO"
 
   Write-Host "Installed $InventoryId ($($lab.name)) -> $ServerUrl"
   Write-Host ("Scheduled task: {0}" -f $task.State)
-  Write-Host "Update later with the same PowerShell command; Enter keeps this machine ID and lab."
-  Write-Host "Commands: `"$py`" `"$runPy`" status"
+  Write-Host "Open LabWatch -> Machines to confirm this PC."
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

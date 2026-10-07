@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.29](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.29)
+**Latest release:** [v1.1.30](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.30)
 
 ## Agent install (lab PC)
 
@@ -18,12 +18,16 @@ curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-
 sudo bash /tmp/labwatch-install.sh
 ```
 
-**Windows 10 / 11** (Admin PowerShell, Python 3.8+ from python.org on PATH)
+**Windows 10 / 11** — install from **GitHub** (Admin PowerShell, Python 3.8+ on PATH). Agent code comes from the release; only login talks to hobbit.
 
 ```powershell
-Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+Remove-Item $env:TEMP\labwatch-install.ps1 -ErrorAction SilentlyContinue
+Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/download/v1.1.30/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+Get-Content $env:TEMP\labwatch-install.ps1 -TotalCount 3
 powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 ```
+
+Line 2 must say `ASCII-only` or `same flow as Linux` with plain `-` (not `â€`).
 
 - Login with a LabWatch **admin** or **operator** account (not SSH)
 - Password typing is invisible

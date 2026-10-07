@@ -115,13 +115,13 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "__SERVER_URL__" not in body
     assert "/api/agents/enroll" in body
     assert "LabWatchAgent" in body
-    assert "/agent-pack.tgz" in body
     assert "Find-PythonExe" in body
     assert "DefaultWebProxy" in body
     assert "WindowsApps" in body
-    assert "tar.exe" in body
+    assert "github.com" in body
+    assert "Expand-Archive" in body
     assert "register" in body
-    assert "do not need to copy" in body.lower() or "Token is created" in body
+    assert "Enrollment OK" in body or "Token is created" in body
     assert all(ord(ch) < 128 for ch in body), "install-agent.ps1 must stay ASCII-only"
 
     pack = await client.get("/agent-pack.tgz")
