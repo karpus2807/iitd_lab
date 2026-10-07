@@ -63,7 +63,7 @@ function CopyBlock({
 
 type Toast = { kind: 'ok' | 'err'; message: string }
 
-const WIN_TAG = 'v1.1.30'
+const WIN_TAG = 'v1.1.31'
 const WIN_SCRIPT = `https://github.com/karpus2807/iitd_lab/releases/download/${WIN_TAG}/install-agent.ps1`
 
 export default function Install() {

@@ -119,6 +119,7 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "DefaultWebProxy" in body
     assert "WindowsApps" in body
     assert "github.com" in body
+    assert "ConvertTo-ObjectArray" in body
     assert "Expand-Archive" in body
     assert "register" in body
     assert "Enrollment OK" in body or "Token is created" in body

@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.30](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.30)
+**Latest release:** [v1.1.31](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.31)
 
 ## Agent install (lab PC)
 
@@ -22,7 +22,7 @@ sudo bash /tmp/labwatch-install.sh
 
 ```powershell
 Remove-Item $env:TEMP\labwatch-install.ps1 -ErrorAction SilentlyContinue
-Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/download/v1.1.30/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
+Invoke-WebRequest -Uri https://github.com/karpus2807/iitd_lab/releases/download/v1.1.31/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
 Get-Content $env:TEMP\labwatch-install.ps1 -TotalCount 3
 powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 ```
@@ -61,7 +61,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.30
+git checkout -f v1.1.31
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```

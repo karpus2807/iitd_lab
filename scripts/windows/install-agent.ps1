@@ -3,14 +3,14 @@
 # Same flow as Linux: username -> password -> machine ID -> lab -> auto token -> register.
 #
 # Install FROM GITHUB (recommended - no hobbit script download):
-#   $u = "https://github.com/karpus2807/iitd_lab/releases/download/v1.1.30/install-agent.ps1"
+#   $u = "https://github.com/karpus2807/iitd_lab/releases/download/v1.1.31/install-agent.ps1"
 #   Invoke-WebRequest -Uri $u -OutFile $env:TEMP\labwatch-install.ps1
 #   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 #
 # Agent code is downloaded from GitHub. Only login/enroll talk to the LabWatch server.
 param(
   [string]$ServerUrl = "http://hobbit2.cse.iitd.ac.in:8080",
-  [string]$Version = "v1.1.30",
+  [string]$Version = "v1.1.31",
   [string]$GitHubRepo = "karpus2807/iitd_lab"
 )
 
@@ -94,6 +94,14 @@ function Find-PythonExe {
   return $null
 }
 
+function ConvertTo-ObjectArray {
+  # PowerShell 5.1: keep JSON lists as a flat object array (never one nested Object[]).
+  param($InputObject)
+  if ($null -eq $InputObject) { return @() }
+  if ($InputObject -is [System.Array]) { return @($InputObject) }
+  return @($InputObject)
+}
+
 function Get-AgentSourceFromGitHub([string]$DestRoot) {
   $zipUrl = "https://github.com/$GitHubRepo/archive/refs/tags/$Version.zip"
   $zipPath = Join-Path $DestRoot "repo.zip"
@@ -174,34 +182,54 @@ $access = [string]$login.access_token
 if (-not $access) { throw "Login failed. Use a LabWatch ADMIN or OPERATOR account (not SSH)." }
 
 Write-Host "Loading lab list..."
-$labs = @(Invoke-LwJson -Method GET -Path "/api/labs" -Token $access)
+$labs = ConvertTo-ObjectArray (Invoke-LwJson -Method GET -Path "/api/labs" -Token $access)
 if ($labs.Count -eq 0) { throw "No labs found. Create labs in Admin first." }
-$labs = @($labs | Sort-Object { if (("" + $_.name).Trim().ToLower() -eq "unassigned") { 0 } else { 1 } }, name)
+# IMPORTANT: do not write Sort-Object {..}, name inside @() - the comma nests the whole list as one Object[].
+$labs = ConvertTo-ObjectArray (
+  $labs | Sort-Object -Property @(
+    @{ Expression = { if (("" + $_.name).Trim().ToLower() -eq "unassigned") { 0 } else { 1 } } },
+    @{ Expression = "name" }
+  )
+)
 
 $currentLab = $null
-$listed = @(Invoke-LwJson -Method GET -Path ("/api/machines?inventory_id=" + [uri]::EscapeDataString($InventoryId)) -Token $access)
+$listed = ConvertTo-ObjectArray (Invoke-LwJson -Method GET -Path ("/api/machines?inventory_id=" + [uri]::EscapeDataString($InventoryId)) -Token $access)
 if ($listed.Count -gt 0 -and $listed[0].lab_id) {
-  $currentLab = $labs | Where-Object { [string]$_.id -eq [string]$listed[0].lab_id } | Select-Object -First 1
+  $want = [string]$listed[0].lab_id
+  foreach ($row in $labs) {
+    if ([string]$row.id -eq $want) { $currentLab = $row; break }
+  }
 }
 if (-not $currentLab -and $ExistingLabId) {
-  $currentLab = $labs | Where-Object { [string]$_.id -eq $ExistingLabId } | Select-Object -First 1
+  foreach ($row in $labs) {
+    if ([string]$row.id -eq $ExistingLabId) { $currentLab = $row; break }
+  }
 }
 if (-not $currentLab -and $ExistingLabName) {
-  $currentLab = $labs | Where-Object { ("" + $_.name).Trim().ToLower() -eq $ExistingLabName.ToLower() } | Select-Object -First 1
+  foreach ($row in $labs) {
+    if (("" + $row.name).Trim().ToLower() -eq $ExistingLabName.ToLower()) { $currentLab = $row; break }
+  }
 }
 if (-not $currentLab) {
-  $currentLab = $labs | Where-Object { ("" + $_.name).Trim().ToLower() -eq "unassigned" } | Select-Object -First 1
+  foreach ($row in $labs) {
+    if (("" + $row.name).Trim().ToLower() -eq "unassigned") { $currentLab = $row; break }
+  }
 }
 if (-not $currentLab) { $currentLab = $labs[0] }
 
 Write-Host ""
 Write-Host "Labs:"
 for ($i = 0; $i -lt $labs.Count; $i++) {
-  $mark = if ([string]$labs[$i].id -eq [string]$currentLab.id) { "  [current]" } else { "" }
-  $hosts = if ($null -ne $labs[$i].machine_count) { "  ($($labs[$i].machine_count) hosts)" } else { "" }
-  Write-Host ("  {0}) {1}{2}{3}" -f ($i + 1), $labs[$i].name, $hosts, $mark)
+  $row = $labs[$i]
+  $rowName = [string]$row.name
+  $rowId = [string]$row.id
+  $mark = if ($rowId -eq [string]$currentLab.id) { "  [current]" } else { "" }
+  $count = $row.machine_count
+  if ($count -is [System.Array]) { $count = $count[0] }
+  $hosts = if ($null -ne $count -and "$count" -ne "") { "  ($count hosts)" } else { "" }
+  Write-Host ("  {0}) {1}{2}{3}" -f ($i + 1), $rowName, $hosts, $mark)
 }
-$choice = Read-Host "Select lab number (Enter keeps $($currentLab.name))"
+$choice = Read-Host ("Select lab number (Enter keeps {0})" -f ([string]$currentLab.name))
 $lab = $currentLab
 if ($choice) {
   $n = 0
@@ -209,9 +237,9 @@ if ($choice) {
     throw "Lab number must be between 1 and $($labs.Count)"
   }
   $lab = $labs[$n - 1]
-  Write-Host "Selected $($lab.name)"
+  Write-Host ("Selected {0}" -f ([string]$lab.name))
 } else {
-  Write-Host "Keeping $($lab.name)"
+  Write-Host ("Keeping {0}" -f ([string]$lab.name))
 }
 
 Write-Host "Enrolling $InventoryId..."
