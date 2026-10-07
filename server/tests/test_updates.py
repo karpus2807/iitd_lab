@@ -9,6 +9,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.29",
+        "name": "LabWatch 1.1.29",
+        "published_at": "2026-10-07T05:50:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.29",
+        "notes": "Windows PS1 ASCII + UTF-8 BOM for PowerShell 5.1",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.28",
         "name": "LabWatch 1.1.28",
         "published_at": "2026-10-06T12:40:00Z",
@@ -258,7 +266,7 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     idle = listed.json()
     assert idle["builds"] == []
     assert idle["needs_fetch"] is True
-    assert idle["current"]["tag"] == "v1.1.28"
+    assert idle["current"]["tag"] == "v1.1.29"
 
     denied_apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.11"})
     assert denied_apply.status_code == 400
@@ -274,16 +282,16 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.28"
-    assert body["current"]["tag"] == "v1.1.28"
+    assert body["latest"]["tag"] == "v1.1.29"
+    assert body["current"]["tag"] == "v1.1.29"
     assert body["source"] == "github"
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])
 
-    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.26"})
+    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.27"})
     assert apply.status_code == 200, apply.text
     status = apply.json()["status"]
-    assert status["tag"] == "v1.1.26"
+    assert status["tag"] == "v1.1.27"
     assert status["state"] == "queued"
     assert (update_harness / "data" / "update-request.json").is_file()
 

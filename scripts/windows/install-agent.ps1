@@ -1,9 +1,10 @@
 #Requires -RunAsAdministrator
-# LabWatch Windows installer — same flow as Linux install-agent.sh:
-#   username + password → machine ID → lab → server mints one-use token → register machine
+# LabWatch Windows installer - same flow as Linux install-agent.sh:
+#   username + password -> machine ID -> lab -> server mints one-use token -> register machine
 # Recommended (Admin PowerShell):
 #   Invoke-WebRequest -Uri http://hobbit2.cse.iitd.ac.in:8080/install-agent.ps1 -OutFile $env:TEMP\labwatch-install.ps1
 #   powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
+# ASCII-only file: Windows PowerShell 5.1 mis-parses UTF-8 em-dashes without a BOM.
 param(
   [string]$ServerUrl = ""
 )
@@ -17,7 +18,7 @@ try {
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  throw "Run this in an elevated Admin PowerShell (right-click PowerShell → Run as administrator)."
+  throw "Run this in an elevated Admin PowerShell (right-click PowerShell -> Run as administrator)."
 }
 
 if (-not $ServerUrl) { $ServerUrl = "__SERVER_URL__" }
@@ -113,8 +114,8 @@ Do not use the Microsoft Store python stub.
 Write-Host "Using Python: $pythonExe"
 
 Write-Host ""
-Write-Host "LabWatch agent install → $ServerUrl"
-Write-Host "Same process as Linux: login → machine ID → lab. Token is created for you (do not paste an Admin token)."
+Write-Host "LabWatch agent install -> $ServerUrl"
+Write-Host "Same process as Linux: login -> machine ID -> lab. Token is created for you (do not paste an Admin token)."
 Write-Host "Multiple PCs can use the same admin/operator login."
 
 $Username = Read-Host "Username"
@@ -126,7 +127,7 @@ try {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR) | Out-Null
 }
 if (-not $Username -or -not $Password) { throw "Username and password are required." }
-Write-Host "Password received. Asking for machine ID next…"
+Write-Host "Password received. Asking for machine ID next..."
 
 $ExistingId = ""
 $ExistingLabId = ""
@@ -145,12 +146,12 @@ $InventoryId = Read-Host "Machine ID [$hint]"
 if (-not $InventoryId) { $InventoryId = $ExistingId }
 if (-not $InventoryId) { throw "Username, password, and machine ID are required (Enter keeps the previous machine ID if one exists)." }
 
-Write-Host "Logging in…"
+Write-Host "Logging in..."
 $login = Invoke-LwJson -Method POST -Path "/api/auth/login" -Body @{ username = $Username; password = $Password }
 $access = [string]$login.access_token
 if (-not $access) { throw "Login failed. Use a LabWatch ADMIN or OPERATOR account (not SSH)." }
 
-Write-Host "Loading lab list…"
+Write-Host "Loading lab list..."
 $labs = @(Invoke-LwJson -Method GET -Path "/api/labs" -Token $access)
 if ($labs.Count -eq 0) { throw "No labs found. Create labs in Admin first." }
 $labs = @($labs | Sort-Object { if (("" + $_.name).Trim().ToLower() -eq "unassigned") { 0 } else { 1 } }, name)
@@ -191,7 +192,7 @@ if ($choice) {
   Write-Host "Keeping $($lab.name)"
 }
 
-Write-Host "Logging in to $ServerUrl and enrolling $InventoryId…"
+Write-Host "Logging in to $ServerUrl and enrolling $InventoryId..."
 $enroll = Invoke-LwJson -Method POST -Path "/api/agents/enroll" -Body @{
   username     = $Username
   password     = $Password
@@ -203,7 +204,7 @@ $Username = $null
 $Token = [string]$enroll.registration_token
 if ($enroll.server_url) { $ServerUrl = ([string]$enroll.server_url).TrimEnd("/") }
 if (-not $Token) { throw "Enroll did not return a registration token." }
-Write-Host "Enrollment token created (one-use, kept in config — you do not need to copy it)."
+Write-Host "Enrollment token created (one-use, kept in config - you do not need to copy it)."
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $StateDir | Out-Null
 $work = Join-Path $env:TEMP ("labwatch-agent-" + [guid]::NewGuid().ToString("N"))
@@ -238,20 +239,21 @@ try {
   Copy-Item -Recurse -Force (Join-Path $src "labwatch_agent") $InstallDir
 
   $runPy = Join-Path $InstallDir "run.py"
-  Write-Utf8NoBom $runPy @"
+  # Single-quoted here-string so PowerShell never parses the Python source.
+  Write-Utf8NoBom $runPy @'
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from labwatch_agent.service import main
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())
-"@
+'@
 
   $site = & $py -c "import sysconfig; print(sysconfig.get_path('purelib'))"
   Write-Utf8NoBom (Join-Path $site.Trim() "labwatch.pth") $InstallDir
 
   $labToml = ([string]$lab.name).Replace('\', '\\').Replace('"', '\"')
-  Write-Utf8NoBom $ConfigPath @"
+  $configText = @"
 [server]
 url = "$ServerUrl"
 registration_token = "$Token"
@@ -270,10 +272,11 @@ verify = true
 [logging]
 level = "INFO"
 "@
+  Write-Utf8NoBom $ConfigPath $configText
   icacls $ConfigPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
   Remove-Item -Force (Join-Path $StateDir "state.toml") -ErrorAction SilentlyContinue
 
-  Write-Host "Registering machine with server (same as Linux agent first start)…"
+  Write-Host "Registering machine with server (same as Linux agent first start)..."
   $env:LABWATCH_CONFIG = $ConfigPath
   $env:LABWATCH_STATE_DIR = $StateDir
   & $py $runPy register
@@ -296,7 +299,7 @@ level = "INFO"
   Start-Sleep -Seconds 2
   $task = Get-ScheduledTask -TaskName "LabWatchAgent"
 
-  Write-Host "Installed $InventoryId ($($lab.name)) → $ServerUrl"
+  Write-Host "Installed $InventoryId ($($lab.name)) -> $ServerUrl"
   Write-Host ("Scheduled task: {0}" -f $task.State)
   Write-Host "Update later with the same PowerShell command; Enter keeps this machine ID and lab."
   Write-Host "Commands: `"$py`" `"$runPy`" status"

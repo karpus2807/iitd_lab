@@ -45,10 +45,12 @@ async def install_agent_ps1(request: Request):
     path = _windows_script_path()
     if not path.is_file():
         return PlainTextResponse("install-agent.ps1 missing on server\n", status_code=404)
-    return PlainTextResponse(
-        _bake_server_url(path, request),
-        media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": "inline; filename=install-agent.ps1"},
+    # UTF-8 BOM so Windows PowerShell 5.1 parses the file as UTF-8 (not ANSI).
+    text = "\ufeff" + _bake_server_url(path, request)
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=install-agent.ps1"},
     )
 
 

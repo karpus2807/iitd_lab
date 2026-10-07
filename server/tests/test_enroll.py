@@ -108,17 +108,21 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
 
     ps1 = await client.get("/install-agent.ps1")
     assert ps1.status_code == 200, ps1.text
-    assert "hobbit2.cse.iitd.ac.in" in ps1.text
-    assert "__SERVER_URL__" not in ps1.text
-    assert "/api/agents/enroll" in ps1.text
-    assert "LabWatchAgent" in ps1.text
-    assert "/agent-pack.tgz" in ps1.text
-    assert "Find-PythonExe" in ps1.text
-    assert "DefaultWebProxy" in ps1.text
-    assert "WindowsApps" in ps1.text
-    assert "tar.exe" in ps1.text
-    assert "register" in ps1.text
-    assert "do not need to copy" in ps1.text.lower() or "Token is created" in ps1.text
+    # BOM + ASCII-only body so Windows PowerShell 5.1 does not mojibake em-dashes.
+    assert ps1.content.startswith(b"\xef\xbb\xbf"), "missing UTF-8 BOM for Windows PowerShell"
+    body = ps1.content.decode("utf-8-sig")
+    assert "hobbit2.cse.iitd.ac.in" in body
+    assert "__SERVER_URL__" not in body
+    assert "/api/agents/enroll" in body
+    assert "LabWatchAgent" in body
+    assert "/agent-pack.tgz" in body
+    assert "Find-PythonExe" in body
+    assert "DefaultWebProxy" in body
+    assert "WindowsApps" in body
+    assert "tar.exe" in body
+    assert "register" in body
+    assert "do not need to copy" in body.lower() or "Token is created" in body
+    assert all(ord(ch) < 128 for ch in body), "install-agent.ps1 must stay ASCII-only"
 
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200
