@@ -2,6 +2,8 @@
 
 Compares two inventory payloads and emits structured change events.
 Never infers missing hardware; only diffs values that were actually reported.
+Skips remove/add thrash when the new inventory looks incomplete (tool failure,
+empty collection, or machine effectively offline for that component).
 """
 
 from __future__ import annotations
@@ -10,6 +12,27 @@ from typing import Any
 
 from app.enums import AlertSeverity, EventType
 from app.schemas.inventory import DiffEvent, InventoryPayload, MemoryModule
+
+
+_INCOMPLETE_HINTS = (
+    "not installed",
+    "failed",
+    "denied",
+    "unavailable",
+    "timeout",
+    "permission",
+    "not exposed",
+    "partial",
+    "error",
+    "could not",
+    "unable",
+    "access is denied",
+    "no such file",
+    "command not found",
+    "wmic",
+    "dmidecode",
+    "nvidia-smi",
+)
 
 
 def _clean(value: Any) -> Any:
@@ -23,6 +46,60 @@ def _clean(value: Any) -> Any:
 
 def _changed(old: Any, new: Any) -> bool:
     return _clean(old) != _clean(new)
+
+
+def _notes_blob(payload: InventoryPayload) -> str:
+    parts: list[str] = []
+    parts.extend(payload.collection_notes or [])
+    parts.extend(payload.memory.notes or [])
+    parts.extend(payload.storage.notes or [])
+    parts.extend(payload.network.notes or [])
+    parts.extend(payload.cpu.notes or [])
+    parts.extend(payload.pcie.notes or [])
+    if payload.pcie.topology_note:
+        parts.append(payload.pcie.topology_note)
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def _notes_suggest_incomplete(payload: InventoryPayload) -> bool:
+    blob = _notes_blob(payload)
+    return any(h in blob for h in _INCOMPLETE_HINTS)
+
+
+def _memory_collection_thin(payload: InventoryPayload) -> bool:
+    """True when RAM topology looks unusable for remove/add decisions."""
+    mem = payload.memory
+    occupied = [m for m in mem.modules if m.occupied]
+    if mem.topology_status in {"UNKNOWN"} and not occupied:
+        return True
+    if not mem.modules and (mem.total_physical_bytes is None or mem.total_physical_bytes == 0):
+        return True
+    if _notes_suggest_incomplete(payload) and not occupied:
+        return True
+    # Previously had modules, now empty list while total RAM still reported — tool flake.
+    if not mem.modules and mem.total_physical_bytes and mem.total_physical_bytes > 0:
+        return True
+    return False
+
+
+def _gpu_collection_thin(payload: InventoryPayload) -> bool:
+    if payload.gpus:
+        return False
+    if _notes_suggest_incomplete(payload):
+        return True
+    blob = _notes_blob(payload)
+    if any(x in blob for x in ("gpu", "nvidia", "amd", "radeon", "vga", "display")):
+        return True
+    return False
+
+
+def _cpu_collection_thin(payload: InventoryPayload) -> bool:
+    cpu = payload.cpu
+    if _clean(cpu.model) or _clean(cpu.manufacturer):
+        return False
+    if cpu.physical_cores or cpu.logical_processors:
+        return False
+    return True
 
 
 def _module_key(mod: MemoryModule) -> str:
@@ -77,7 +154,6 @@ def _gpu_public(gpu) -> dict[str, Any]:
         "serial_number": gpu.serial_number,
         "uuid": gpu.uuid,
         "pci_bus": gpu.pci_bus,
-        "driver_version": gpu.driver_version,
         "slot_designation": gpu.slot_designation,
     }
 
@@ -137,6 +213,23 @@ def _event(event_type: EventType, path: str, previous: Any, new: Any, summary: s
 
 
 def _diff_memory(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
+    # Mass disappear / empty topology while tools failed → not a real RAM pull.
+    old_occupied = [m for m in old.memory.modules if m.occupied]
+    new_occupied = [m for m in new.memory.modules if m.occupied]
+    if old_occupied and _memory_collection_thin(new):
+        return []
+    if old_occupied and not new_occupied and (_notes_suggest_incomplete(new) or new.memory.topology_status == "UNKNOWN"):
+        return []
+    # Total physical RAM unchanged but module list collapsed → collection flake.
+    if (
+        old_occupied
+        and not new_occupied
+        and old.memory.total_physical_bytes
+        and new.memory.total_physical_bytes
+        and not _changed(old.memory.total_physical_bytes, new.memory.total_physical_bytes)
+    ):
+        return []
+
     events: list[DiffEvent] = []
     old_mods = {_module_key(m): m for m in old.memory.modules}
     new_mods = {_module_key(m): m for m in new.memory.modules}
@@ -214,6 +307,15 @@ def _diff_memory(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent
 
 
 def _diff_gpus(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
+    # N→0: empty GPU scrape is common when tools flake; never treat as a real pull.
+    if old.gpus and not new.gpus:
+        return []
+    # 0→N after a failed/empty previous scrape is rediscovery, not a physical add.
+    if not old.gpus and new.gpus and (_notes_suggest_incomplete(old) or _gpu_collection_thin(old)):
+        return []
+    if old.gpus and _gpu_collection_thin(new):
+        return []
+
     events: list[DiffEvent] = []
     old_gpus = {_gpu_key(g): g for g in old.gpus}
     new_gpus = {_gpu_key(g): g for g in new.gpus}
@@ -232,12 +334,12 @@ def _diff_gpus(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
                 )
             )
             continue
+        # Hardware fields only — driver updates are software, not a GPU change.
         fields = [
             ("model", "model"),
             ("serial_number", "serial"),
             ("vram_bytes", "VRAM"),
             ("pci_bus", "PCI bus"),
-            ("driver_version", "driver"),
             ("vendor", "vendor"),
         ]
         changes = [label for field, label in fields if _changed(getattr(before, field), getattr(after, field))]
@@ -268,6 +370,9 @@ def _diff_gpus(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
 
 
 def _diff_disks(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
+    # Empty disk list with collection errors → probe failure, not a wipe.
+    if old.storage.disks and not new.storage.disks and _notes_suggest_incomplete(new):
+        return []
     events: list[DiffEvent] = []
     old_disks = {_disk_key(d): d for d in old.storage.disks}
     new_disks = {_disk_key(d): d for d in new.storage.disks}
@@ -323,6 +428,11 @@ def _scalar_change(event_type: EventType, path: str, label: str, old_val: Any, n
 
 
 def _diff_cpu(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
+    if _cpu_collection_thin(new):
+        return []
+    # Blanking a previously known CPU model is almost never a real socket pull.
+    if _clean(old.cpu.model) and not _clean(new.cpu.model):
+        return []
     events: list[DiffEvent] = []
     for field, label in [
         ("model", "CPU model"),
@@ -340,23 +450,33 @@ def _diff_cpu(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
 def _diff_board(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
     events: list[DiffEvent] = []
     for field, label in [("manufacturer", "Motherboard manufacturer"), ("model", "Motherboard model"), ("serial_number", "Motherboard serial")]:
+        old_val = getattr(old.motherboard, field)
+        new_val = getattr(new.motherboard, field)
+        if _clean(old_val) and not _clean(new_val):
+            continue
         ev = _scalar_change(
             EventType.MOTHERBOARD_CHANGED,
             f"motherboard.{field}",
             label,
-            getattr(old.motherboard, field),
-            getattr(new.motherboard, field),
+            old_val,
+            new_val,
         )
         if ev:
             events.append(ev)
     for field, label in [("vendor", "BIOS vendor"), ("version", "BIOS version"), ("release_date", "BIOS release date")]:
-        ev = _scalar_change(EventType.BIOS_CHANGED, f"bios.{field}", label, getattr(old.bios, field), getattr(new.bios, field))
+        old_val = getattr(old.bios, field)
+        new_val = getattr(new.bios, field)
+        if _clean(old_val) and not _clean(new_val):
+            continue
+        ev = _scalar_change(EventType.BIOS_CHANGED, f"bios.{field}", label, old_val, new_val)
         if ev:
             events.append(ev)
     return events
 
 
 def _diff_nics(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
+    if old.network.interfaces and not new.network.interfaces:
+        return []
     events: list[DiffEvent] = []
     old_nics = {_nic_key(n): n for n in old.network.interfaces if n.mac or n.name}
     new_nics = {_nic_key(n): n for n in new.network.interfaces if n.mac or n.name}

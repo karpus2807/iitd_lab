@@ -18,21 +18,28 @@ class FetchBuildsBody(BaseModel):
 
 @router.get("/updates")
 async def list_updates(admin: AdminUser):
-    return await update_svc.list_builds(live=False)
+    """Auto-fetch GitHub releases without proxy when the network allows it."""
+    catalog = await update_svc.list_builds(live=True)
+    return catalog
 
 
 @router.post("/updates/fetch")
 async def fetch_updates(body: FetchBuildsBody, db: DbDep, admin: AdminUser, request: Request):
     user = (body.proxy_user or "").strip()
     password = body.proxy_password or ""
-    if not user or not password:
-        raise HTTPException(400, "Proxy username and password are required")
-    catalog = await update_svc.list_builds(live=True, proxy_user=user, proxy_password=password)
+    # Proxy credentials optional: empty → try direct; with user → campus proxy.
+    if user and not password:
+        raise HTTPException(400, "Proxy password is required when a proxy username is set")
+    catalog = await update_svc.list_builds(live=True, proxy_user=user or None, proxy_password=password or None)
     await write_audit(
         db,
         "server.update.fetch",
         user=admin,
-        details={"proxy_user": user, "source": catalog.get("source")},
+        details={
+            "proxy_user": user or None,
+            "used_proxy": catalog.get("used_proxy"),
+            "source": catalog.get("source"),
+        },
         request=request,
     )
     await db.commit()

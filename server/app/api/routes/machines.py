@@ -583,6 +583,7 @@ async def clear_machine_events(machine_id: UUID, db: DbDep, user: OperatorUser, 
     if not machine:
         raise HTTPException(404, "Machine not found")
     result = await db.execute(delete(HardwareEvent).where(HardwareEvent.machine_id == machine_id))
+    machine.last_hardware_change_at = None
     await write_audit(db, "machine.clear_events", user=user, machine_id=machine.id, request=request)
     await db.commit()
     return {"ok": True, "deleted": result.rowcount or 0}
@@ -606,6 +607,7 @@ async def clear_machine_history(machine_id: UUID, db: DbDep, user: OperatorUser,
         raise HTTPException(404, "Machine not found")
     events = await db.execute(delete(HardwareEvent).where(HardwareEvent.machine_id == machine_id))
     snaps = await db.execute(delete(HardwareSnapshot).where(HardwareSnapshot.machine_id == machine_id))
+    machine.last_hardware_change_at = None
     await write_audit(db, "machine.clear_history", user=user, machine_id=machine.id, request=request)
     await db.commit()
     return {"ok": True, "deleted_events": events.rowcount or 0, "deleted_snapshots": snaps.rowcount or 0}

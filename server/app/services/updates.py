@@ -157,30 +157,21 @@ def _proxy_url(username: str | None = None, password: str | None = None) -> str 
     return urlunsplit((scheme, netloc, parts.path or "", "", ""))
 
 
-async def fetch_github_releases(
-    limit: int | None = None,
-    proxy_user: str | None = None,
-    proxy_password: str | None = None,
-) -> list[dict[str, Any]]:
-    settings = get_settings()
-    limit = limit or settings.updates_builds
-    url = f"{settings.github_api.rstrip('/')}/repos/{settings.github_repo}/releases"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": f"LabWatch/{current_version()}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    proxy = _proxy_url(proxy_user, proxy_password)
+async def _http_get_releases(url: str, headers: dict[str, str], limit: int, proxy: str | None) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=25.0, proxy=proxy, follow_redirects=True) as client:
         response = await client.get(url, headers=headers, params={"per_page": max(limit, 10)})
         content_type = response.headers.get("content-type", "")
         if response.status_code in {401, 407} or "html" in content_type.lower():
-            raise RuntimeError("Campus proxy rejected the login. Check username and password.")
+            if proxy:
+                raise RuntimeError("Campus proxy rejected the login. Check username and password.")
+            raise RuntimeError("GitHub returned a non-JSON response (direct fetch blocked).")
         response.raise_for_status()
         try:
             rows = response.json()
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError("GitHub fetch did not return JSON. Check proxy username and password.") from exc
+            if proxy:
+                raise RuntimeError("GitHub fetch did not return JSON. Check proxy username and password.") from exc
+            raise RuntimeError("GitHub fetch did not return JSON over direct connection.") from exc
     if not isinstance(rows, list):
         raise ValueError("GitHub releases response was not a list")
     releases = []
@@ -202,6 +193,39 @@ async def fetch_github_releases(
         )
         if len(releases) >= limit:
             break
+    return releases
+
+
+async def fetch_github_releases(
+    limit: int | None = None,
+    proxy_user: str | None = None,
+    proxy_password: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch releases. Tries direct first when no proxy user is given; otherwise uses campus proxy."""
+    settings = get_settings()
+    limit = limit or settings.updates_builds
+    url = f"{settings.github_api.rstrip('/')}/repos/{settings.github_repo}/releases"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"LabWatch/{current_version()}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    user = (proxy_user or "").strip()
+    if user:
+        proxy = _proxy_url(user, proxy_password)
+        releases = await _http_get_releases(url, headers, limit, proxy)
+    else:
+        # Prefer direct GitHub; only fall back to env proxy (no credentials) if configured.
+        try:
+            releases = await _http_get_releases(url, headers, limit, None)
+        except Exception as direct_exc:  # noqa: BLE001
+            env_proxy = _proxy_url(None, None)
+            if not env_proxy:
+                raise direct_exc
+            try:
+                releases = await _http_get_releases(url, headers, limit, env_proxy)
+            except Exception:
+                raise direct_exc from None
     cache_path().write_text(json.dumps({"fetched_at": utcnow_iso(), "releases": releases}, indent=2), encoding="utf-8")
     return releases
 
@@ -243,28 +267,15 @@ def annotate_builds(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return builds
 
 
-async def list_builds(
+def _catalog_payload(
     *,
-    live: bool = False,
-    proxy_user: str | None = None,
-    proxy_password: str | None = None,
+    releases: list[dict[str, Any]],
+    source: str,
+    error: str | None,
+    used_proxy: bool,
+    proxy_required: bool,
 ) -> dict[str, Any]:
     settings = get_settings()
-    source = "idle"
-    error = None
-    releases: list[dict[str, Any]] = []
-    if live:
-        try:
-            releases = await fetch_github_releases(
-                settings.updates_builds,
-                proxy_user=proxy_user,
-                proxy_password=proxy_password,
-            )
-            source = "github"
-        except Exception as exc:  # noqa: BLE001 — surface GitHub/proxy failures to the admin UI
-            logger.warning("GitHub releases fetch failed: %s", redact_secrets(str(exc)))
-            error = redact_secrets(str(exc))
-            source = "unavailable"
     builds = annotate_builds(releases[: settings.updates_builds])
     latest = next((b for b in builds if b.get("is_latest")), None)
     current = next((b for b in builds if b.get("is_current")), None)
@@ -281,10 +292,56 @@ async def list_builds(
         "builds": builds,
         "source": source,
         "source_error": error,
-        "needs_fetch": source != "github",
+        "needs_fetch": source not in {"github", "cache"},
+        "used_proxy": used_proxy,
+        "proxy_required": proxy_required,
+        "direct_ok": source == "github" and not used_proxy,
         "apply_ready": apply_ready(),
         "status": read_status(),
     }
+
+
+async def list_builds(
+    *,
+    live: bool = False,
+    proxy_user: str | None = None,
+    proxy_password: str | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    source = "idle"
+    error = None
+    releases: list[dict[str, Any]] = []
+    used_proxy = bool((proxy_user or "").strip())
+    if live:
+        try:
+            releases = await fetch_github_releases(
+                settings.updates_builds,
+                proxy_user=proxy_user,
+                proxy_password=proxy_password,
+            )
+            source = "github"
+        except Exception as exc:  # noqa: BLE001 — surface GitHub/proxy failures to the admin UI
+            logger.warning("GitHub releases fetch failed: %s", redact_secrets(str(exc)))
+            error = redact_secrets(str(exc))
+            source = "unavailable"
+            cached = load_cached_releases()
+            if cached:
+                releases = cached
+                source = "cache"
+    else:
+        releases = load_cached_releases()
+        if releases:
+            source = "cache"
+    fetched_via_proxy = bool(used_proxy and source == "github")
+    # Fetch button only needed when direct GitHub is not available.
+    proxy_required = not (source == "github" and not fetched_via_proxy)
+    return _catalog_payload(
+        releases=releases,
+        source=source,
+        error=error,
+        used_proxy=fetched_via_proxy,
+        proxy_required=proxy_required,
+    )
 
 
 def cached_catalog() -> dict[str, Any]:

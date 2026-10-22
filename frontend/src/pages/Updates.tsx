@@ -23,32 +23,49 @@ type Catalog = {
   source: string
   source_error?: string | null
   needs_fetch?: boolean
+  proxy_required?: boolean
+  used_proxy?: boolean
+  direct_ok?: boolean
   apply_ready: { can_spawn: boolean; host_watcher: boolean; repo_dir: string }
   status: { state: string; tag?: string | null; message?: string; requested_at?: string | null }
 }
 
 export default function Updates() {
   const role = currentUser()?.role
-  const [meta, setMeta] = useState<Catalog | null>(null)
   const [data, setData] = useState<Catalog | null>(null)
   const [proxyUser, setProxyUser] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
   const [selected, setSelected] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
 
-  async function loadMeta() {
+  function applyCatalog(catalog: Catalog) {
+    setData(catalog)
+    if (catalog.builds.length) {
+      setSelected(catalog.builds.find((b) => b.is_latest && !b.is_current)?.tag || catalog.builds[0]?.tag || '')
+    }
+    if (catalog.source === 'github') {
+      setErr('')
+    } else if (catalog.source_error) {
+      setErr(catalog.source_error)
+    }
+  }
+
+  async function loadCatalog() {
+    setLoading(true)
     try {
       const catalog = await api<Catalog>('/api/admin/updates')
-      setMeta(catalog)
-      setErr('')
+      applyCatalog(catalog)
     } catch (e: any) {
       setErr(e.message || 'Could not load update status')
+    } finally {
+      setLoading(false)
     }
   }
 
   useEffect(() => {
-    if (role === 'ADMIN') void loadMeta()
+    if (role === 'ADMIN') void loadCatalog()
   }, [role])
 
   useEffect(() => {
@@ -64,6 +81,7 @@ export default function Updates() {
 
   async function fetchBuilds(e: FormEvent) {
     e.preventDefault()
+    if (!proxyRequired) return
     setBusy(true)
     setErr('')
     try {
@@ -71,14 +89,11 @@ export default function Updates() {
         method: 'POST',
         body: JSON.stringify({ proxy_user: proxyUser, proxy_password: proxyPassword }),
       })
-      setData(catalog)
-      setMeta(catalog)
-      setSelected(catalog.builds.find((b) => b.is_latest && !b.is_current)?.tag || catalog.builds[0]?.tag || '')
+      applyCatalog(catalog)
       if (catalog.source !== 'github') {
         setErr(catalog.source_error || 'GitHub fetch failed')
       }
     } catch (e: any) {
-      setData(null)
       setErr(e.message)
     } finally {
       setBusy(false)
@@ -100,25 +115,37 @@ export default function Updates() {
   }
 
   if (role !== 'ADMIN') return <p className="err">Administrator role required.</p>
-  const shown = data?.source === 'github' ? data : null
+
+  const proxyRequired = Boolean(data?.proxy_required)
+  const shown = data && (data.source === 'github' || (data.source === 'cache' && data.builds.length > 0)) ? data : null
   const chosen = shown?.builds.find((b) => b.tag === selected)
   const applying = shown?.status?.state === 'queued' || shown?.status?.state === 'running'
   const actionLabel = chosen?.action === 'downgrade' ? 'Downgrade' : chosen?.action === 'current' ? 'Reinstall' : 'Update'
-  const currentTag = shown?.current.tag || meta?.current.tag
+  const currentTag = data?.current.tag
 
   return (
     <>
       <div className="topbar">
         <div>
           <h2>Server updates</h2>
-          <p>Enter campus proxy credentials, then fetch GitHub releases. Builds stay hidden until fetch succeeds.</p>
+          <p>
+            Releases load automatically when GitHub is reachable. On campus proxy networks, enter credentials and fetch.
+          </p>
         </div>
       </div>
 
       <div className="grid stats" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', marginBottom: 16 }}>
         <div className="card stat"><div className="label">Current</div><div className="value">{currentTag || '—'}</div></div>
-        <div className="card stat"><div className="label">Source</div><div className="value" style={{ fontSize: 18 }}>{meta?.github_repo || 'karpus2807/iitd_lab'}</div></div>
+        <div className="card stat"><div className="label">Source</div><div className="value" style={{ fontSize: 18 }}>{data?.github_repo || 'karpus2807/iitd_lab'}</div></div>
       </div>
+
+      {loading && <p className="muted">Fetching GitHub releases…</p>}
+
+      {!loading && data?.direct_ok && (
+        <p className="muted" style={{ marginBottom: 16 }}>
+          GitHub reached directly — proxy credentials are not needed. Fetch button is disabled.
+        </p>
+      )}
 
       <form className="card toolbar" onSubmit={fetchBuilds} style={{ marginBottom: 16, alignItems: 'center' }}>
         <input
@@ -126,7 +153,8 @@ export default function Updates() {
           value={proxyUser}
           autoComplete="username"
           onChange={(e) => setProxyUser(e.target.value)}
-          required
+          disabled={!proxyRequired || busy}
+          required={proxyRequired}
         />
         <input
           placeholder="Proxy password"
@@ -134,13 +162,18 @@ export default function Updates() {
           value={proxyPassword}
           autoComplete="current-password"
           onChange={(e) => setProxyPassword(e.target.value)}
-          required
+          disabled={!proxyRequired || busy}
+          required={proxyRequired}
         />
-        <button className="btn" disabled={busy}>{busy ? 'Fetching…' : 'Fetch GitHub releases'}</button>
+        <button className="btn" disabled={!proxyRequired || busy}>
+          {busy ? 'Fetching…' : 'Fetch GitHub releases'}
+        </button>
       </form>
-      <p className="muted" style={{ marginTop: -8, marginBottom: 16 }}>
-        Used only to reach GitHub through the campus proxy. Credentials are not stored.
-      </p>
+      {proxyRequired && (
+        <p className="muted" style={{ marginTop: -8, marginBottom: 16 }}>
+          Direct GitHub failed. Use campus proxy credentials (not stored) to fetch releases.
+        </p>
+      )}
 
       {err && <p className="err">{err}</p>}
 
@@ -154,8 +187,8 @@ export default function Updates() {
         </div>
       )}
 
-      {!shown && !err && (
-        <p className="muted">Releases appear here after a successful fetch.</p>
+      {!loading && !shown && !err && (
+        <p className="muted">No releases yet. If you are on campus proxy, enter credentials and fetch.</p>
       )}
 
       {shown && (
@@ -163,7 +196,7 @@ export default function Updates() {
           <div className="grid stats" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', marginBottom: 16 }}>
             <div className="card stat"><div className="label">Current</div><div className="value">{shown.current.tag}</div></div>
             <div className="card stat online"><div className="label">Latest</div><div className="value">{shown.latest?.tag || '—'}</div></div>
-            <div className="card stat"><div className="label">Fetched</div><div className="value" style={{ fontSize: 18 }}>{shown.source}</div></div>
+            <div className="card stat"><div className="label">Fetched</div><div className="value" style={{ fontSize: 18 }}>{shown.source}{shown.used_proxy ? ' (proxy)' : ''}</div></div>
           </div>
 
           <div className="build-grid">

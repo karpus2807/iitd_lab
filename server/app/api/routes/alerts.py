@@ -110,6 +110,21 @@ async def acknowledge(alert_id: UUID, db: DbDep, user: OperatorUser):
     return {"ok": True}
 
 
+_HW_CHANGE_ALERT_TYPES = {
+    "RAM_REMOVED",
+    "RAM_ADDED",
+    "RAM_CHANGED",
+    "GPU_REMOVED",
+    "GPU_ADDED",
+    "GPU_CHANGED",
+    "DISK_REMOVED",
+    "DISK_ADDED",
+    "DISK_CHANGED",
+    "CPU_CHANGED",
+    "MOTHERBOARD_CHANGED",
+}
+
+
 @router.post("/{alert_id}/resolve")
 async def resolve(alert_id: UUID, db: DbDep, user: OperatorUser):
     alert = await db.get(Alert, alert_id)
@@ -119,6 +134,10 @@ async def resolve(alert_id: UUID, db: DbDep, user: OperatorUser):
     alert.resolved_at = utcnow()
     await _sync_open_alert_flag(db, alert.machine_id)
     await _mark_related_notifications_read(db, alert.machine_id)
+    if alert.machine_id and (alert.event_type or "") in _HW_CHANGE_ALERT_TYPES:
+        machine = await db.get(Machine, alert.machine_id)
+        if machine is not None:
+            machine.last_hardware_change_at = None
     await write_audit(db, "alert.resolve", user=user, machine_id=alert.machine_id)
     await db.commit()
     return {"ok": True}

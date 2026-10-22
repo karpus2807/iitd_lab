@@ -1,12 +1,26 @@
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
-from app.api.deps import CurrentUser, DbDep
+from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
 from app.enums import AlertStatus, MachineStatus
 from app.models import Alert, HardwareEvent, Lab, Machine
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+RECENT_HW_EVENT_TYPES = [
+    "RAM_REMOVED",
+    "RAM_ADDED",
+    "RAM_CHANGED",
+    "GPU_REMOVED",
+    "GPU_ADDED",
+    "GPU_CHANGED",
+    "DISK_REMOVED",
+    "DISK_ADDED",
+    "DISK_CHANGED",
+    "CPU_CHANGED",
+    "MOTHERBOARD_CHANGED",
+]
 
 
 @router.get("/summary")
@@ -39,23 +53,7 @@ async def summary(db: DbDep, user: CurrentUser):
         await db.execute(
             select(HardwareEvent, Machine.hostname)
             .join(Machine, HardwareEvent.machine_id == Machine.id)
-            .where(
-                HardwareEvent.event_type.in_(
-                    [
-                        "RAM_REMOVED",
-                        "RAM_ADDED",
-                        "RAM_CHANGED",
-                        "GPU_REMOVED",
-                        "GPU_ADDED",
-                        "GPU_CHANGED",
-                        "DISK_REMOVED",
-                        "DISK_ADDED",
-                        "DISK_CHANGED",
-                        "CPU_CHANGED",
-                        "MOTHERBOARD_CHANGED",
-                    ]
-                )
-            )
+            .where(HardwareEvent.event_type.in_(RECENT_HW_EVENT_TYPES))
             .order_by(HardwareEvent.created_at.desc())
             .limit(15)
         )
@@ -83,3 +81,13 @@ async def summary(db: DbDep, user: CurrentUser):
             for e, hostname in recent
         ],
     }
+
+
+@router.delete("/recent-changes")
+async def clear_recent_hardware_changes(db: DbDep, user: OperatorUser, request: Request):
+    """Clear recent hardware-change events and reset the HW-changes counter."""
+    deleted = await db.execute(delete(HardwareEvent).where(HardwareEvent.event_type.in_(RECENT_HW_EVENT_TYPES)))
+    await db.execute(update(Machine).values(last_hardware_change_at=None).where(Machine.last_hardware_change_at.is_not(None)))
+    await write_audit(db, "dashboard.clear_recent_changes", user=user, request=request)
+    await db.commit()
+    return {"ok": True, "deleted": deleted.rowcount or 0}

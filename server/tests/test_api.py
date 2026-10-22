@@ -479,14 +479,21 @@ async def test_alert_count_drops_on_resolve_and_clear(client: AsyncClient, auth_
         headers=headers,
         json={
             "identity": {"hostname": "ALERT-PC"},
-            "gpus": [{"index": 0, "vendor": "NVIDIA", "model": "RTX 4090", "pci_bus": "0000:01:00.0"}],
+            "gpus": [
+                {"index": 0, "vendor": "NVIDIA", "model": "RTX 4090", "pci_bus": "0000:01:00.0"},
+                {"index": 1, "vendor": "NVIDIA", "model": "RTX 3090", "pci_bus": "0000:02:00.0"},
+            ],
         },
     )
     assert first.status_code == 200, first.text
+    # Partial removal (2→1) is a verified change; N→0 empty scrapes are ignored.
     second = await client.post(
         "/api/agents/inventory",
         headers=headers,
-        json={"identity": {"hostname": "ALERT-PC"}, "gpus": []},
+        json={
+            "identity": {"hostname": "ALERT-PC"},
+            "gpus": [{"index": 0, "vendor": "NVIDIA", "model": "RTX 4090", "pci_bus": "0000:01:00.0"}],
+        },
     )
     assert second.status_code == 200, second.text
     opened = await client.get("/api/alerts?status=OPEN", headers=auth_headers)

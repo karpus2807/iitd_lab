@@ -166,3 +166,37 @@ def test_network_adapter_added():
     )
     events = diff_inventory(before, after)
     assert any(e.event_type == EventType.NETWORK_ADAPTER_CHANGED.value for e in events)
+
+
+def test_gpu_empty_scrape_is_not_removal():
+    before = InventoryPayload(gpus=[GPUInfo(index=0, model="RTX 4090", pci_bus="0000:01:00.0")])
+    after = InventoryPayload(gpus=[], collection_notes=["gpu: nvidia-smi failed"])
+    assert not any(e.event_type == EventType.GPU_REMOVED.value for e in diff_inventory(before, after))
+    after_silent = InventoryPayload(gpus=[])
+    assert not any(e.event_type == EventType.GPU_REMOVED.value for e in diff_inventory(before, after_silent))
+
+
+def test_gpu_driver_change_is_ignored():
+    before = InventoryPayload(gpus=[GPUInfo(index=0, model="RTX 4090", uuid="GPU-1", driver_version="535.54")])
+    after = InventoryPayload(gpus=[GPUInfo(index=0, model="RTX 4090", uuid="GPU-1", driver_version="550.00")])
+    assert diff_inventory(before, after) == []
+
+
+def test_ram_incomplete_collection_skips_mass_removal():
+    before = InventoryPayload(
+        memory=MemoryInfo(
+            total_physical_bytes=32 * 1024**3,
+            modules=[_ram("A1", 16), _ram("A2", 16)],
+        )
+    )
+    after = InventoryPayload(
+        memory=MemoryInfo(total_physical_bytes=32 * 1024**3, topology_status="UNKNOWN", modules=[]),
+        collection_notes=["dmidecode not installed; RAM slot topology not exposed."],
+    )
+    assert not any(e.event_type.startswith("RAM_") for e in diff_inventory(before, after))
+
+
+def test_cpu_blank_after_failure_is_not_change():
+    before = InventoryPayload(cpu=CPUInfo(model="Ryzen 9", physical_cores=8))
+    after = InventoryPayload(cpu=CPUInfo(model=None), collection_notes=["cpu collector failed; partial data returned."])
+    assert not any(e.event_type == EventType.CPU_CHANGED.value for e in diff_inventory(before, after))

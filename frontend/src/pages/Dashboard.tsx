@@ -1,17 +1,42 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ago, api } from '../api'
+import { ago, api, currentUser } from '../api'
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null)
   const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
   const nav = useNavigate()
+  const canClear = ['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '')
+
+  async function load() {
+    try {
+      setData(await api('/api/dashboard/summary'))
+      setErr('')
+    } catch (e: any) {
+      setErr(e.message)
+    }
+  }
 
   useEffect(() => {
-    api('/api/dashboard/summary').then(setData).catch((e) => setErr(e.message))
+    void load()
   }, [])
 
-  if (err) return <p className="err">{err}</p>
+  async function clearRecent() {
+    if (!canClear) return
+    if (!window.confirm('Clear all recent hardware-change logs and reset the HW changes count?')) return
+    setBusy(true)
+    try {
+      await api('/api/dashboard/recent-changes', { method: 'DELETE' })
+      await load()
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (err && !data) return <p className="err">{err}</p>
   if (!data) return <p className="muted">Loading overview…</p>
 
   return (
@@ -22,6 +47,7 @@ export default function Dashboard() {
           <p>Fleet status across all computer labs</p>
         </div>
       </div>
+      {err && <p className="err">{err}</p>}
       <div className="grid stats">
         <div className="card stat"><div className="label">Machines</div><div className="value">{data.machines}</div></div>
         <div className="card stat online"><div className="label">Online</div><div className="value">{data.online}</div></div>
@@ -47,7 +73,14 @@ export default function Dashboard() {
           </table>
         </div>
         <div className="card">
-          <h3 className="section-title">Recent hardware changes</h3>
+          <div className="section-head">
+            <h3 className="section-title">Recent hardware changes</h3>
+            {canClear && (
+              <button className="btn danger" type="button" disabled={busy || data.recent_changes.length === 0} onClick={clearRecent}>
+                Clear
+              </button>
+            )}
+          </div>
           {data.recent_changes.length === 0 && <p className="muted">No hardware-change events yet.</p>}
           <div className="timeline">
             {data.recent_changes.map((e: any) => (
