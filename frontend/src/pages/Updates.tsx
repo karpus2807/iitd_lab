@@ -23,6 +23,8 @@ type UpdateStatus = {
   step?: string
   log?: string
   log_tail?: string
+  stuck?: boolean
+  can_cancel?: boolean
 }
 
 type Catalog = {
@@ -81,10 +83,13 @@ export default function Updates() {
     if (role === 'ADMIN') void loadCatalog()
   }, [role])
 
-  const applyActive = data?.status?.state === 'queued' || data?.status?.state === 'running'
+  const st = data?.status
+  const applyActive = st?.state === 'queued' || st?.state === 'running'
+  const applyStuck = Boolean(st?.stuck)
+  const canCancel = Boolean(st?.can_cancel) || applyActive
 
   useEffect(() => {
-    if (!applyActive) return
+    if (!applyActive && !applyStuck) return
     const tick = () => {
       api<{ status: UpdateStatus }>('/api/admin/updates/status')
         .then((row) => setData((prev) => (prev ? { ...prev, status: row.status } : prev)))
@@ -107,7 +112,7 @@ export default function Updates() {
     tick()
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
-  }, [applyActive])
+  }, [applyActive, applyStuck])
 
   async function fetchBuilds(e: FormEvent) {
     e.preventDefault()
@@ -138,13 +143,33 @@ export default function Updates() {
     }
   }
 
-  async function apply() {
+  async function apply(force = false) {
     if (!selected) return
     setBusy(true)
+    setErr('')
     try {
-      await api('/api/admin/updates/apply', { method: 'POST', body: JSON.stringify({ tag: selected }) })
+      await api('/api/admin/updates/apply', {
+        method: 'POST',
+        body: JSON.stringify({ tag: selected, force }),
+      })
       const catalog = await api<{ status: UpdateStatus }>('/api/admin/updates/status')
       setData((prev) => (prev ? { ...prev, status: catalog.status } : prev))
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function cancelApply() {
+    setBusy(true)
+    setErr('')
+    try {
+      const row = await api<{ status: UpdateStatus }>('/api/admin/updates/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'Cancelled from Updates UI' }),
+      })
+      setData((prev) => (prev ? { ...prev, status: row.status } : prev))
     } catch (e: any) {
       setErr(e.message)
     } finally {
@@ -157,10 +182,10 @@ export default function Updates() {
   const proxyRequired = Boolean(data?.proxy_required)
   const shown = data && (data.source === 'github' || (data.source === 'cache' && data.builds.length > 0)) ? data : null
   const chosen = shown?.builds.find((b) => b.tag === selected)
-  const applying = applyActive
   const actionLabel = chosen?.action === 'downgrade' ? 'Downgrade' : chosen?.action === 'current' ? 'Reinstall' : 'Update'
   const currentTag = data?.current.tag
-  const st = data?.status
+  const applyBlocked = applyActive && !applyStuck
+  const progressError = st?.state === 'error' || st?.state === 'cancelled' || applyStuck
 
   return (
     <>
@@ -169,6 +194,7 @@ export default function Updates() {
           <h2>Server updates</h2>
           <p>
             Releases load automatically when GitHub is reachable. On campus proxy networks, enter credentials and fetch.
+            Stuck installs auto-reset; you can also Cancel and re-run.
           </p>
         </div>
       </div>
@@ -228,18 +254,24 @@ export default function Updates() {
 
       {err && <p className="err">{err}</p>}
 
+      {applyStuck && (
+        <p className="err">
+          Apply looks stuck. Use Cancel / Reset, then run Update again — or wait a moment for auto-reset.
+        </p>
+      )}
+
       {st && st.state !== 'idle' && (
         <ProgressPanel
           showWhenIdle
           job={{
-            active: applying,
+            active: applyActive && !applyStuck,
             label: st.tag ? `Apply ${st.tag}` : 'Server apply',
             message: st.message,
             progress: st.progress,
             step: st.step,
-            state: st.state,
+            state: progressError ? 'error' : st.state,
             log: st.log || st.log_tail || '',
-            error: st.state === 'error',
+            error: progressError,
           }}
         />
       )}
@@ -282,11 +314,25 @@ export default function Updates() {
             <p className="muted">No GitHub releases found yet. Push a tagged release to {shown.github_url}</p>
           )}
 
-          <div className="card toolbar" style={{ marginTop: 16, alignItems: 'center' }}>
+          <div className="card toolbar" style={{ marginTop: 16, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <span className="muted">Selected {selected || '—'}</span>
-            <button className="btn" disabled={!chosen || busy || applying} onClick={apply}>
-              {busy || applying ? 'Working…' : `${actionLabel} to ${selected || 'build'}`}
+            <button
+              className="btn"
+              disabled={!chosen || busy || applyBlocked}
+              onClick={() => void apply(applyStuck || st?.state === 'error' || st?.state === 'cancelled')}
+            >
+              {busy ? 'Working…' : applyActive && !applyStuck ? 'Applying…' : `${actionLabel} to ${selected || 'build'}`}
             </button>
+            {canCancel && (
+              <button className="btn secondary" disabled={busy} onClick={() => void cancelApply()}>
+                Cancel / Reset
+              </button>
+            )}
+            {(st?.state === 'error' || st?.state === 'cancelled' || st?.state === 'ok') && !applyActive && (
+              <button className="btn secondary" disabled={busy} onClick={() => void cancelApply()}>
+                Clear status
+              </button>
+            )}
           </div>
           {!shown.apply_ready.can_spawn && !shown.apply_ready.host_watcher && (
             <p className="muted">

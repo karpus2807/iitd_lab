@@ -9,6 +9,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.48",
+        "name": "LabWatch 1.1.48",
+        "published_at": "2026-10-23T12:45:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.48",
+        "notes": "Smarter Server Updates: cancel/reset stuck applies, auto-unstick, force re-run",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.47",
         "name": "LabWatch 1.1.47",
         "published_at": "2026-10-23T12:30:00Z",
@@ -349,6 +357,49 @@ def test_read_status_includes_apply_log_and_progress(tmp_path, monkeypatch):
     assert status["step"] == "compose"
     assert "compose building" in status["log"]
     assert status["log_tail"] == status["log"]
+    assert status["can_cancel"] is True
+    get_settings.cache_clear()
+
+
+def test_stuck_apply_auto_resets(tmp_path, monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setattr(update_svc, "repo_dir", lambda: tmp_path)
+    monkeypatch.setattr(update_svc, "labwatch_apply_helper_running", lambda: False)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "update-request.json").write_text('{"tag":"v1.1.47"}', encoding="utf-8")
+    old = "2020-01-01T00:00:00Z"
+    update_svc.write_status(
+        state="running",
+        tag="v1.1.47",
+        message="compose hung",
+        progress=60,
+        step="compose",
+        requested_at=old,
+        updated_at=old,
+    )
+    # Bypass write_status overwriting updated_at for the stuck fixture.
+    path = update_svc.status_path()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["updated_at"] = old
+    raw["requested_at"] = old
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    status = update_svc.read_status()
+    assert status["state"] == "error"
+    assert "stuck" in (status.get("message") or "").lower()
+    assert not update_svc.request_path().is_file()
+    get_settings.cache_clear()
+
+
+def test_cancel_apply_unlocks(tmp_path, monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setattr(update_svc, "repo_dir", lambda: tmp_path)
+    monkeypatch.setattr(update_svc, "kill_apply_helper", lambda: None)
+    (tmp_path / "data").mkdir()
+    update_svc.write_status(state="queued", tag="v1.1.47", message="waiting", progress=5, step="queued")
+    (tmp_path / "data" / "update-request.json").write_text('{"tag":"v1.1.47"}', encoding="utf-8")
+    status = update_svc.cancel_apply("admin", reason="Cancelled from UI")
+    assert status["state"] == "cancelled"
+    assert not update_svc.request_path().is_file()
     get_settings.cache_clear()
 
 
@@ -446,7 +497,7 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert idle["source"] == "github"
     assert idle["direct_ok"] is True
     assert idle["proxy_required"] is False
-    assert idle["current"]["tag"] == "v1.1.47"
+    assert idle["current"]["tag"] == "v1.1.48"
 
     # Empty proxy credentials still work (direct path).
     direct = await client.post(
@@ -474,18 +525,18 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.47"
-    assert body["current"]["tag"] == "v1.1.47"
+    assert body["latest"]["tag"] == "v1.1.48"
+    assert body["current"]["tag"] == "v1.1.48"
     assert body["source"] == "github"
     assert body["used_proxy"] is True
     assert body["proxy_required"] is True
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])
 
-    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.38"})
+    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.46"})
     assert apply.status_code == 200, apply.text
     status = apply.json()["status"]
-    assert status["tag"] == "v1.1.38"
+    assert status["tag"] == "v1.1.46"
     assert status["state"] == "queued"
     assert (update_harness / "data" / "update-request.json").is_file()
 

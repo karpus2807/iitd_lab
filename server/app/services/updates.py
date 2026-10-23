@@ -38,7 +38,15 @@ IDLE_STATUS = {
     "log_tail": "",
     "progress": None,
     "step": "",
+    "stuck": False,
+    "can_cancel": False,
 }
+
+# Apply watchdog: unlock the Updates UI when a run hangs.
+STUCK_MAX_AGE_SEC = 20 * 60
+STUCK_QUEUED_SEC = 5 * 60
+STUCK_NO_HELPER_SEC = 3 * 60
+ACTIVE_APPLY_STATES = frozenset({"queued", "running"})
 
 
 def utcnow_iso() -> str:
@@ -123,6 +131,141 @@ def read_apply_log(max_chars: int = 48000) -> str:
     return text
 
 
+def _parse_iso(value: Any) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _apply_age_seconds(data: dict[str, Any]) -> float | None:
+    for key in ("updated_at", "requested_at"):
+        dt = _parse_iso(data.get(key))
+        if dt is not None:
+            return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+    return None
+
+
+def labwatch_apply_helper_running() -> bool | None:
+    """True if the host apply helper container is alive. None if Docker is unavailable."""
+    if not Path("/var/run/docker.sock").exists():
+        return None
+    try:
+        status, body = _docker_api("GET", "/v1.41/containers/labwatch-apply/json")
+        if status == 404:
+            return False
+        if status >= 300 or not isinstance(body, dict):
+            return None
+        state = body.get("State") or {}
+        return bool(state.get("Running"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def kill_apply_helper() -> None:
+    """Force-remove the host apply helper container if present."""
+    if not Path("/var/run/docker.sock").exists():
+        return
+    try:
+        _docker_api("DELETE", "/v1.41/containers/labwatch-apply?force=true")
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not remove labwatch-apply helper", exc_info=True)
+
+
+def clear_apply_request() -> None:
+    try:
+        request_path().unlink(missing_ok=True)
+    except TypeError:
+        # Python <3.8 missing_ok fallback (agent hosts only; server is 3.12+)
+        path = request_path()
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        logger.warning("Could not clear update-request.json", exc_info=True)
+
+
+def _append_apply_log(line: str) -> None:
+    try:
+        with apply_log_path().open("a", encoding="utf-8") as fh:
+            fh.write(line.rstrip() + "\n")
+    except OSError:
+        logger.warning("Could not append update-apply.log", exc_info=True)
+
+
+def detect_apply_stuck(data: dict[str, Any]) -> tuple[bool, str]:
+    """Return (stuck, reason) for an in-flight apply."""
+    state = str(data.get("state") or "")
+    if state not in ACTIVE_APPLY_STATES:
+        return False, ""
+    age = _apply_age_seconds(data)
+    if age is None:
+        return False, ""
+    helper = labwatch_apply_helper_running()
+    if state == "queued" and age >= STUCK_QUEUED_SEC:
+        return True, f"Queued for {int(age // 60)}m with no host apply start"
+    if age >= STUCK_MAX_AGE_SEC:
+        return True, f"Apply exceeded {STUCK_MAX_AGE_SEC // 60} minute limit"
+    if state == "running" and helper is False and age >= STUCK_NO_HELPER_SEC:
+        return True, "Host apply helper exited but status never finished"
+    return False, ""
+
+
+def resolve_stuck_apply(reason: str) -> dict[str, Any]:
+    """Mark a hung apply as error and unlock the Updates UI."""
+    kill_apply_helper()
+    clear_apply_request()
+    msg = f"Apply stuck — {reason}. Reset done; you can run Updates again."
+    _append_apply_log(f"===== {utcnow_iso()} auto-unstuck: {reason} =====")
+    return write_status(
+        state="error",
+        message=msg,
+        progress=0,
+        step="stuck",
+        finished_at=utcnow_iso(),
+        stuck=False,
+        can_cancel=False,
+    )
+
+
+def cancel_apply(username: str, *, reason: str | None = None) -> dict[str, Any]:
+    """Stop a queued/running apply so a new one can be started."""
+    current = _read_status_file()
+    state = str(current.get("state") or "idle")
+    tag = current.get("tag")
+    kill_apply_helper()
+    clear_apply_request()
+    detail = reason or f"Cancelled by {username}"
+    _append_apply_log(f"===== {utcnow_iso()} cancel by {username}: {detail} =====")
+    if state not in ACTIVE_APPLY_STATES and state not in {"error", "ok", "cancelled"}:
+        return write_status(
+            state="idle",
+            message="",
+            progress=None,
+            step="",
+            tag=None,
+            finished_at=None,
+            stuck=False,
+            can_cancel=False,
+        )
+    return write_status(
+        state="cancelled",
+        message=f"{detail}" + (f" (was {tag})" if tag else ""),
+        progress=0,
+        step="cancelled",
+        finished_at=utcnow_iso(),
+        stuck=False,
+        can_cancel=False,
+    )
+
+
 def _read_status_file() -> dict[str, Any]:
     path = status_path()
     if not path.is_file():
@@ -138,11 +281,19 @@ def _read_status_file() -> dict[str, Any]:
 
 def read_status() -> dict[str, Any]:
     data = _read_status_file()
+    # Auto-unlock hung installs so Admins are not permanently blocked.
+    stuck, reason = detect_apply_stuck(data)
+    if stuck:
+        data = resolve_stuck_apply(reason)
+    else:
+        state = str(data.get("state") or "")
+        data["stuck"] = False
+        data["can_cancel"] = state in ACTIVE_APPLY_STATES
     log = read_apply_log()
     data["log_tail"] = log
     data["log"] = log
     # Infer rough progress if older apply scripts did not write percent.
-    if data.get("progress") is None and (data.get("state") or "") in {"queued", "running"}:
+    if data.get("progress") is None and (data.get("state") or "") in ACTIVE_APPLY_STATES:
         msg = (data.get("message") or "").lower()
         if data.get("state") == "queued":
             data["progress"] = 5
@@ -161,16 +312,19 @@ def read_status() -> dict[str, Any]:
             data["step"] = data.get("step") or "running"
     elif data.get("state") == "ok" and data.get("progress") is None:
         data["progress"] = 100
-    elif data.get("state") == "error" and data.get("progress") is None:
-        data["progress"] = data.get("progress")  # leave None — UI shows failed
+    elif data.get("state") in {"error", "cancelled"} and data.get("progress") is None:
+        data["progress"] = 0
     return data
 
 
 def write_status(**fields: Any) -> dict[str, Any]:
     current = _read_status_file()
     current.update(fields)
-    # Do not persist the live log blob inside status JSON.
+    current["updated_at"] = utcnow_iso()
+    # Do not persist the live log blob / ephemeral UI flags inside status JSON.
     current.pop("log", None)
+    current.pop("stuck", None)
+    current.pop("can_cancel", None)
     path = status_path()
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
@@ -537,11 +691,27 @@ def validate_tag(tag: str, allowed: set[str] | None = None) -> str:
     return tag
 
 
-def start_apply(tag: str, username: str, allowed_tags: set[str] | None = None) -> dict[str, Any]:
+def start_apply(
+    tag: str,
+    username: str,
+    allowed_tags: set[str] | None = None,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
     settings = get_settings()
     if not settings.updates_enabled:
         raise RuntimeError("Updates are disabled")
     tag = validate_tag(tag, allowed_tags)
+    current = read_status()
+    state = str(current.get("state") or "")
+    if state in ACTIVE_APPLY_STATES:
+        if current.get("stuck") or force:
+            cancel_apply(username, reason=f"Superseded by new apply to {tag}")
+        else:
+            raise RuntimeError(
+                f"Update already {state} for {current.get('tag')}. "
+                "Cancel it first, or wait — stuck runs auto-reset after a few minutes."
+            )
     running = current_tag()
     action = "reinstall"
     if version_tuple(tag) > version_tuple(running):

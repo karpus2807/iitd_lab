@@ -9,11 +9,16 @@ router = APIRouter(prefix="/api/admin", tags=["updates"])
 
 class ApplyBuildBody(BaseModel):
     tag: str = Field(min_length=2, max_length=64)
+    force: bool = False
 
 
 class FetchBuildsBody(BaseModel):
     proxy_user: str = ""
     proxy_password: str = ""
+
+
+class CancelUpdateBody(BaseModel):
+    reason: str = ""
 
 
 @router.get("/updates")
@@ -62,17 +67,40 @@ async def apply_build(body: ApplyBuildBody, db: DbDep, admin: AdminUser, request
         raise HTTPException(400, "Fetch GitHub releases first")
     catalog = update_svc.cached_catalog()
     try:
-        status = update_svc.start_apply(body.tag, admin.username, allowed_tags=allowed)
+        status = update_svc.start_apply(
+            body.tag,
+            admin.username,
+            allowed_tags=allowed,
+            force=body.force,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(403, str(exc)) from exc
+        raise HTTPException(409, str(exc)) from exc
     await write_audit(
         db,
         "server.update.apply",
         user=admin,
-        details={"tag": update_svc.normalize_tag(body.tag), "state": status.get("state")},
+        details={
+            "tag": update_svc.normalize_tag(body.tag),
+            "state": status.get("state"),
+            "force": body.force,
+        },
         request=request,
     )
     await db.commit()
     return {"ok": True, "status": status, "builds": catalog.get("builds")}
+
+
+@router.post("/updates/cancel")
+async def cancel_update(body: CancelUpdateBody, db: DbDep, admin: AdminUser, request: Request):
+    status = update_svc.cancel_apply(admin.username, reason=body.reason.strip() or None)
+    await write_audit(
+        db,
+        "server.update.cancel",
+        user=admin,
+        details={"state": status.get("state"), "tag": status.get("tag"), "message": status.get("message")},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True, "status": status}
