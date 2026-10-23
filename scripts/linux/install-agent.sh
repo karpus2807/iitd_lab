@@ -28,9 +28,161 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# IITD campus squid (IP session after proxy.cgi login — not HTTP Basic in the URL).
+CAMPUS_PROXY_URL="${LABWATCH_HTTP_PROXY:-http://10.10.78.21:3128}"
+CAMPUS_PROXY_CGI="${LABWATCH_PROXY_CGI:-https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi}"
+PROXY_READY=0
+PROXY_USER="${LABWATCH_PROXY_USER:-}"
+PROXY_PASSWORD="${LABWATCH_PROXY_PASSWORD:-}"
+
+TTY=""
+if [[ -c /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
+  TTY="/dev/tty"
+fi
+REPLY_TTY=""
+
+_say() {
+  if [[ -n "$TTY" ]]; then
+    printf '%s\n' "$*" >"$TTY"
+  else
+    printf '%s\n' "$*" >&2
+  fi
+}
+
+_ask() {
+  # Read from the real keyboard, not from `curl | sudo` stdin (that is the script).
+  local prompt="$1" silent="${2:-0}"
+  REPLY_TTY=""
+  if [[ -z "$TTY" ]]; then
+    _say "No terminal attached (curl | sudo bash needs a real TTY)."
+    _say "Save the script first:"
+    _say "  curl -fsSL ${SERVER_URL}/install-agent.sh -o /tmp/labwatch-install.sh"
+    _say "  sudo bash /tmp/labwatch-install.sh"
+    _say "Or set LABWATCH_USER, LABWATCH_PASSWORD, LABWATCH_INVENTORY_ID, LABWATCH_LAB,"
+    _say "and LABWATCH_PROXY_USER / LABWATCH_PROXY_PASSWORD when campus proxy is required."
+    return 1
+  fi
+  printf '%s' "$prompt" >"$TTY"
+  if [[ "$silent" == "1" ]]; then
+    if ! IFS= read -r -s -t 180 REPLY_TTY <"$TTY"; then
+      printf '\n' >"$TTY"
+      _say "No password entered (timeout). Run again, or: sudo bash /tmp/labwatch-install.sh"
+      return 1
+    fi
+    printf '\n' >"$TTY"
+  else
+    if ! IFS= read -r -t 180 REPLY_TTY <"$TTY"; then
+      _say "No input entered (timeout). Run again, or: sudo bash /tmp/labwatch-install.sh"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+_campus_proxy_cgi_login() {
+  local user="$1" pass="$2"
+  if command -v python3 >/dev/null; then
+    PROXY_USER="$user" PROXY_PASSWORD="$pass" CAMPUS_PROXY_CGI="$CAMPUS_PROXY_CGI" python3 - <<'PY'
+import os, re, ssl, sys, urllib.parse, urllib.request
+
+cgi = os.environ.get("CAMPUS_PROXY_CGI") or "https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi"
+user = (os.environ.get("PROXY_USER") or "").strip()
+password = os.environ.get("PROXY_PASSWORD") or ""
+if not user or not password:
+    raise SystemExit("proxy credentials missing")
+
+ctx = ssl._create_unverified_context()
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=ctx),
+    urllib.request.HTTPHandler(),
+)
+html = opener.open(cgi, timeout=30).read().decode("utf-8", "replace")
+m = re.search(
+    r'sessionid"[^>]*value="([a-zA-Z0-9]{16})"|value="([a-zA-Z0-9]{16})"[^>]*name="sessionid"',
+    html,
+    re.I,
+)
+if not m:
+    raise SystemExit("could not read proxy.cgi session id")
+sid = m.group(1) or m.group(2)
+body = urllib.parse.urlencode(
+    {"sessionid": sid, "action": "Validate", "userid": user, "pass": password}
+).encode()
+req = urllib.request.Request(cgi, data=body, method="POST")
+text = opener.open(req, timeout=30).read().decode("utf-8", "replace")
+low = text.lower()
+if "logged in successfully" in low or "already logged in" in low:
+    sys.exit(0)
+if "does'not match" in low or "does not match" in low:
+    raise SystemExit("proxy rejected username/password")
+raise SystemExit("proxy.cgi login failed")
+PY
+    return $?
+  fi
+  # No python3 yet — use curl (needed to apt-install python after proxy login).
+  command -v curl >/dev/null || return 1
+  local html sid resp
+  html="$(curl -fsSk --noproxy '*' --max-time 30 "$CAMPUS_PROXY_CGI" 2>/dev/null || true)"
+  sid="$(printf '%s' "$html" | sed -n 's/.*sessionid" type="hidden" value="\([a-zA-Z0-9]\{16\}\)".*/\1/p' | head -1)"
+  [[ -n "$sid" ]] || sid="$(printf '%s' "$html" | sed -n 's/.*name="sessionid"[^>]*value="\([a-zA-Z0-9]\{16\}\)".*/\1/p' | head -1)"
+  [[ -n "$sid" ]] || return 1
+  resp="$(curl -fsSk --noproxy '*' --max-time 30 -X POST \
+    --data-urlencode "sessionid=${sid}" \
+    --data-urlencode "action=Validate" \
+    --data-urlencode "userid=${user}" \
+    --data-urlencode "pass=${pass}" \
+    "$CAMPUS_PROXY_CGI" 2>/dev/null || true)"
+  printf '%s' "$resp" | grep -qiE 'logged in successfully|already logged in'
+}
+
+_ensure_campus_proxy() {
+  # One-shot: prompt + proxy.cgi login + export HTTP(S)_PROXY for apt/pip.
+  if [[ "$PROXY_READY" == "1" ]]; then
+    return 0
+  fi
+  _say ""
+  _say "Outer network (apt/PyPI) needs IITD campus proxy login on this host."
+  if [[ -z "$PROXY_USER" ]]; then
+    _ask "Proxy username (IITD kerberos id): " || return 1
+    PROXY_USER="$REPLY_TTY"
+  fi
+  if [[ -z "$PROXY_PASSWORD" ]]; then
+    _say "Type the proxy password (nothing will appear). Then press Enter."
+    _ask "Proxy password: " 1 || return 1
+    PROXY_PASSWORD="$REPLY_TTY"
+  fi
+  if [[ -z "$PROXY_USER" || -z "$PROXY_PASSWORD" ]]; then
+    _say "Proxy username and password are required for apt/PyPI."
+    return 1
+  fi
+  _say "Logging into campus proxy (${CAMPUS_PROXY_CGI})…"
+  if ! _campus_proxy_cgi_login "$PROXY_USER" "$PROXY_PASSWORD"; then
+    _say "Campus proxy login failed. Check kerberos id/password (proxy21)."
+    PROXY_PASSWORD=""
+    return 1
+  fi
+  export http_proxy="$CAMPUS_PROXY_URL"
+  export https_proxy="$CAMPUS_PROXY_URL"
+  export HTTP_PROXY="$CAMPUS_PROXY_URL"
+  export HTTPS_PROXY="$CAMPUS_PROXY_URL"
+  export ftp_proxy="$CAMPUS_PROXY_URL"
+  export FTP_PROXY="$CAMPUS_PROXY_URL"
+  # LabWatch server stays direct (already in NO_PROXY).
+  export NO_PROXY="${SERVER_HOST},localhost,127.0.0.1,::1"
+  export no_proxy="$NO_PROXY"
+  PROXY_READY=1
+  _say "Campus proxy OK. Continuing install…"
+  return 0
+}
+
 _pkg_install() {
   local pkgs=("$@")
   ((${#pkgs[@]})) || return 0
+  _ensure_campus_proxy || {
+    echo "Cannot install packages without campus proxy: ${pkgs[*]}"
+    return 1
+  }
   if command -v apt-get >/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || true
@@ -160,53 +312,9 @@ if [[ "$PYTHON_BIN" == /usr/local/* ]]; then
   echo "WARNING: using /usr/local Python. Prefer: apt install python3 python3-venv"
 fi
 if ! command -v curl >/dev/null; then
-  echo "curl is required."
-  exit 1
+  echo "curl is required (apt install curl after campus proxy login if needed)."
+  _pkg_install curl || exit 1
 fi
-
-TTY=""
-if [[ -c /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
-  TTY="/dev/tty"
-fi
-REPLY_TTY=""
-
-_say() {
-  if [[ -n "$TTY" ]]; then
-    printf '%s\n' "$*" >"$TTY"
-  else
-    printf '%s\n' "$*" >&2
-  fi
-}
-
-_ask() {
-  # Read from the real keyboard, not from `curl | sudo` stdin (that is the script).
-  # Do not run this inside $(...) — a subshell + stty/read on /dev/tty can hang.
-  local prompt="$1" silent="${2:-0}"
-  REPLY_TTY=""
-  if [[ -z "$TTY" ]]; then
-    _say "No terminal attached (curl | sudo bash needs a real TTY)."
-    _say "Save the script first:"
-    _say "  curl -fsSL ${SERVER_URL}/install-agent.sh -o /tmp/labwatch-install.sh"
-    _say "  sudo bash /tmp/labwatch-install.sh"
-    _say "Or set LABWATCH_USER, LABWATCH_PASSWORD, LABWATCH_INVENTORY_ID, LABWATCH_LAB."
-    return 1
-  fi
-  printf '%s' "$prompt" >"$TTY"
-  if [[ "$silent" == "1" ]]; then
-    if ! IFS= read -r -s -t 180 REPLY_TTY <"$TTY"; then
-      printf '\n' >"$TTY"
-      _say "No password entered (timeout). Run again, or: sudo bash /tmp/labwatch-install.sh"
-      return 1
-    fi
-    printf '\n' >"$TTY"
-  else
-    if ! IFS= read -r -t 180 REPLY_TTY <"$TTY"; then
-      _say "No input entered (timeout). Run again, or: sudo bash /tmp/labwatch-install.sh"
-      return 1
-    fi
-  fi
-  return 0
-}
 
 if systemctl is-active --quiet labwatch-agent 2>/dev/null || [[ -f "${CONFIG_DIR}/config.toml" ]]; then
   _say "Existing LabWatch agent found. Enter keeps the current machine ID and lab."
@@ -461,18 +569,44 @@ if [[ ! -x "$PREFIX/venv/bin/pip" ]]; then
     exit 1
   fi
 fi
-# Install only from LabWatch-bundled wheels — no PyPI / no campus proxy.
-"$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -U pip setuptools wheel
-"$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -r "$AGENT_SRC/requirements.txt"
-# Optional sqlite fallback — never abort install if this wheel is missing for this Python/arch.
+# Prefer LabWatch-bundled wheels (no outer network). Fall back to PyPI via campus proxy.
+_pip_offline() {
+  "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" "$@"
+}
+_pip_online() {
+  _ensure_campus_proxy || return 1
+  "$PREFIX/venv/bin/python" -m pip install -q "$@"
+}
+
+echo "Installing Python deps from LabWatch wheelhouse (offline)…"
+if ! _pip_offline -U pip setuptools wheel; then
+  echo "Offline pip bootstrap failed — trying PyPI via campus proxy…"
+  _pip_online -U pip setuptools wheel || {
+    echo "ERROR: could not install pip/setuptools/wheel"
+    exit 1
+  }
+fi
+if ! _pip_offline -r "$AGENT_SRC/requirements.txt"; then
+  echo "Offline requirements incomplete — installing missing packages from PyPI via campus proxy…"
+  _pip_online -r "$AGENT_SRC/requirements.txt" || {
+    echo "ERROR: could not install agent requirements"
+    exit 1
+  }
+fi
+# Optional sqlite fallback when stdlib _sqlite3 is missing.
 if ! "$PREFIX/venv/bin/python" -c 'import sqlite3; sqlite3.connect(":memory:").close()' 2>/dev/null; then
-  echo "NOTE: stdlib sqlite3 missing — trying optional pysqlite3-binary from wheelhouse…"
-  if [[ -f "$AGENT_SRC/requirements-optional-linux.txt" ]]; then
-    "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -r "$AGENT_SRC/requirements-optional-linux.txt" \
-      || echo "WARNING: pysqlite3-binary unavailable for this Python/arch. Prefer: apt install python3 python3-venv"
+  echo "NOTE: stdlib sqlite3 missing — installing pysqlite3-binary…"
+  OPT_REQ="$AGENT_SRC/requirements-optional-linux.txt"
+  if [[ -f "$OPT_REQ" ]]; then
+    _pip_offline -r "$OPT_REQ" || _pip_online -r "$OPT_REQ" || {
+      echo "ERROR: need sqlite3. Prefer: apt install python3 python3-venv (after proxy login)."
+      exit 1
+    }
   else
-    "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" "pysqlite3-binary>=0.5.4" \
-      || echo "WARNING: pysqlite3-binary unavailable for this Python/arch. Prefer: apt install python3 python3-venv"
+    _pip_offline "pysqlite3-binary>=0.5.4" || _pip_online "pysqlite3-binary>=0.5.4" || {
+      echo "ERROR: need sqlite3. Prefer: apt install python3 python3-venv (after proxy login)."
+      exit 1
+    }
   fi
 fi
 mkdir -p "$PREFIX/labwatch_agent"
@@ -569,6 +703,7 @@ if ! systemctl is-active --quiet labwatch-agent; then
   journalctl -u labwatch-agent -n 40 --no-pager || true
   exit 1
 fi
+unset PROXY_PASSWORD PASSWORD || true
 echo "Installed ${INVENTORY_ID} (${LAB_NAME:-lab}) → ${SERVER_URL}"
 echo -n "Collector tools:"
 for t in dmidecode lspci lsblk smartctl nvidia-smi; do
