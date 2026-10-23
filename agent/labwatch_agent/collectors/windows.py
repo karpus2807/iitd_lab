@@ -25,7 +25,7 @@ $out = [ordered]@{
   disks = @(Get-CimInstance Win32_DiskDrive | Select-Object DeviceID, Model, SerialNumber, Size, InterfaceType, MediaType, Status)
   nics = @(Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -eq $true } | Select-Object Name, MACAddress, Speed, NetEnabled, AdapterType, PNPDeviceID, NetConnectionStatus)
   niccfg = @(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.MACAddress } | Select-Object Description, MACAddress, IPAddress)
-  video = @(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion, PNPDeviceID, VideoProcessor, CurrentRefreshRate)
+  video = @(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion, PNPDeviceID, VideoProcessor, CurrentRefreshRate, Status, AdapterCompatibility, DriverDate)
 }
 $out | ConvertTo-Json -Compress -Depth 6
 """
@@ -245,9 +245,79 @@ def collect_system_windows() -> dict[str, Any]:
     }
 
 
+def _pci_from_pnp(pnp: str | None) -> tuple[str | None, str | None]:
+    """Return (pci_bus_hint, pci_device_id) from a Win32 PNPDeviceID."""
+    if not pnp:
+        return None, None
+    # PCI\VEN_8086&DEV_4C8A&SUBSYS_...&REV_04\3&11583659&0&10
+    import re
+
+    ven = re.search(r"VEN_([0-9A-Fa-f]{4})", pnp)
+    dev = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+    pci_device_id = None
+    if ven and dev:
+        pci_device_id = f"{ven.group(1).lower()}:{dev.group(1).lower()}"
+    # Trailing &<fn> sometimes encodes function; full BDF needs SetupAPI — keep device id.
+    return None, pci_device_id
+
+
+def _vendor_windows(name: str, compat: str | None, pnp: str | None) -> str | None:
+    from labwatch_agent.collectors.gpu_sysfs import vendor_from_text
+
+    blob = f"{name} {compat or ''} {pnp or ''}"
+    v = vendor_from_text(blob)
+    if v:
+        return v
+    if pnp:
+        up = pnp.upper()
+        if "VEN_8086" in up:
+            return "Intel"
+        if "VEN_10DE" in up:
+            return "NVIDIA"
+        if "VEN_1002" in up or "VEN_1022" in up:
+            return "AMD"
+    return None
+
+
+def _windows_gpu_util_by_name() -> dict[str, float]:
+    """Best-effort GPU engine utilization via Windows performance counters."""
+    script = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$samples = Get-Counter '\GPU Engine(*)\Utilization Percentage' -ErrorAction SilentlyContinue
+if (-not $samples) { '{}' ; exit 0 }
+$map = @{}
+foreach ($s in $samples.CounterSamples) {
+  if ($s.CookedValue -lt 0) { continue }
+  $path = [string]$s.Path
+  # engtype_3D / engtype_Compute — sum per adapter instance fragment
+  if ($path -notmatch 'engtype_(3D|Compute|Copy)') { continue }
+  $key = 'gpu'
+  if ($path -match 'luid_0x([0-9A-Fa-f]+)_0x([0-9A-Fa-f]+)') {
+    $key = $Matches[1] + '_' + $Matches[2]
+  }
+  if (-not $map.ContainsKey($key)) { $map[$key] = 0.0 }
+  $map[$key] = [Math]::Max($map[$key], [double]$s.CookedValue)
+}
+$map | ConvertTo-Json -Compress
+"""
+    code, out, err = run_cmd(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout=8)
+    if code != 0 or not out.strip():
+        return {}
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): float(v) for k, v in data.items() if v is not None}
+
+
 def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
+    from labwatch_agent.collectors.gpu_sysfs import classify_gpu_kind
+
     notes: list[str] = []
     gpus: list[dict[str, Any]] = []
+    nvidia_names: set[str] = set()
     nvsmi = which("nvidia-smi") or which(r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe")
     if nvsmi:
         query = (
@@ -257,40 +327,86 @@ def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
         code, out, err = run_cmd([nvsmi, query, "--format=csv,noheader,nounits"])
         if code == 0:
             gpus = parse_nvidia_smi_csv(out)
+            for g in gpus:
+                g.setdefault("extra", {})["gpu_kind"] = "discrete"
+                g.setdefault("slot_designation", "Dedicated")
+                if g.get("model"):
+                    nvidia_names.add(str(g["model"]).lower())
         else:
-            notes.append("nvidia-smi failed on Windows.")
+            notes.append("nvidia-smi failed on Windows; using Win32_VideoController.")
+    data = _cached_cim()
+    videos = data.get("video") or []
+    if isinstance(videos, dict):
+        videos = [videos]
+    util_map = _windows_gpu_util_by_name()
+    util_values = list(util_map.values())
+    idx = len(gpus)
+    for v in videos:
+        name = v.get("Name") or ""
+        low = name.lower()
+        if "microsoft basic" in low or not name.strip():
+            continue
+        # Skip NVIDIA rows already covered by nvidia-smi.
+        if any(n in low or low in n for n in nvidia_names if n):
+            continue
+        if "nvidia" in low and nvidia_names:
+            continue
+        pnp = v.get("PNPDeviceID")
+        _, pci_device_id = _pci_from_pnp(pnp)
+        vendor = _vendor_windows(name, v.get("AdapterCompatibility"), pnp)
+        ram = v.get("AdapterRAM")
+        vram = None
+        try:
+            if ram is not None and int(ram) > 0:
+                vram = int(ram)
+                # Win32 AdapterRAM is a 32-bit field; values near 4GiB are often wrapped/wrong.
+                if vram >= 4 * 1024**3 - 1024**2:
+                    notes.append(f"AdapterRAM for {name} may be capped by WMI 32-bit field.")
+        except (TypeError, ValueError):
+            vram = None
+        kind = classify_gpu_kind(
+            vendor=vendor,
+            model=name,
+            pci_bus=None,
+            driver=None,
+            vram_bytes=vram if vendor != "Intel" else None,
+        )
+        extra: dict[str, Any] = {"gpu_kind": kind, "pnp_device_id": pnp}
+        if kind == "integrated":
+            extra["memory_kind"] = "shared"
+            if vram:
+                extra["shared_graphics_bytes"] = vram
+            slot = "Integrated"
+        else:
+            extra["memory_kind"] = "dedicated"
+            slot = "Dedicated"
+        util = None
+        if util_values:
+            # Without LUID mapping, assign max engine util to first non-NVIDIA adapter as best effort.
+            util = round(max(util_values), 1)
+        gpus.append(
+            {
+                "index": idx,
+                "vendor": vendor,
+                "model": name,
+                "vram_bytes": vram,
+                "driver_version": v.get("DriverVersion"),
+                "pci_device_id": pci_device_id or pnp,
+                "utilization_pct": util,
+                "slot_designation": slot,
+                "extra": extra,
+            }
+        )
+        idx += 1
     if not gpus:
-        data = _cached_cim()
-        videos = data.get("video") or []
-        if isinstance(videos, dict):
-            videos = [videos]
-        for i, v in enumerate(videos):
-            name = v.get("Name") or ""
-            if "microsoft basic" in name.lower():
-                continue
-            vendor = None
-            low = name.lower()
-            if "nvidia" in low:
-                vendor = "NVIDIA"
-            elif "amd" in low or "radeon" in low:
-                vendor = "AMD"
-            elif "intel" in low:
-                vendor = "Intel"
-            ram = v.get("AdapterRAM")
-            gpus.append(
-                {
-                    "index": i,
-                    "vendor": vendor,
-                    "model": name,
-                    "vram_bytes": int(ram) if ram and int(ram) > 0 else None,
-                    "driver_version": v.get("DriverVersion"),
-                    "pci_device_id": v.get("PNPDeviceID"),
-                }
-            )
-        if not gpus:
-            notes.append("No GPU reported by Win32_VideoController.")
-        else:
-            notes.append("GPU telemetry (util/temp/power) requires vendor tooling such as nvidia-smi.")
+        notes.append("No GPU reported by Win32_VideoController / nvidia-smi.")
+    else:
+        if not nvsmi:
+            notes.append("Install vendor tools (nvidia-smi) for full dGPU temp/power/clocks; iGPU uses WMI + performance counters.")
+        if not util_map:
+            notes.append("GPU utilization counters unavailable on this Windows build.")
+    for i, g in enumerate(gpus):
+        g["index"] = i
     return gpus, notes
 
 

@@ -30,6 +30,11 @@ function isSocGpu(g: any) {
   return extra.memory_kind === 'unified' || extra.bus === 'soc' || extra.platform === 'jetson'
 }
 
+function isIntegratedGpu(g: any) {
+  const extra = g?.extra || {}
+  return extra.gpu_kind === 'integrated' || g?.slot_designation === 'Integrated' || extra.memory_kind === 'shared'
+}
+
 function isSocPcie(pcie: any, gpus: any[]) {
   return pcie?.topology_status === 'SOC' || (gpus || []).some(isSocGpu)
 }
@@ -353,6 +358,7 @@ export default function MachineDetail() {
           <div className="gpu-grid">
             {(hw?.gpus || []).map((g: any) => {
               const soc = isSocGpu(g)
+              const integrated = !soc && isIntegratedGpu(g)
               const extra = g.extra || {}
               const rails = extra.power_rails || {}
               const railText = Object.entries(rails)
@@ -360,10 +366,12 @@ export default function MachineDetail() {
                 .join(' · ')
               const unified = extra.unified_ram_bytes || (soc ? g.vram_bytes : null)
               const unifiedUsed = extra.unified_ram_used_bytes
+              const sharedBytes = extra.shared_graphics_bytes || (integrated ? g.vram_bytes : null)
+              const kindLabel = soc ? 'SoC (nvgpu)' : integrated ? 'Integrated' : (g.slot_designation || 'Dedicated')
               return (
                 <div className="card" key={g.index}>
                   <h3 style={{ marginTop: 0 }}>GPU {g.index} · {g.model}</h3>
-                  <div className="muted">{[g.vendor, soc ? 'SoC (nvgpu)' : g.slot_designation].filter((x) => !isBlank(x)).join(' · ')}</div>
+                  <div className="muted">{[g.vendor, kindLabel].filter((x) => !isBlank(x)).join(' · ')}</div>
                   <Show label="Temperature" value={g.temperature_c != null ? `${g.temperature_c} °C` : null} />
                   <Show label="Utilization" value={g.utilization_pct != null ? `${g.utilization_pct}%` : null} />
                   <Meter value={g.utilization_pct} />
@@ -376,6 +384,11 @@ export default function MachineDetail() {
                           : null
                       }
                     />
+                  ) : integrated ? (
+                    <Show
+                      label="Graphics memory"
+                      value={sharedBytes ? `Shared with system RAM ${bytes(sharedBytes)}` : 'Shared with system RAM'}
+                    />
                   ) : (
                     <Show label="VRAM" value={bytes(g.vram_bytes)} />
                   )}
@@ -386,8 +399,8 @@ export default function MachineDetail() {
                   <Show label={soc ? 'EMC / memory clock' : 'Memory clock'} value={g.memory_clock_mhz != null ? `${g.memory_clock_mhz} MHz` : null} />
                   <Show label="Driver" value={g.driver_version} />
                   <Show label="L4T" value={extra.l4t_version} supported={Boolean(soc && extra.l4t_version && extra.l4t_version !== g.driver_version)} />
-                  <Show label="PCI" value={g.pci_bus} supported={!soc} />
-                  <Show label="Serial" value={g.serial_number} supported={!soc} />
+                  <Show label="PCI" value={g.pci_bus || g.pci_device_id} supported={!soc} />
+                  <Show label="Serial" value={g.serial_number} supported={!soc && !integrated} />
                 </div>
               )
             })}

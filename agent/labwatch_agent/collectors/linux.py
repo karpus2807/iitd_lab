@@ -423,8 +423,16 @@ def _lspci_devices() -> list[dict[str, Any]]:
 
 
 def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
+    from labwatch_agent.collectors.gpu_sysfs import (
+        enrich_linux_gpu,
+        iter_drm_gpus,
+        normalize_pci_bus,
+        vendor_from_text,
+    )
+
     notes: list[str] = []
     gpus: list[dict[str, Any]] = []
+    nvidia_pci: set[str] = set()
     if which("nvidia-smi"):
         query = (
             "--query-gpu=index,name,uuid,serial,memory.total,memory.used,"
@@ -433,30 +441,58 @@ def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
         code, out, err = run_cmd(["nvidia-smi", query, "--format=csv,noheader,nounits"])
         if code == 0:
             gpus = parse_nvidia_smi_csv(out)
+            for g in gpus:
+                g.setdefault("extra", {})["gpu_kind"] = "discrete"
+                g.setdefault("slot_designation", "Dedicated")
+                bus = normalize_pci_bus(g.get("pci_bus"))
+                if bus:
+                    nvidia_pci.add(bus)
         else:
-            notes.append("nvidia-smi failed; NVIDIA metrics marked unavailable.")
+            notes.append("nvidia-smi failed; falling back to PCI/DRM for display adapters.")
     else:
-        notes.append("nvidia-smi not present.")
-    if not gpus:
-        # PCI VGA/3D devices without inventing performance data.
-        if which("lspci"):
-            code, out, err = run_cmd(["lspci", "-nn"])
-            idx = 0
+        notes.append("nvidia-smi not present; using PCI + DRM sysfs for GPU inventory.")
+
+    # Always enumerate PCI display devices so Intel/AMD iGPU appear beside NVIDIA dGPU.
+    if which("lspci"):
+        code, out, err = run_cmd(["lspci", "-nn"])
+        if code == 0:
+            idx = len(gpus)
+            seen = set(nvidia_pci)
             for line in out.splitlines():
                 low = line.lower()
-                if "vga compatible" in low or "3d controller" in low or "display controller" in low:
-                    vendor = "NVIDIA" if "nvidia" in low else "AMD" if ("amd" in low or "ati" in low) else "Intel" if "intel" in low else None
-                    gpus.append(
-                        {
-                            "index": idx,
-                            "vendor": vendor,
-                            "model": line.split(":", 2)[-1].strip() if ":" in line else line.strip(),
-                            "pci_bus": line.split()[0] if line.split() else None,
-                        }
-                    )
-                    idx += 1
+                if not ("vga compatible" in low or "3d controller" in low or "display controller" in low):
+                    continue
+                pci = normalize_pci_bus(line.split()[0] if line.split() else None)
+                if pci and pci in seen:
+                    continue
+                vendor = vendor_from_text(line)
+                # Skip NVIDIA PCI rows already covered by nvidia-smi.
+                if vendor == "NVIDIA" and nvidia_pci:
+                    continue
+                import re as _re
+
+                m = _re.search(r"\]:\s*(.+)$", line)
+                model = (m.group(1).strip() if m else line.strip())
+                gpus.append(
+                    {
+                        "index": idx,
+                        "vendor": vendor,
+                        "model": model,
+                        "pci_bus": pci,
+                    }
+                )
+                if pci:
+                    seen.add(pci)
+                idx += 1
             if not gpus:
                 notes.append("No GPU devices reported by PCI enumeration.")
+
+    drm_rows = iter_drm_gpus()
+    gpus = [enrich_linux_gpu(g, drm_rows) for g in gpus]
+    # Re-index after merges.
+    for i, g in enumerate(gpus):
+        g["index"] = i
+
     jetson = collect_jetson_gpu()
     if jetson:
         if gpus:

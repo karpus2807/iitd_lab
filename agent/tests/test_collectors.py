@@ -66,6 +66,23 @@ def test_nvidia_smi_parser():
     assert gpus[0]["vram_bytes"] == int(24564 * 1024 * 1024)
 
 
+def test_vendor_from_text_does_not_mark_intel_as_amd():
+    from labwatch_agent.collectors.gpu_sysfs import classify_gpu_kind, vendor_from_text
+
+    line = "00:02.0 VGA compatible controller [0300]: Intel Corporation Alder Lake-UP3 GT2 [UHD Graphics] [8086:4628] (rev 0c)"
+    assert vendor_from_text(line) == "Intel"
+    assert vendor_from_text("NVIDIA Corporation GA102 [GeForce RTX 3090]") == "NVIDIA"
+    assert vendor_from_text("Advanced Micro Devices, Inc. [AMD/ATI] Navi 21") == "AMD"
+    kind = classify_gpu_kind(
+        vendor="Intel",
+        model="Intel Corporation Alder Lake-UP3 GT2 [UHD Graphics]",
+        pci_bus="0000:00:02.0",
+        driver="i915",
+        vram_bytes=None,
+    )
+    assert kind == "integrated"
+
+
 def test_nvidia_smi_jetson_na_fields():
     csv = "0, Orin (nvgpu), [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], [N/A], 540.5.0"
     gpus = parse_nvidia_smi_csv(csv)
