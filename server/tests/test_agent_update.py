@@ -16,7 +16,7 @@ async def _register_agent(client: AsyncClient, auth_headers: dict, hostname: str
         json={
             "registration_token": token,
             "agent_uuid": f"agent-uuid-{hostname}",
-            "agent_version": "1.1.42",
+            "agent_version": "1.1.43",
             "inventory_id": f"INV/{hostname}",
             "identity": {
                 "hostname": hostname,
@@ -62,7 +62,7 @@ async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_hea
     hb = await client.post(
         "/api/agents/heartbeat",
         headers=enrolled["headers"],
-        json={"agent_version": "1.1.42", "hostname": "upd-a", "status": "healthy"},
+        json={"agent_version": "1.1.43", "hostname": "upd-a", "status": "healthy"},
     )
     assert hb.status_code == 200, hb.text
     body = hb.json()
@@ -76,14 +76,14 @@ async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_hea
     hb2 = await client.post(
         "/api/agents/heartbeat",
         headers=enrolled["headers"],
-        json={"agent_version": "1.1.42", "hostname": "upd-a", "status": "healthy"},
+        json={"agent_version": "1.1.43", "hostname": "upd-a", "status": "healthy"},
     )
     assert hb2.json()["commands"] == []
 
     ack = await client.post(
         "/api/agents/commands/ack",
         headers=enrolled["headers"],
-        json={"id": cmd["id"], "status": "ok", "message": "updated to 1.1.42", "agent_version": "1.1.42"},
+        json={"id": cmd["id"], "status": "ok", "message": "updated to 1.1.43", "agent_version": "1.1.43"},
     )
     assert ack.status_code == 200
     assert ack.json()["ignored"] is False
@@ -91,7 +91,7 @@ async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_hea
     agents2 = await client.get("/api/admin/agents", headers=auth_headers)
     row2 = next(a for a in agents2.json()["agents"] if a["id"] == row["id"])
     assert row2["update_status"] == "ok"
-    assert row2["version"] == "1.1.42"
+    assert row2["version"] == "1.1.43"
 
 
 async def test_update_requires_selection(client: AsyncClient, auth_headers: dict):
@@ -117,12 +117,12 @@ async def test_update_selected_only(client: AsyncClient, auth_headers: dict):
     hb_a = await client.post(
         "/api/agents/heartbeat",
         headers=a["headers"],
-        json={"agent_version": "1.1.42", "hostname": "upd-b1", "status": "healthy"},
+        json={"agent_version": "1.1.43", "hostname": "upd-b1", "status": "healthy"},
     )
     hb_b = await client.post(
         "/api/agents/heartbeat",
         headers=b["headers"],
-        json={"agent_version": "1.1.42", "hostname": "upd-b2", "status": "healthy"},
+        json={"agent_version": "1.1.43", "hostname": "upd-b2", "status": "healthy"},
     )
     assert len(hb_a.json()["commands"]) == 1
     assert hb_b.json()["commands"] == []

@@ -326,10 +326,8 @@ try {
   if (Test-Path -LiteralPath $wheelsDir) {
     $wheelFiles = @(Get-ChildItem -LiteralPath $wheelsDir -Filter "*.whl" -ErrorAction SilentlyContinue)
   }
-  if ($wheelFiles.Count -lt 1) {
-    throw "Offline wheelhouse missing in agent pack ($wheelsDir). On LabWatch server run scripts/linux/prefetch-agent-wheels.sh and recreate api/web."
-  }
-  Write-Host "Using offline wheels from LabWatch server ($($wheelFiles.Count) files) - no PyPI / no campus proxy."
+  $reqFile = Join-Path $agentSrc "requirements.txt"
+  $hasWheels = ($wheelFiles.Count -ge 1)
 
   $venvDir = Join-Path $InstallDir "venv"
   if (Test-Path -LiteralPath $venvDir) { Remove-Item -LiteralPath $venvDir -Recurse -Force }
@@ -337,20 +335,71 @@ try {
   $py = Join-Path $venvDir "Scripts\python.exe"
   if (-not (Test-Path -LiteralPath $py)) { throw "venv python missing at $py" }
 
-  $getPip = Join-Path $wheelsDir "get-pip.py"
-  $pipExe = Join-Path $venvDir "Scripts\pip.exe"
-  if (-not (Test-Path -LiteralPath $pipExe)) {
-    if (-not (Test-Path -LiteralPath $getPip)) {
-      throw "get-pip.py missing from wheelhouse; cannot bootstrap pip offline."
-    }
-    & $py $getPip --no-index --find-links $wheelsDir
-    if ($LASTEXITCODE -ne 0) { throw "offline get-pip failed" }
+  function Invoke-Pip {
+    param([Parameter(Mandatory = $true)][string[]]$PipArgs)
+    # Capture output so failures show the real pip reason (not just exit code).
+    $out = & $py -m pip @PipArgs 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    if ($null -eq $code) { $code = 0 }
+    return @{ Code = [int]$code; Output = $out }
   }
 
-  & $py -m pip install --no-index --find-links $wheelsDir -U pip setuptools wheel
-  if ($LASTEXITCODE -ne 0) { throw "offline pip bootstrap failed" }
-  & $py -m pip install --no-index --find-links $wheelsDir -r (Join-Path $agentSrc "requirements.txt")
-  if ($LASTEXITCODE -ne 0) { throw "offline pip install requirements failed (wheelhouse may lack this Python version/platform)" }
+  function Install-FromWheelhouse {
+    $getPip = Join-Path $wheelsDir "get-pip.py"
+    $pipExe = Join-Path $venvDir "Scripts\pip.exe"
+    if (-not (Test-Path -LiteralPath $pipExe)) {
+      if (-not (Test-Path -LiteralPath $getPip)) {
+        return @{ Ok = $false; Detail = "get-pip.py missing from wheelhouse" }
+      }
+      $out = & $py $getPip --no-index --find-links $wheelsDir 2>&1 | Out-String
+      $code = $LASTEXITCODE
+      if (($null -ne $code) -and ($code -ne 0)) {
+        return @{ Ok = $false; Detail = "offline get-pip failed`n$out" }
+      }
+    }
+    $r1 = Invoke-Pip -PipArgs @("install", "--no-index", "--find-links", $wheelsDir, "-U", "pip", "setuptools", "wheel")
+    if ($r1.Code -ne 0) { return @{ Ok = $false; Detail = "offline pip bootstrap failed`n$($r1.Output)" } }
+    $r2 = Invoke-Pip -PipArgs @("install", "--no-index", "--find-links", $wheelsDir, "-r", $reqFile)
+    if ($r2.Code -ne 0) { return @{ Ok = $false; Detail = "offline requirements failed`n$($r2.Output)" } }
+    return @{ Ok = $true; Detail = "" }
+  }
+
+  function Install-FromPyPI {
+    Write-Host "Installing dependencies from PyPI (needs internet or campus proxy)..."
+    $r1 = Invoke-Pip -PipArgs @("install", "-U", "pip", "setuptools", "wheel")
+    if ($r1.Code -ne 0) { return @{ Ok = $false; Detail = "pip upgrade failed`n$($r1.Output)" } }
+    $r2 = Invoke-Pip -PipArgs @("install", "-r", $reqFile)
+    if ($r2.Code -ne 0) {
+      return @{
+        Ok = $false
+        Detail = "pip install requirements failed (check network / campus proxy for pypi.org)`n$($r2.Output)"
+      }
+    }
+    return @{ Ok = $true; Detail = "" }
+  }
+
+  $installed = $false
+  if ($hasWheels) {
+    Write-Host "INFO: Trying offline wheels from LabWatch server ($($wheelFiles.Count) files)."
+    $offline = Install-FromWheelhouse
+    if ($offline.Ok) {
+      Write-Host "OK: Dependencies installed from LabWatch wheelhouse (no PyPI needed)."
+      $installed = $true
+    } else {
+      Write-Host "WARN: Offline wheel install did not match this Windows/Python. Falling back to PyPI."
+      Write-Host $offline.Detail
+    }
+  } else {
+    Write-Host "INFO: No wheels in agent pack; installing from PyPI."
+  }
+
+  if (-not $installed) {
+    $online = Install-FromPyPI
+    if (-not $online.Ok) {
+      throw $online.Detail
+    }
+    Write-Host "OK: Dependencies installed from PyPI."
+  }
 
   $destPkg = Join-Path $InstallDir "labwatch_agent"
   if (Test-Path -LiteralPath $destPkg) { Remove-Item -LiteralPath $destPkg -Recurse -Force }
