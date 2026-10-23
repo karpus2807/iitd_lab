@@ -168,6 +168,7 @@ function Tokens() {
     setCreated(r.token)
     load()
   }
+  const autoDays = rows[0]?.unused_auto_delete_days ?? 2
   return (
     <>
       <form className="card toolbar" onSubmit={create}>
@@ -178,16 +179,20 @@ function Tokens() {
         </select>
         <button className="btn">New registration token</button>
       </form>
+      <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>
+        Unused tokens (0 uses) are auto-revoked and deleted after {autoDays} day{autoDays === 1 ? '' : 's'}.
+      </p>
       {created && <div className="card"><p>Store this token now; it will not be shown again.</p><code>{created}</code></div>}
       <div className="card" style={{ padding: 0 }}>
         <table>
-          <thead><tr><th>Label</th><th>Prefix</th><th>Uses</th><th>Revoked</th><th></th></tr></thead>
+          <thead><tr><th>Label</th><th>Prefix</th><th>Uses</th><th>Created</th><th>Revoked</th><th></th></tr></thead>
           <tbody>
             {rows.map((t) => (
               <tr key={t.id}>
                 <td>{t.label}</td>
                 <td className="mono">{t.prefix}</td>
                 <td>{t.use_count}{t.max_uses ? ` / ${t.max_uses}` : ''}</td>
+                <td>{ago(t.created_at)}</td>
                 <td>{t.revoked ? 'yes' : 'no'}</td>
                 <td>{!t.revoked && <button className="btn danger" onClick={async () => { await api(`/api/admin/tokens/${t.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>}</td>
               </tr>
@@ -202,22 +207,147 @@ function Tokens() {
 function Agents() {
   const [rows, setRows] = useState<any[]>([])
   const [secret, setSecret] = useState('')
-  function load() { api('/api/admin/agents').then(setRows) }
+  const [q, setQ] = useState('')
+  const [selected, setSelected] = useState<Record<string, boolean>>({})
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  function load() {
+    api('/api/admin/agents').then((data) => {
+      setRows(data)
+      setSelected((prev) => {
+        const next: Record<string, boolean> = {}
+        for (const a of data) {
+          if (prev[a.id]) next[a.id] = true
+        }
+        return next
+      })
+    })
+  }
   useEffect(load, [])
+
+  const filtered = rows.filter((a) => {
+    const needle = q.trim().toLowerCase()
+    if (!needle) return true
+    const hay = [a.hostname, a.inventory_id, a.agent_id, a.version, a.status]
+      .map((x) => String(x || '').toLowerCase())
+      .join(' ')
+    return hay.includes(needle)
+  })
+  const selectedIds = filtered.filter((a) => selected[a.id]).map((a) => a.id)
+  const allFilteredSelected = filtered.length > 0 && filtered.every((a) => selected[a.id])
+
+  function toggleAll(checked: boolean) {
+    setSelected((prev) => {
+      const next = { ...prev }
+      for (const a of filtered) {
+        if (checked) next[a.id] = true
+        else delete next[a.id]
+      }
+      return next
+    })
+  }
+
+  async function queueUpdate(ids: string[]) {
+    if (!ids.length) {
+      setNotice('Select at least one agent first.')
+      return
+    }
+    setBusy(true)
+    setNotice('')
+    try {
+      const r = await api('/api/admin/agents/update', {
+        method: 'POST',
+        body: JSON.stringify({ agent_ids: ids }),
+      })
+      const n = (r.queued || []).length
+      setNotice(`Queued update to ${r.target_version} for ${n} agent${n === 1 ? '' : 's'}. Delivered on next heartbeat.`)
+      load()
+    } catch (e: any) {
+      setNotice(e?.message || 'Update queue failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       {secret && <div className="card"><p>New agent secret (shown once)</p><code>{secret}</code></div>}
+      <div className="card" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input
+          style={{ flex: '1 1 220px', minWidth: 180 }}
+          placeholder="Search host or Inv.ID…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <button
+          className="btn"
+          disabled={busy || selectedIds.length === 0}
+          onClick={() => queueUpdate(selectedIds)}
+          title={selectedIds.length ? `Update ${selectedIds.length} selected` : 'Select agents first'}
+        >
+          Update all agents{selectedIds.length ? ` (${selectedIds.length})` : ''}
+        </button>
+        <span className="muted" style={{ fontSize: 13 }}>
+          Remote update needs agent ≥1.1.40 (one manual reinstall for older hosts).
+        </span>
+      </div>
+      {notice && <p className="muted" style={{ marginBottom: 8 }}>{notice}</p>}
       <div className="card" style={{ padding: 0 }}>
         <table>
-          <thead><tr><th>Host</th><th>Agent ID</th><th>Status</th><th>Seen</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th style={{ width: 36 }}>
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={(e) => toggleAll(e.target.checked)}
+                  title="Select all"
+                  aria-label="Select all"
+                />
+              </th>
+              <th>Host</th>
+              <th>Inv.ID</th>
+              <th>Agent ID</th>
+              <th>Ver</th>
+              <th>Status</th>
+              <th>Update</th>
+              <th>Seen</th>
+              <th></th>
+            </tr>
+          </thead>
           <tbody>
-            {rows.map((a) => (
+            {filtered.map((a) => (
               <tr key={a.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={!!selected[a.id]}
+                    onChange={(e) => setSelected((prev) => {
+                      const next = { ...prev }
+                      if (e.target.checked) next[a.id] = true
+                      else delete next[a.id]
+                      return next
+                    })}
+                    aria-label={`Select ${a.hostname}`}
+                  />
+                </td>
                 <td>{a.hostname}</td>
+                <td className="mono">{a.inventory_id || '—'}</td>
                 <td className="mono">{a.agent_id}</td>
+                <td className="mono">{a.version || '—'}</td>
                 <td>{a.status} {a.approved ? '' : '(pending)'}</td>
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {a.update_status
+                    ? `${a.update_status}${a.update_target_version ? ` → ${a.update_target_version}` : ''}${a.update_message ? ` (${a.update_message})` : ''}`
+                    : '—'}
+                  {!a.remote_update_capable && a.version ? (
+                    <div title="Needs one manual install of ≥1.1.40">manual first</div>
+                  ) : null}
+                </td>
                 <td>{ago(a.last_heartbeat_at)}</td>
                 <td className="row-actions">
+                  <button className="btn secondary" disabled={busy} onClick={() => queueUpdate([a.id])}>Update agent</button>
                   <button className="btn secondary" onClick={async () => { await api(`/api/admin/agents/${a.id}/approve`, { method: 'POST' }); load() }}>Approve</button>
                   <button className="btn secondary" onClick={async () => { const r = await api(`/api/admin/agents/${a.id}/rotate`, { method: 'POST' }); setSecret(r.agent_secret) }}>Rotate</button>
                   <button className="btn danger" onClick={async () => { await api(`/api/admin/agents/${a.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
@@ -229,6 +359,9 @@ function Agents() {
                 </td>
               </tr>
             ))}
+            {!filtered.length && (
+              <tr><td colSpan={9} className="muted" style={{ padding: 16 }}>No agents match.</td></tr>
+            )}
           </tbody>
         </table>
       </div>

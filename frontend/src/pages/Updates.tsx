@@ -171,7 +171,7 @@ export default function Updates() {
       </form>
       {proxyRequired && (
         <p className="muted" style={{ marginTop: -8, marginBottom: 16 }}>
-          Direct GitHub failed. Use campus proxy credentials (not stored) to fetch releases.
+          Direct GitHub failed. Enter IITD kerberos id/password — LabWatch logs into proxy.cgi on this host (not stored), then fetches releases.
         </p>
       )}
 

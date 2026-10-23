@@ -7,6 +7,7 @@ import platform
 import random
 import signal
 import socket
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ from labwatch_agent.collectors import collect_inventory, collect_metrics
 from labwatch_agent.config import AgentConfig, load_config, read_state, write_state
 from labwatch_agent.netaddr import collect_host_addresses
 from labwatch_agent.queue import EventQueue, QueueLogHandler
+from labwatch_agent.self_update import apply_pack, schedule_restart
 from labwatch_agent.util import probe_host_tools
 
 logger = logging.getLogger("labwatch.agent")
@@ -111,6 +113,38 @@ def _flush_queue(client: AgentClient, queue: EventQueue) -> None:
     queue.delete(ids)
 
 
+def _handle_commands(client: AgentClient, commands: list) -> bool:
+    """Process server commands from heartbeat. Returns True if agent should stop (e.g. after update)."""
+    global _STOP
+    stop = False
+    for cmd in commands or []:
+        if not isinstance(cmd, dict):
+            continue
+        if cmd.get("type") != "self_update":
+            continue
+        cmd_id = str(cmd.get("id") or "")
+        if not cmd_id:
+            continue
+        target = str(cmd.get("target_version") or "")
+        pack_path = str(cmd.get("pack_path") or "/agent-pack.tgz")
+        logger.info("Self-update command received id=%s target=%s", cmd_id, target or "?")
+        try:
+            pack = client.download_pack(pack_path)
+            new_ver = apply_pack(pack, target_version=target)
+            client.ack_command(cmd_id, "ok", f"updated to {new_ver}", new_ver)
+            logger.info("Self-update applied (%s); scheduling restart", new_ver)
+            schedule_restart()
+            _STOP = True
+            stop = True
+        except Exception as exc:
+            logger.exception("Self-update failed: %s", exc)
+            try:
+                client.ack_command(cmd_id, "error", str(exc)[:500], __version__)
+            except Exception:
+                pass
+    return stop
+
+
 def run(cfg: AgentConfig) -> int:
     logging.basicConfig(
         level=getattr(logging, cfg.log_level.upper(), logging.INFO),
@@ -179,7 +213,7 @@ def run(cfg: AgentConfig) -> int:
             if enrolled and now - last_hb >= jitter(cfg.heartbeat_interval):
                 try:
                     addrs = collect_host_addresses()
-                    client.heartbeat(
+                    hb = client.heartbeat(
                         {
                             "agent_version": __version__,
                             "hostname": identity.get("hostname") or socket.gethostname(),
@@ -191,6 +225,8 @@ def run(cfg: AgentConfig) -> int:
                         }
                     )
                     last_hb = now
+                    if _handle_commands(client, hb.get("commands") or []):
+                        break
                 except AgentAuthError:
                     state = _clear_creds(cfg, state)
                     client.agent_id = ""

@@ -25,6 +25,10 @@ logger = logging.getLogger("labwatch.updates")
 TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.]+)?$")
 SECRET_IN_URL = re.compile(r"://[^/@:]+:[^/@]+@")
 CAMPUS_PROXY = "http://10.10.78.21:3128"
+SESSION_RE = re.compile(
+    r'sessionid"[^>]*value="([a-zA-Z0-9]{16})"|value="([a-zA-Z0-9]{16})"[^>]*name="sessionid"',
+    re.IGNORECASE,
+)
 IDLE_STATUS = {
     "state": "idle",
     "tag": None,
@@ -157,21 +161,95 @@ def _proxy_url(username: str | None = None, password: str | None = None) -> str 
     return urlunsplit((scheme, netloc, parts.path or "", "", ""))
 
 
-async def _http_get_releases(url: str, headers: dict[str, str], limit: int, proxy: str | None) -> list[dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=25.0, proxy=proxy, follow_redirects=True) as client:
-        response = await client.get(url, headers=headers, params={"per_page": max(limit, 10)})
-        content_type = response.headers.get("content-type", "")
-        if response.status_code in {401, 407} or "html" in content_type.lower():
-            if proxy:
-                raise RuntimeError("Campus proxy rejected the login. Check username and password.")
-            raise RuntimeError("GitHub returned a non-JSON response (direct fetch blocked).")
+def _extract_session_id(html: str) -> str | None:
+    match = SESSION_RE.search(html or "")
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
+
+
+async def campus_proxy_cgi_login(username: str, password: str) -> str:
+    """Authenticate this host on IITD squid via proxy.cgi (IP session; not HTTP Basic).
+
+    The CGI page must be hit *without* HTTP(S)_PROXY, otherwise squid loops 302→proxy.cgi.
+    After success, outbound CONNECT via CAMPUS_PROXY works until the session expires.
+    """
+    user = (username or "").strip()
+    if not user:
+        raise RuntimeError("Proxy username is required")
+    if not password:
+        raise RuntimeError("Proxy password is required")
+    settings = get_settings()
+    cgi = (settings.proxy_cgi_url or "").strip() or "https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi"
+
+    # trust_env=False: never send CGI through squid (that is the 302 failure mode).
+    async with httpx.AsyncClient(timeout=25.0, trust_env=False, follow_redirects=True, verify=False) as client:
+        page = await client.get(cgi)
+        page.raise_for_status()
+        session_id = _extract_session_id(page.text)
+        if not session_id:
+            raise RuntimeError(
+                "Could not read proxy.cgi session id. Check LABWATCH_PROXY_CGI / campus network."
+            )
+        response = await client.post(
+            cgi,
+            data={
+                "sessionid": session_id,
+                "action": "Validate",
+                "userid": user,
+                "pass": password,
+            },
+        )
         response.raise_for_status()
-        try:
-            rows = response.json()
-        except Exception as exc:  # noqa: BLE001
-            if proxy:
-                raise RuntimeError("GitHub fetch did not return JSON. Check proxy username and password.") from exc
-            raise RuntimeError("GitHub fetch did not return JSON over direct connection.") from exc
+        body = response.text or ""
+
+    low = body.lower()
+    if "logged in successfully" in low or "already logged in" in low:
+        logger.info("Campus proxy.cgi login ok for user=%s", user)
+        return session_id
+    if "does'not match" in low or "does not match" in low or ("invalid" in low and "password" in low):
+        raise RuntimeError("Campus proxy rejected the login. Check username and password.")
+    if "session expired" in low:
+        raise RuntimeError("Campus proxy session expired; try Fetch again.")
+    raise RuntimeError(
+        "Campus proxy login failed (unexpected proxy.cgi response). "
+        "Confirm IITD kerberos id/password and proxy category (proxy21)."
+    )
+
+
+async def _http_get_releases(url: str, headers: dict[str, str], limit: int, proxy: str | None) -> list[dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(timeout=25.0, proxy=proxy, follow_redirects=True, trust_env=False) as client:
+            response = await client.get(url, headers=headers, params={"per_page": max(limit, 10)})
+    except httpx.ProxyError as exc:
+        msg = str(exc)
+        if "302" in msg or "Moved Temporarily" in msg or "proxy.cgi" in msg.lower():
+            raise RuntimeError(
+                "Campus proxy returned 302 (not logged in). "
+                "Enter IITD proxy username/password so LabWatch can complete proxy.cgi login."
+            ) from exc
+        raise RuntimeError(f"Campus proxy CONNECT failed: {redact_secrets(msg)}") from exc
+    content_type = response.headers.get("content-type", "")
+    location = response.headers.get("location", "")
+    if response.status_code == 302 or "proxy.cgi" in location.lower():
+        raise RuntimeError(
+            "Campus proxy returned 302 to proxy.cgi — login required. "
+            "Use Updates proxy username/password (IITD kerberos)."
+        )
+    if response.status_code in {401, 407} or "html" in content_type.lower():
+        if proxy:
+            raise RuntimeError(
+                "Campus proxy rejected the request (HTML/407). "
+                "Re-enter IITD proxy credentials and Fetch again."
+            )
+        raise RuntimeError("GitHub returned a non-JSON response (direct fetch blocked).")
+    response.raise_for_status()
+    try:
+        rows = response.json()
+    except Exception as exc:  # noqa: BLE001
+        if proxy:
+            raise RuntimeError("GitHub fetch did not return JSON. Check proxy username and password.") from exc
+        raise RuntimeError("GitHub fetch did not return JSON over direct connection.") from exc
     if not isinstance(rows, list):
         raise ValueError("GitHub releases response was not a list")
     releases = []
@@ -212,7 +290,10 @@ async def fetch_github_releases(
     }
     user = (proxy_user or "").strip()
     if user:
-        proxy = _proxy_url(user, proxy_password)
+        # IITD squid: CGI login binds this host IP; do NOT put Basic Auth in the proxy URL
+        # (that path gets CONNECT 302 → proxy.cgi).
+        await campus_proxy_cgi_login(user, proxy_password or "")
+        proxy = _proxy_url(None, None) or CAMPUS_PROXY
         releases = await _http_get_releases(url, headers, limit, proxy)
     else:
         # Prefer direct GitHub; only fall back to env proxy (no credentials) if configured.

@@ -123,6 +123,12 @@ class Agent(Base, TimestampMixin):
     registration_token_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("registration_tokens.id", ondelete="SET NULL"), nullable=True
     )
+    # Server-pushed self-update (delivered on next heartbeat as commands[])
+    update_requested_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    update_status: Mapped[str] = mapped_column(String(32), default="")  # queued|sent|ok|error
+    update_command_id: Mapped[str] = mapped_column(String(64), default="")
+    update_message: Mapped[str] = mapped_column(String(512), default="")
+    update_target_version: Mapped[str] = mapped_column(String(32), default="")
 
     machine: Mapped[Machine] = relationship(back_populates="agent")
 

@@ -84,6 +84,13 @@ class RegisterResponse(BaseModel):
     inventory_interval: int
 
 
+class CommandAck(BaseModel):
+    id: str = Field(min_length=8)
+    status: str = Field(default="ok")  # ok | error
+    message: str = ""
+    agent_version: str = ""
+
+
 async def _valid_token(db, raw: str) -> RegistrationToken:
     tokens = (await db.execute(select(RegistrationToken).where(RegistrationToken.revoked.is_(False)))).scalars().all()
     now = utcnow()
@@ -317,8 +324,42 @@ async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
                     details={"source": "collector"},
                 )
             )
+    commands: list[dict] = []
+    if (agent.update_status or "") == "queued" and agent.update_command_id:
+        commands.append(
+            {
+                "id": agent.update_command_id,
+                "type": "self_update",
+                "pack_path": "/agent-pack.tgz",
+                "target_version": agent.update_target_version or "",
+            }
+        )
+        agent.update_status = "sent"
+        agent.update_message = "command delivered"
     await db.commit()
-    return {"ok": True, "server_time": utcnow().isoformat(), "status": machine.status}
+    return {
+        "ok": True,
+        "server_time": utcnow().isoformat(),
+        "status": machine.status,
+        "commands": commands,
+    }
+
+
+@router.post("/commands/ack")
+async def ack_command(body: CommandAck, db: DbDep, agent: CurrentAgent):
+    if not agent.update_command_id or body.id != agent.update_command_id:
+        return {"ok": True, "ignored": True}
+    status_norm = (body.status or "").strip().lower()
+    if status_norm in {"ok", "success", "done"}:
+        agent.update_status = "ok"
+        if body.agent_version:
+            agent.agent_version = body.agent_version[:32]
+        agent.update_message = (body.message or "updated")[:512]
+    else:
+        agent.update_status = "error"
+        agent.update_message = (body.message or status_norm or "update failed")[:512]
+    await db.commit()
+    return {"ok": True, "ignored": False}
 
 
 @router.post("/inventory")

@@ -1,10 +1,54 @@
 from datetime import timedelta
+import logging
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import AgentLog, AuditLog, GpuMetricSample, MetricHourly, MetricSample, utcnow
+from app.models import (
+    AgentLog,
+    AuditLog,
+    GpuMetricSample,
+    MetricHourly,
+    MetricSample,
+    RegistrationToken,
+    utcnow,
+)
+
+logger = logging.getLogger("labwatch.retention")
+
+
+async def prune_unused_registration_tokens(db: AsyncSession) -> int:
+    """Revoke and delete registration tokens that were never used after N days."""
+    settings = get_settings()
+    days = settings.unused_registration_token_days
+    if days <= 0:
+        return 0
+    cut = utcnow() - timedelta(days=days)
+    rows = (
+        await db.execute(
+            select(RegistrationToken).where(
+                RegistrationToken.use_count == 0,
+                RegistrationToken.created_at < cut,
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return 0
+    for row in rows:
+        row.revoked = True
+    await db.flush()
+    deleted = (
+        await db.execute(
+            delete(RegistrationToken).where(
+                RegistrationToken.use_count == 0,
+                RegistrationToken.created_at < cut,
+            )
+        )
+    ).rowcount or 0
+    if deleted:
+        logger.info("Auto-deleted %s unused registration token(s) older than %s day(s)", deleted, days)
+    return deleted
 
 
 async def rollup_and_prune(db: AsyncSession) -> dict[str, int]:
@@ -79,6 +123,7 @@ async def rollup_and_prune(db: AsyncSession) -> dict[str, int]:
     if settings.audit_log_retention_days:
         cut = now - timedelta(days=settings.audit_log_retention_days)
         deleted_audit = (await db.execute(delete(AuditLog).where(AuditLog.created_at < cut))).rowcount or 0
+    deleted_unused_tokens = await prune_unused_registration_tokens(db)
     await db.flush()
     return {
         "hourly_written": written,
@@ -87,4 +132,5 @@ async def rollup_and_prune(db: AsyncSession) -> dict[str, int]:
         "deleted_hourly": deleted_hourly,
         "deleted_agent_logs": deleted_agent_logs,
         "deleted_audit": deleted_audit,
+        "deleted_unused_tokens": deleted_unused_tokens,
     }

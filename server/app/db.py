@@ -98,6 +98,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_lab_columns)
         await conn.run_sync(ensure_hardware_column_types)
         await conn.run_sync(ensure_memory_extra_column)
+        await conn.run_sync(ensure_agent_update_columns)
 
 
 def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
@@ -261,3 +262,31 @@ def ensure_memory_extra_column(sync_conn) -> None:
         return
     sql_type = "JSONB" if sync_conn.dialect.name == "postgresql" else "JSON"
     sync_conn.execute(text(f"ALTER TABLE memory_summaries ADD COLUMN extra {sql_type}"))
+
+
+def ensure_agent_update_columns(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "agents" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("agents")}
+    if sync_conn.dialect.name == "postgresql":
+        types = {
+            "update_requested_at": "TIMESTAMPTZ",
+            "update_status": "VARCHAR(32) DEFAULT ''",
+            "update_command_id": "VARCHAR(64) DEFAULT ''",
+            "update_message": "VARCHAR(512) DEFAULT ''",
+            "update_target_version": "VARCHAR(32) DEFAULT ''",
+        }
+    else:
+        types = {
+            "update_requested_at": "DATETIME",
+            "update_status": "VARCHAR(32) DEFAULT ''",
+            "update_command_id": "VARCHAR(64) DEFAULT ''",
+            "update_message": "VARCHAR(512) DEFAULT ''",
+            "update_target_version": "VARCHAR(32) DEFAULT ''",
+        }
+    for name, sql_type in types.items():
+        if name not in existing:
+            sync_conn.execute(text(f"ALTER TABLE agents ADD COLUMN {name} {sql_type}"))

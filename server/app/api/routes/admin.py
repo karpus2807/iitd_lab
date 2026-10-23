@@ -1,9 +1,11 @@
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from app import __version__ as server_version
 from app.api.deps import AdminUser, DbDep, write_audit
 from app.config import get_settings
 from app.enums import AgentStatus
@@ -12,6 +14,27 @@ from app.schemas.api import RegistrationTokenCreate, UserCreate, UserOut, UserUp
 from app.security import hash_password, hash_token, new_secret
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# Agents below this version ignore heartbeat commands[] — one manual reinstall first.
+REMOTE_UPDATE_MIN = (1, 1, 40)
+
+
+def _version_tuple(value: str) -> tuple[int, int, int]:
+    parts: list[int] = []
+    for piece in (value or "").strip().lstrip("v").split("."):
+        digits = "".join(c for c in piece if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
+
+
+def _remote_update_capable(agent_version: str) -> bool:
+    return _version_tuple(agent_version) >= REMOTE_UPDATE_MIN
+
+
+class AgentUpdateBody(BaseModel):
+    agent_ids: list[UUID] = Field(default_factory=list)
 
 
 async def _active_admin_count(db) -> int:
@@ -130,6 +153,7 @@ async def create_token(body: RegistrationTokenCreate, db: DbDep, admin: AdminUse
 
 @router.get("/tokens")
 async def list_tokens(db: DbDep, admin: AdminUser):
+    settings = get_settings()
     rows = (await db.execute(select(RegistrationToken).order_by(RegistrationToken.created_at.desc()))).scalars().all()
     return [
         {
@@ -142,6 +166,7 @@ async def list_tokens(db: DbDep, admin: AdminUser):
             "use_count": r.use_count,
             "revoked": r.revoked,
             "created_at": r.created_at,
+            "unused_auto_delete_days": settings.unused_registration_token_days,
         }
         for r in rows
     ]
@@ -167,14 +192,84 @@ async def list_agents(db: DbDep, admin: AdminUser):
             "agent_id": a.agent_public_id,
             "machine_id": str(m.id),
             "hostname": m.hostname,
+            "inventory_id": m.inventory_id or "",
             "status": a.status,
             "health": a.health,
             "version": a.agent_version,
             "last_heartbeat_at": a.last_heartbeat_at,
             "approved": m.approved,
+            "update_status": a.update_status or "",
+            "update_message": a.update_message or "",
+            "update_target_version": a.update_target_version or "",
+            "update_requested_at": a.update_requested_at,
+            "remote_update_capable": _remote_update_capable(a.agent_version or ""),
         }
         for a, m in rows
     ]
+
+
+def _queue_agent_update(agent: Agent, target_version: str) -> None:
+    agent.update_status = "queued"
+    agent.update_requested_at = utcnow()
+    agent.update_command_id = str(uuid4())
+    agent.update_message = ""
+    agent.update_target_version = target_version
+
+
+@router.post("/agents/update")
+async def queue_agent_updates(body: AgentUpdateBody, db: DbDep, admin: AdminUser, request: Request):
+    if not body.agent_ids:
+        raise HTTPException(400, "Select at least one agent")
+    target = server_version
+    queued: list[str] = []
+    skipped: list[dict] = []
+    for agent_id in body.agent_ids:
+        agent = await db.get(Agent, agent_id)
+        if not agent:
+            skipped.append({"id": str(agent_id), "reason": "not_found"})
+            continue
+        if agent.status == AgentStatus.REVOKED.value:
+            skipped.append({"id": str(agent_id), "reason": "revoked"})
+            continue
+        _queue_agent_update(agent, target)
+        queued.append(str(agent.id))
+    if not queued:
+        raise HTTPException(400, "No agents queued for update")
+    await write_audit(
+        db,
+        "agent.update_queue",
+        user=admin,
+        details={"queued": queued, "skipped": skipped, "target_version": target},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True, "queued": queued, "skipped": skipped, "target_version": target}
+
+
+@router.post("/agents/{agent_id}/update")
+async def queue_one_agent_update(agent_id: UUID, db: DbDep, admin: AdminUser, request: Request):
+    agent = await db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    if agent.status == AgentStatus.REVOKED.value:
+        raise HTTPException(400, "Agent is revoked")
+    target = server_version
+    _queue_agent_update(agent, target)
+    await write_audit(
+        db,
+        "agent.update_queue",
+        user=admin,
+        machine_id=agent.machine_id,
+        details={"queued": [str(agent.id)], "target_version": target},
+        request=request,
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "queued": [str(agent.id)],
+        "target_version": target,
+        "remote_update_capable": _remote_update_capable(agent.agent_version or ""),
+    }
 
 
 @router.post("/agents/{agent_id}/revoke")

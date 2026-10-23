@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     metrics_hourly_retention_days: int = Field(default=365, alias="METRICS_HOURLY_RETENTION_DAYS")
     audit_log_retention_days: int = Field(default=0, alias="AUDIT_LOG_RETENTION_DAYS")
     agent_log_retention_days: int = Field(default=90, alias="AGENT_LOG_RETENTION_DAYS")
+    # Unused registration tokens (use_count=0) are revoked+deleted after this many days.
+    unused_registration_token_days: int = Field(default=2, alias="UNUSED_REGISTRATION_TOKEN_DAYS")
 
     smtp_host: str = Field(default="", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")
@@ -57,6 +59,11 @@ class Settings(BaseSettings):
     http_proxy: str = Field(default="", alias="HTTP_PROXY")
     https_proxy: str = Field(default="", alias="HTTPS_PROXY")
     no_proxy: str = Field(default="localhost,127.0.0.1,db,web,api", alias="NO_PROXY")
+    # IITD squid uses CGI session login (not HTTP Basic). Login page must be fetched without proxy.
+    proxy_cgi_url: str = Field(
+        default="https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi",
+        alias="LABWATCH_PROXY_CGI",
+    )
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -82,6 +82,26 @@ class AgentClient:
         r.raise_for_status()
         return r.json()
 
+    def download_pack(self, pack_path: str = "/agent-pack.tgz") -> bytes:
+        path = pack_path if pack_path.startswith("/") else f"/{pack_path}"
+        r = self._request("GET", path)
+        r.raise_for_status()
+        return r.content
+
+    def ack_command(self, command_id: str, status: str, message: str = "", agent_version: str = "") -> dict[str, Any]:
+        r = self._request(
+            "POST",
+            "/api/agents/commands/ack",
+            json={
+                "id": command_id,
+                "status": status,
+                "message": message,
+                "agent_version": agent_version,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
     def inventory(self, payload: dict[str, Any]) -> dict[str, Any]:
         r = self._request("POST", "/api/agents/inventory", json=payload)
         r.raise_for_status()
