@@ -11,3 +11,6 @@ Refresh (on a machine that can reach PyPI, often hobbit with proxy.cgi):
 ```
 
 Covers CPython 3.8–3.14 on Linux x86_64, Linux aarch64 (Jetson), and Windows amd64.
+
+`pysqlite3-binary` is **optional** (see `requirements-optional-linux.txt`). Core
+`requirements.txt` installs on any machine even when that wheel is missing.

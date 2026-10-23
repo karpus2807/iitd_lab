@@ -1,0 +1,3 @@
+# Optional Linux-only fallback when Python was built without _sqlite3.
+# Installers attempt this after core requirements; failure must not abort install.
+pysqlite3-binary>=0.5.4

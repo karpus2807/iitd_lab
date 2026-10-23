@@ -80,6 +80,9 @@ async def agent_pack():
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(src, arcname="labwatch_agent")
         tar.add(req, arcname="requirements.txt")
+        optional = agent / "requirements-optional-linux.txt"
+        if optional.is_file():
+            tar.add(optional, arcname="requirements-optional-linux.txt")
         wheel_count = _add_wheels(tar, wheels)
         if wheel_count == 0:
             # Marker so installers can give a clear error instead of hitting PyPI.

@@ -90,6 +90,17 @@ def apply_pack(pack_bytes: bytes, *, target_version: str = "") -> str:
             check=True,
             timeout=600,
         )
+        # Optional Linux sqlite fallback — never fail the update if missing.
+        optional = extract / "requirements-optional-linux.txt"
+        if optional.is_file() and os.name != "nt":
+            try:
+                subprocess.run(
+                    [*pip_base, "-r", str(optional)],
+                    check=False,
+                    timeout=300,
+                )
+            except Exception:
+                logger.warning("Optional pysqlite3-binary install skipped during self-update")
         _copy_tree(agent_src, prefix / "labwatch_agent")
         logger.info("Agent files updated to %s under %s", new_version, prefix)
         return new_version

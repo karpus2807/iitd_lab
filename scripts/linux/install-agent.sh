@@ -70,8 +70,7 @@ _ensure_host_tools() {
 }
 
 _python_ok() {
-  # 3.8+ required. sqlite3 is preferred but not mandatory anymore (pysqlite3-binary
-  # ships in the agent wheelhouse for broken /usr/local builds).
+  # 3.8+ required.
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
 }
 
@@ -79,36 +78,49 @@ _python_has_sqlite() {
   "$1" -c 'import sqlite3; sqlite3.connect(":memory:").close()' 2>/dev/null
 }
 
-_find_python() {
+_pick_python_from_list() {
+  # Prefer interpreters that already have working stdlib sqlite3.
+  local prefer_sqlite="$1"
+  shift
+  local path
+  for path in "$@"; do
+    [[ -x "$path" ]] || continue
+    _python_ok "$path" || continue
+    if [[ "$prefer_sqlite" == "1" ]]; then
+      _python_has_sqlite "$path" || continue
+    fi
+    echo "$path"
+    return 0
+  done
+  return 1
+}
+
+_candidate_paths() {
   local c path
-  # 1) Distro interpreters only (/usr/bin) — never trust PATH=/usr/local first.
   for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
     path="/usr/bin/$c"
-    [[ -x "$path" ]] || continue
-    if _python_ok "$path"; then
-      echo "$path"
-      return 0
-    fi
+    [[ -x "$path" ]] && echo "$path"
   done
-  # 2) Anything else on PATH that is NOT under /usr/local
   for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
     path="$(command -v "$c" 2>/dev/null || true)"
     [[ -n "$path" ]] || continue
     [[ "$path" == /usr/local/* ]] && continue
-    if _python_ok "$path"; then
-      echo "$path"
-      return 0
-    fi
+    [[ "$path" == /usr/bin/* ]] && continue
+    echo "$path"
   done
-  # 3) Last resort: /usr/local (may lack _sqlite3; agent falls back to pysqlite3-binary)
   for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
     path="/usr/local/bin/$c"
-    [[ -x "$path" ]] || continue
-    if _python_ok "$path"; then
-      echo "$path"
-      return 0
-    fi
+    [[ -x "$path" ]] && echo "$path"
   done
+}
+
+_find_python() {
+  local -a paths=()
+  mapfile -t paths < <(_candidate_paths)
+  # 1) Any 3.8+ with working sqlite3
+  _pick_python_from_list 1 "${paths[@]}" && return 0
+  # 2) Any 3.8+ (optional pysqlite3-binary later)
+  _pick_python_from_list 0 "${paths[@]}" && return 0
   return 1
 }
 
@@ -452,6 +464,17 @@ fi
 # Install only from LabWatch-bundled wheels — no PyPI / no campus proxy.
 "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -U pip setuptools wheel
 "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -r "$AGENT_SRC/requirements.txt"
+# Optional sqlite fallback — never abort install if this wheel is missing for this Python/arch.
+if ! "$PREFIX/venv/bin/python" -c 'import sqlite3; sqlite3.connect(":memory:").close()' 2>/dev/null; then
+  echo "NOTE: stdlib sqlite3 missing — trying optional pysqlite3-binary from wheelhouse…"
+  if [[ -f "$AGENT_SRC/requirements-optional-linux.txt" ]]; then
+    "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -r "$AGENT_SRC/requirements-optional-linux.txt" \
+      || echo "WARNING: pysqlite3-binary unavailable for this Python/arch. Prefer: apt install python3 python3-venv"
+  else
+    "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" "pysqlite3-binary>=0.5.4" \
+      || echo "WARNING: pysqlite3-binary unavailable for this Python/arch. Prefer: apt install python3 python3-venv"
+  fi
+fi
 mkdir -p "$PREFIX/labwatch_agent"
 cp -a "$AGENT_SRC/labwatch_agent/." "$PREFIX/labwatch_agent/"
 cat > "$PREFIX/run.py" <<'PY'

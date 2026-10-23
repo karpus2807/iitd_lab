@@ -38,8 +38,22 @@ for py_abi in 38:cp38 39:cp39 310:cp310 311:cp311 312:cp312 313:cp313 314:cp314;
   download win_amd64 "$py" "$abi"
 done
 
-"$PIP" download pip setuptools wheel tomli exceptiongroup "pysqlite3-binary>=0.5.4" -d "$DEST" || true
+"$PIP" download pip setuptools wheel tomli exceptiongroup -d "$DEST" || true
 "$PIP" download -r "$REQ" -d "$DEST" --only-binary=:all: || true
+# Optional Linux sqlite fallback — all common CPython ABIs / arches (never required at install).
+for py_abi in 38:cp38 39:cp39 310:cp310 311:cp311 312:cp312 313:cp313 314:cp314; do
+  py="${py_abi%%:*}"
+  abi="${py_abi##*:}"
+  for plat in manylinux2014_x86_64 manylinux2014_aarch64; do
+    "$PIP" download "pysqlite3-binary>=0.5.4" -d "$DEST" \
+      --platform "$plat" --python-version "$py" --implementation cp --abi "$abi" \
+      --only-binary=:all: 2>/dev/null || true
+  done
+done
+OPTIONAL="$ROOT/agent/requirements-optional-linux.txt"
+if [[ -f "$OPTIONAL" ]]; then
+  "$PIP" download -r "$OPTIONAL" -d "$DEST" --only-binary=:all: 2>/dev/null || true
+fi
 
 if [[ ! -f "$DEST/get-pip.py" ]]; then
   echo "Fetching get-pip.py for offline venv bootstrap"

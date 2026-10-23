@@ -2,5 +2,5 @@ httpx>=0.28.0
 psutil>=6.1.0
 pydantic>=2.10.0
 tomli>=2.0.1; python_version < "3.11"
-# Fallback when stdlib was built without _sqlite3 (common /usr/local source builds).
-pysqlite3-binary>=0.5.4; platform_system == "Linux"
+# pysqlite3-binary is OPTIONAL (Linux only). Installers try it when stdlib
+# _sqlite3 is missing; never hard-require it so any machine/Python can install.
