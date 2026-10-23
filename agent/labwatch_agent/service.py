@@ -129,7 +129,15 @@ def _handle_commands(client: AgentClient, commands: list) -> bool:
         pack_path = str(cmd.get("pack_path") or "/agent-pack.tgz")
         logger.info("Self-update command received id=%s target=%s", cmd_id, target or "?")
         try:
+            try:
+                client.ack_command(cmd_id, "downloading", f"downloading pack ({target or pack_path})", __version__)
+            except Exception:
+                pass
             pack = client.download_pack(pack_path)
+            try:
+                client.ack_command(cmd_id, "applying", f"installing pack ({target or 'latest'})", __version__)
+            except Exception:
+                pass
             new_ver = apply_pack(pack, target_version=target)
             client.ack_command(cmd_id, "ok", f"updated to {new_ver}", new_ver)
             logger.info("Self-update applied (%s); scheduling restart", new_ver)

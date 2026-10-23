@@ -29,6 +29,26 @@ def _version_tuple(value: str) -> tuple[int, int, int]:
     return parts[0], parts[1], parts[2]
 
 
+_UPDATE_ACTIVE = frozenset({"queued", "sent", "running", "downloading", "applying"})
+_UPDATE_PROGRESS = {
+    "queued": 12,
+    "sent": 35,
+    "downloading": 55,
+    "running": 70,
+    "applying": 85,
+    "ok": 100,
+    "error": 0,
+    "cancelled": 0,
+}
+
+
+def _update_progress(status: str) -> int | None:
+    key = (status or "").strip().lower()
+    if not key:
+        return None
+    return _UPDATE_PROGRESS.get(key)
+
+
 def _remote_update_capable(agent_version: str) -> bool:
     return _version_tuple(agent_version) >= REMOTE_UPDATE_MIN
 
@@ -210,20 +230,81 @@ async def list_agents(db: DbDep, admin: AdminUser):
                 "update_message": a.update_message or "",
                 "update_target_version": a.update_target_version or "",
                 "update_requested_at": a.update_requested_at,
+                "update_progress": _update_progress(a.update_status or ""),
+                "update_active": (a.update_status or "").lower() in _UPDATE_ACTIVE,
+                "update_failed": (a.update_status or "").lower() in {"error", "cancelled"},
                 "remote_update_capable": _remote_update_capable(ver),
                 "update_available": update_available,
                 "up_to_date": up_to_date,
                 "current_version": current,
             }
         )
-    return {"current_version": current, "agents": agents}
+    active = [x for x in agents if x["update_active"]]
+    failed = [x for x in agents if x["update_failed"]]
+    finished_ok = [x for x in agents if (x.get("update_status") or "").lower() == "ok"]
+    job_total = len(active) + len(failed) + len(
+        [x for x in finished_ok if x.get("update_requested_at")]
+    )
+    # Live job snapshot for the Admin Agents progress panel.
+    tracked = active + failed
+    if active or failed:
+        pcts = [int(x["update_progress"] or 0) for x in active]
+        if active:
+            progress = round(sum(pcts) / len(pcts)) if pcts else 0
+        elif failed and not active:
+            progress = 0
+        else:
+            progress = 0
+        done_n = len([x for x in finished_ok if x.get("update_target_version")])
+        update_job = {
+            "active": bool(active),
+            "state": "error" if failed and not active else ("running" if active else "idle"),
+            "progress": progress if active else (100 if not failed else 0),
+            "queued": len([x for x in active if x["update_status"] == "queued"]),
+            "in_flight": len(active),
+            "failed": len(failed),
+            "done": done_n,
+            "total": max(len(tracked), job_total),
+            "target_version": next(
+                (x.get("update_target_version") for x in active + failed + finished_ok if x.get("update_target_version")),
+                current,
+            ),
+            "message": (
+                f"{len(active)} updating · {len(failed)} failed"
+                if active or failed
+                else ""
+            ),
+            "errors": [
+                {
+                    "id": x["id"],
+                    "hostname": x["hostname"],
+                    "message": x.get("update_message") or x.get("update_status") or "error",
+                }
+                for x in failed[:20]
+            ],
+        }
+    else:
+        update_job = {
+            "active": False,
+            "state": "idle",
+            "progress": None,
+            "queued": 0,
+            "in_flight": 0,
+            "failed": 0,
+            "done": 0,
+            "total": 0,
+            "target_version": current,
+            "message": "",
+            "errors": [],
+        }
+    return {"current_version": current, "agents": agents, "update_job": update_job}
 
 
 def _queue_agent_update(agent: Agent, target_version: str) -> None:
     agent.update_status = "queued"
     agent.update_requested_at = utcnow()
     agent.update_command_id = str(uuid4())
-    agent.update_message = ""
+    agent.update_message = "waiting for agent heartbeat"
     agent.update_target_version = target_version
 
 

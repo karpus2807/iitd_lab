@@ -335,7 +335,7 @@ async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
             }
         )
         agent.update_status = "sent"
-        agent.update_message = "command delivered"
+        agent.update_message = "command delivered — agent downloading/applying"
     await db.commit()
     return {
         "ok": True,
@@ -355,6 +355,13 @@ async def ack_command(body: CommandAck, db: DbDep, agent: CurrentAgent):
         if body.agent_version:
             agent.agent_version = body.agent_version[:32]
         agent.update_message = (body.message or "updated")[:512]
+    elif status_norm in {"running", "progress", "downloading", "applying", "sent"}:
+        # Intermediate progress — keep command open until ok/error.
+        mapped = status_norm if status_norm in {"downloading", "applying", "sent"} else "running"
+        agent.update_status = mapped
+        agent.update_message = (body.message or mapped)[:512]
+        if body.agent_version:
+            agent.agent_version = body.agent_version[:32]
     else:
         agent.update_status = "error"
         agent.update_message = (body.message or status_norm or "update failed")[:512]

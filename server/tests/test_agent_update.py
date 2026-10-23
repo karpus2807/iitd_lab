@@ -3,7 +3,13 @@
 from httpx import AsyncClient
 
 
-async def _register_agent(client: AsyncClient, auth_headers: dict, hostname: str = "upd-host"):
+async def _register_agent(
+    client: AsyncClient,
+    auth_headers: dict,
+    hostname: str = "upd-host",
+    *,
+    agent_version: str = "1.1.46",
+):
     enroll = await client.post(
         "/api/agents/enroll",
         headers=auth_headers,
@@ -16,7 +22,7 @@ async def _register_agent(client: AsyncClient, auth_headers: dict, hostname: str
         json={
             "registration_token": token,
             "agent_uuid": f"agent-uuid-{hostname}",
-            "agent_version": "1.1.46",
+            "agent_version": agent_version,
             "inventory_id": f"INV/{hostname}",
             "identity": {
                 "hostname": hostname,
@@ -38,11 +44,13 @@ async def _register_agent(client: AsyncClient, auth_headers: dict, hostname: str
 
 
 async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_headers: dict):
-    enrolled = await _register_agent(client, auth_headers, "upd-a")
+    agents0 = await client.get("/api/admin/agents", headers=auth_headers)
+    current = agents0.json()["current_version"]
+    enrolled = await _register_agent(client, auth_headers, "upd-a", agent_version=current)
     agents = await client.get("/api/admin/agents", headers=auth_headers)
     assert agents.status_code == 200
     payload = agents.json()
-    assert payload["current_version"]
+    assert payload["current_version"] == current
     row = next(a for a in payload["agents"] if a["agent_id"] == enrolled["agent_id"])
     assert row["inventory_id"] == "INV/upd-a"
     assert row["remote_update_capable"] is True
@@ -80,6 +88,20 @@ async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_hea
     )
     assert hb2.json()["commands"] == []
 
+    mid = await client.post(
+        "/api/agents/commands/ack",
+        headers=enrolled["headers"],
+        json={"id": cmd["id"], "status": "downloading", "message": "downloading pack", "agent_version": "1.1.46"},
+    )
+    assert mid.status_code == 200
+    agents_mid = await client.get("/api/admin/agents", headers=auth_headers)
+    payload_mid = agents_mid.json()
+    row_mid = next(a for a in payload_mid["agents"] if a["id"] == row["id"])
+    assert row_mid["update_status"] == "downloading"
+    assert row_mid["update_progress"] == 55
+    assert row_mid["update_active"] is True
+    assert payload_mid["update_job"]["active"] is True
+
     ack = await client.post(
         "/api/agents/commands/ack",
         headers=enrolled["headers"],
@@ -91,6 +113,7 @@ async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_hea
     agents2 = await client.get("/api/admin/agents", headers=auth_headers)
     row2 = next(a for a in agents2.json()["agents"] if a["id"] == row["id"])
     assert row2["update_status"] == "ok"
+    assert row2["update_progress"] == 100
     assert row2["version"] == "1.1.46"
 
 

@@ -1,8 +1,9 @@
 import type { FormEvent } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ago, api } from '../api'
 import { currentUser } from '../api'
+import ProgressPanel from '../components/ProgressPanel'
 import Infra from './Infra'
 import Updates from './Updates'
 
@@ -207,16 +208,20 @@ function Tokens() {
 function Agents() {
   const [rows, setRows] = useState<any[]>([])
   const [currentVersion, setCurrentVersion] = useState('')
+  const [updateJob, setUpdateJob] = useState<any>(null)
   const [secret, setSecret] = useState('')
   const [q, setQ] = useState('')
   const [selected, setSelected] = useState<Record<string, boolean>>({})
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [trackIds, setTrackIds] = useState<string[]>([])
+  const [sessionLog, setSessionLog] = useState('')
 
   function load() {
-    api('/api/admin/agents').then((data) => {
+    return api('/api/admin/agents').then((data) => {
       const list = Array.isArray(data) ? data : (data.agents || [])
       setCurrentVersion(Array.isArray(data) ? '' : (data.current_version || ''))
+      setUpdateJob(Array.isArray(data) ? null : (data.update_job || null))
       setRows(list)
       setSelected((prev) => {
         const next: Record<string, boolean> = {}
@@ -225,9 +230,12 @@ function Agents() {
         }
         return next
       })
+      return list as any[]
     })
   }
-  useEffect(load, [])
+  useEffect(() => {
+    void load()
+  }, [])
 
   const filtered = rows.filter((a) => {
     const needle = q.trim().toLowerCase()
@@ -239,6 +247,66 @@ function Agents() {
   })
   const selectedIds = filtered.filter((a) => selected[a.id]).map((a) => a.id)
   const allFilteredSelected = filtered.length > 0 && filtered.every((a) => selected[a.id])
+
+  const tracked = useMemo(() => {
+    if (!trackIds.length) return rows.filter((a) => a.update_active || a.update_failed)
+    const set = new Set(trackIds)
+    return rows.filter((a) => set.has(a.id))
+  }, [rows, trackIds])
+
+  const batchProgress = useMemo(() => {
+    if (!tracked.length) return null
+    const active = tracked.filter((a) => a.update_active)
+    const failed = tracked.filter((a) => a.update_failed || (a.update_status || '').toLowerCase() === 'error')
+    const ok = tracked.filter((a) => (a.update_status || '').toLowerCase() === 'ok')
+    const pcts = tracked.map((a) => {
+      if (typeof a.update_progress === 'number') return a.update_progress
+      const st = (a.update_status || '').toLowerCase()
+      if (st === 'ok') return 100
+      if (st === 'error' || st === 'cancelled') return 0
+      if (st === 'applying') return 85
+      if (st === 'running' || st === 'downloading') return 55
+      if (st === 'sent') return 35
+      if (st === 'queued') return 12
+      return 0
+    })
+    const progress = Math.round(pcts.reduce((s, n) => s + n, 0) / pcts.length)
+    const lines = tracked.map((a) => {
+      const st = a.update_status || '—'
+      const pct = typeof a.update_progress === 'number' ? `${a.update_progress}%` : ''
+      const msg = a.update_message ? ` — ${a.update_message}` : ''
+      return `${a.hostname || a.agent_id}: ${st}${pct ? ` ${pct}` : ''}${msg}`
+    })
+    const stillActive = active.length > 0
+    const state = failed.length && !stillActive ? 'error' : stillActive ? 'running' : ok.length ? 'ok' : 'idle'
+    return {
+      active: stillActive,
+      progress,
+      state,
+      failed: failed.length,
+      ok: ok.length,
+      total: tracked.length,
+      message: stillActive
+        ? `Updating ${active.length}/${tracked.length} to ${currentVersion || updateJob?.target_version || '…'}`
+        : failed.length
+          ? `${failed.length} failed · ${ok.length} ok`
+          : ok.length
+            ? `All ${ok.length} updated`
+            : '',
+      log: [...(sessionLog ? [sessionLog] : []), ...lines].join('\n'),
+      errors: failed.map((a) => `${a.hostname}: ${a.update_message || a.update_status || 'error'}`),
+    }
+  }, [tracked, currentVersion, updateJob, sessionLog])
+
+  const pollUpdates = Boolean(batchProgress?.active) || Boolean(updateJob?.active)
+
+  useEffect(() => {
+    if (!pollUpdates) return
+    const id = window.setInterval(() => {
+      void load()
+    }, 2500)
+    return () => window.clearInterval(id)
+  }, [pollUpdates])
 
   function toggleAll(checked: boolean) {
     setSelected((prev) => {
@@ -263,11 +331,25 @@ function Agents() {
         method: 'POST',
         body: JSON.stringify({ agent_ids: ids }),
       })
-      const n = (r.queued || []).length
-      setNotice(`Queued update to ${r.target_version} for ${n} agent${n === 1 ? '' : 's'}. Delivered on next heartbeat.`)
-      load()
+      const queued = r.queued || []
+      const n = queued.length
+      const skipped = r.skipped || []
+      setTrackIds(queued)
+      setSessionLog(
+        [
+          `Queued ${n} agent${n === 1 ? '' : 's'} → ${r.target_version}`,
+          skipped.length ? `Skipped: ${skipped.map((s: any) => `${s.id} (${s.reason})`).join(', ')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      )
+      setNotice(
+        `Queued update to ${r.target_version} for ${n} agent${n === 1 ? '' : 's'}. Progress below updates on each heartbeat.`,
+      )
+      await load()
     } catch (e: any) {
       setNotice(e?.message || 'Update queue failed')
+      setSessionLog(`ERROR: ${e?.message || 'Update queue failed'}`)
     } finally {
       setBusy(false)
     }
@@ -295,7 +377,40 @@ function Agents() {
           Current pack {currentVersion || '…'} · remote update needs agent ≥1.1.40 (one manual reinstall for older hosts).
         </span>
       </div>
-      {notice && <p className="muted" style={{ marginBottom: 8 }}>{notice}</p>}
+      {notice && (
+        <p className={notice.toLowerCase().includes('fail') ? 'err' : 'muted'} style={{ marginBottom: 8 }}>
+          {notice}
+        </p>
+      )}
+      {batchProgress && (batchProgress.active || batchProgress.failed > 0 || batchProgress.ok > 0 || sessionLog) ? (
+        <ProgressPanel
+          showWhenIdle
+          job={{
+            active: batchProgress.active,
+            label: `Agent updates${currentVersion ? ` → ${currentVersion}` : ''}`,
+            message: batchProgress.message,
+            progress: batchProgress.progress,
+            step: batchProgress.active
+              ? `${batchProgress.ok + batchProgress.failed}/${batchProgress.total} finished`
+              : batchProgress.state,
+            state: batchProgress.state,
+            log: batchProgress.log,
+            error: batchProgress.state === 'error' || batchProgress.failed > 0,
+          }}
+        />
+      ) : null}
+      {batchProgress?.errors?.length ? (
+        <div className="card" style={{ marginBottom: 12, borderColor: 'var(--danger, #c44)' }}>
+          <strong>Update errors</strong>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+            {batchProgress.errors.map((line) => (
+              <li key={line} className="err" style={{ marginBottom: 4 }}>
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <div className="card" style={{ padding: 0 }}>
         <table>
           <thead>
@@ -325,77 +440,91 @@ function Agents() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((a) => (
-              <tr key={a.id}>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={!!selected[a.id]}
-                    onChange={(e) => setSelected((prev) => {
-                      const next = { ...prev }
-                      if (e.target.checked) next[a.id] = true
-                      else delete next[a.id]
-                      return next
-                    })}
-                    aria-label={`Select ${a.hostname}`}
-                  />
-                </td>
-                <td>{a.hostname}</td>
-                <td className="mono">{a.inventory_id || '—'}</td>
-                <td className="mono">{a.agent_id}</td>
-                <td>
-                  <span
-                    className="mono agent-ver-pill"
-                    data-state={a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
-                    title={
-                      a.update_available
-                        ? `Update available → ${currentVersion || a.current_version || '?'}`
-                        : a.up_to_date
-                          ? `Up to date (${a.version})`
-                          : 'Version unknown'
-                    }
+            {filtered.map((a) => {
+              const st = (a.update_status || '').toLowerCase()
+              const pct = typeof a.update_progress === 'number' ? a.update_progress : null
+              const failed = a.update_failed || st === 'error'
+              const active = a.update_active
+              return (
+                <tr key={a.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={!!selected[a.id]}
+                      onChange={(e) => setSelected((prev) => {
+                        const next = { ...prev }
+                        if (e.target.checked) next[a.id] = true
+                        else delete next[a.id]
+                        return next
+                      })}
+                      aria-label={`Select ${a.hostname}`}
+                    />
+                  </td>
+                  <td>{a.hostname}</td>
+                  <td className="mono">{a.inventory_id || '—'}</td>
+                  <td className="mono">{a.agent_id}</td>
+                  <td>
+                    <span
+                      className="mono agent-ver-pill"
+                      data-state={a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
+                      title={
+                        a.update_available
+                          ? `Update available → ${currentVersion || a.current_version || '?'}`
+                          : a.up_to_date
+                            ? `Up to date (${a.version})`
+                            : 'Version unknown'
+                      }
+                    >
+                      {a.version || '—'}
+                    </span>
+                  </td>
+                  <td>{a.status} {a.approved ? '' : '(pending)'}</td>
+                  <td
+                    className="agent-update-cell"
+                    data-state={failed ? 'behind' : a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
+                    style={{ fontSize: 12, minWidth: 140 }}
                   >
-                    {a.version || '—'}
-                  </span>
-                </td>
-                <td>{a.status} {a.approved ? '' : '(pending)'}</td>
-                <td
-                  className="agent-update-cell"
-                  data-state={a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
-                  style={{ fontSize: 12 }}
-                >
-                  {a.update_available ? (
-                    <strong>update available</strong>
-                  ) : a.up_to_date ? (
-                    <strong>up to date</strong>
-                  ) : (
-                    <span className="muted">—</span>
-                  )}
-                  {a.update_status ? (
-                    <div className="muted">
-                      {a.update_status}
-                      {a.update_target_version ? ` → ${a.update_target_version}` : ''}
-                      {a.update_message ? ` (${a.update_message})` : ''}
-                    </div>
-                  ) : null}
-                  {!a.remote_update_capable && a.version ? (
-                    <div className="muted" title="Needs one manual install of ≥1.1.40">manual first</div>
-                  ) : null}
-                </td>
-                <td>{ago(a.last_heartbeat_at)}</td>
-                <td className="row-actions">
-                  <button className="btn secondary" disabled={busy} onClick={() => queueUpdate([a.id])}>Update agent</button>
-                  <button className="btn secondary" onClick={async () => { await api(`/api/admin/agents/${a.id}/approve`, { method: 'POST' }); load() }}>Approve</button>
-                  <button className="btn secondary" onClick={async () => { const r = await api(`/api/admin/agents/${a.id}/rotate`, { method: 'POST' }); setSecret(r.agent_secret) }}>Rotate</button>
-                  <button className="btn danger" onClick={async () => { await api(`/api/admin/agents/${a.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
-                  <button className="btn danger" onClick={async () => {
-                    if (!confirm(`Remove ${a.hostname} from LabWatch? This deletes the host on the server.`)) return
-                    await api(`/api/machines/${a.machine_id}`, { method: 'DELETE' })
-                    load()
-                  }}>Remove host</button>
-                </td>
-              </tr>
-            ))}
+                    {a.update_available ? (
+                      <strong>update available</strong>
+                    ) : a.up_to_date ? (
+                      <strong>up to date</strong>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                    {st ? (
+                      <div className={failed ? 'err' : 'muted'} style={{ marginTop: 4 }}>
+                        <strong>{st}</strong>
+                        {pct != null ? ` · ${pct}%` : ''}
+                        {a.update_target_version ? ` → ${a.update_target_version}` : ''}
+                        {a.update_message ? (
+                          <div style={{ marginTop: 2 }}>{a.update_message}</div>
+                        ) : null}
+                        {(active || failed || st === 'ok') && pct != null ? (
+                          <div className={`meter${failed ? ' crit' : ''}`} style={{ marginTop: 6 }}>
+                            <i style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {!a.remote_update_capable && a.version ? (
+                      <div className="muted" title="Needs one manual install of ≥1.1.40">manual first</div>
+                    ) : null}
+                  </td>
+                  <td>{ago(a.last_heartbeat_at)}</td>
+                  <td className="row-actions">
+                    <button className="btn secondary" disabled={busy} onClick={() => queueUpdate([a.id])}>Update agent</button>
+                    <button className="btn secondary" onClick={async () => { await api(`/api/admin/agents/${a.id}/approve`, { method: 'POST' }); load() }}>Approve</button>
+                    <button className="btn secondary" onClick={async () => { const r = await api(`/api/admin/agents/${a.id}/rotate`, { method: 'POST' }); setSecret(r.agent_secret) }}>Rotate</button>
+                    <button className="btn danger" onClick={async () => { await api(`/api/admin/agents/${a.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
+                    <button className="btn danger" onClick={async () => {
+                      if (!confirm(`Remove ${a.hostname} from LabWatch? This deletes the host on the server.`)) return
+                      await api(`/api/machines/${a.machine_id}`, { method: 'DELETE' })
+                      load()
+                    }}>Remove host</button>
+                  </td>
+                </tr>
+              )
+            })}
             {!filtered.length && (
               <tr><td colSpan={9} className="muted" style={{ padding: 16 }}>No agents match.</td></tr>
             )}
