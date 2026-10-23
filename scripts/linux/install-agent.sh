@@ -49,7 +49,11 @@ _pkg_install() {
 
 _ensure_host_tools() {
   local pkgs=()
+  # Always prefer a distro python3 with venv+sqlite for the agent.
   command -v python3 >/dev/null || pkgs+=(python3 python3-venv python3-pip)
+  if command -v apt-get >/dev/null; then
+    pkgs+=(libsqlite3-0)
+  fi
   command -v curl >/dev/null || pkgs+=(curl)
   command -v dmidecode >/dev/null || pkgs+=(dmidecode)
   command -v lspci >/dev/null || pkgs+=(pciutils)
@@ -66,14 +70,29 @@ _ensure_host_tools() {
 }
 
 _python_ok() {
-  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
+  # Need 3.8+ AND a working sqlite3 (_sqlite3). Source builds under /usr/local
+  # often omit libsqlite3-dev and then the agent crashes on import.
+  "$1" -c 'import sys, sqlite3; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
 }
 
 _find_python() {
-  local c
-  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
-    if command -v "$c" >/dev/null && _python_ok "$(command -v "$c")"; then
-      command -v "$c"
+  local c path
+  # Prefer distro Pythons (usually /usr/bin) before /usr/local source builds.
+  # Also prefer 3.12/3.11 over bleeding-edge 3.14 which is often incomplete.
+  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
+    path="$(command -v "$c" 2>/dev/null || true)"
+    [[ -n "$path" ]] || continue
+    if _python_ok "$path"; then
+      echo "$path"
+      return 0
+    fi
+  done
+  # Explicit /usr/bin pass in case PATH puts broken /usr/local first.
+  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
+    path="/usr/bin/$c"
+    [[ -x "$path" ]] || continue
+    if _python_ok "$path"; then
+      echo "$path"
       return 0
     fi
   done
@@ -87,18 +106,19 @@ _ensure_python() {
     echo "$found"
     return 0
   fi
-  echo "Python 3.8+ not found. Trying to install a newer interpreter…"
+  echo "Python 3.8+ with sqlite3 not found. Trying to install a distro interpreter…"
   if command -v apt-get >/dev/null; then
-    _pkg_install python3 python3-venv python3-pip python3.10 python3.10-venv python3.12 python3.12-venv || true
+    _pkg_install libsqlite3-0 python3 python3-venv python3-pip python3.10 python3.10-venv python3.12 python3.12-venv || true
   elif command -v dnf >/dev/null; then
-    _pkg_install python3 python3-pip python3-virtualenv || true
+    _pkg_install sqlite python3 python3-pip python3-virtualenv || true
   fi
   found="$(_find_python || true)"
   if [[ -n "$found" ]]; then
     echo "$found"
     return 0
   fi
-  echo "Need Python 3.8 or newer for the agent (Ubuntu 18.04+, Debian 10+, or Python 3.10 from deadsnakes)."
+  echo "Need Python 3.8+ built WITH sqlite3 (apt install python3 python3-venv)."
+  echo "A /usr/local Python without _sqlite3 will not work — use the distro python3 instead."
   return 1
 }
 
