@@ -36,6 +36,8 @@ IDLE_STATUS = {
     "requested_at": None,
     "finished_at": None,
     "log_tail": "",
+    "progress": None,
+    "step": "",
 }
 
 
@@ -100,7 +102,28 @@ def cache_path() -> Path:
     return data_dir() / "releases-cache.json"
 
 
-def read_status() -> dict[str, Any]:
+def apply_log_path() -> Path:
+    return data_dir() / "update-apply.log"
+
+
+def read_apply_log(max_chars: int = 48000) -> str:
+    """Tail of the host apply log for the live terminal panel."""
+    path = apply_log_path()
+    if not path.is_file():
+        return ""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    if len(raw) > max_chars * 4:
+        raw = raw[-(max_chars * 4) :]
+    text = raw.decode("utf-8", errors="replace")
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+    return text
+
+
+def _read_status_file() -> dict[str, Any]:
     path = status_path()
     if not path.is_file():
         return dict(IDLE_STATUS)
@@ -113,14 +136,46 @@ def read_status() -> dict[str, Any]:
     return dict(IDLE_STATUS)
 
 
+def read_status() -> dict[str, Any]:
+    data = _read_status_file()
+    log = read_apply_log()
+    data["log_tail"] = log
+    data["log"] = log
+    # Infer rough progress if older apply scripts did not write percent.
+    if data.get("progress") is None and (data.get("state") or "") in {"queued", "running"}:
+        msg = (data.get("message") or "").lower()
+        if data.get("state") == "queued":
+            data["progress"] = 5
+            data["step"] = data.get("step") or "queued"
+        elif "fetch" in msg:
+            data["progress"] = 20
+            data["step"] = data.get("step") or "fetch"
+        elif "rebuild" in msg or "compose" in msg or "docker" in msg:
+            data["progress"] = 55
+            data["step"] = data.get("step") or "rebuild"
+        elif "started" in msg:
+            data["progress"] = 12
+            data["step"] = data.get("step") or "start"
+        else:
+            data["progress"] = 35
+            data["step"] = data.get("step") or "running"
+    elif data.get("state") == "ok" and data.get("progress") is None:
+        data["progress"] = 100
+    elif data.get("state") == "error" and data.get("progress") is None:
+        data["progress"] = data.get("progress")  # leave None — UI shows failed
+    return data
+
+
 def write_status(**fields: Any) -> dict[str, Any]:
-    current = read_status()
+    current = _read_status_file()
     current.update(fields)
+    # Do not persist the live log blob inside status JSON.
+    current.pop("log", None)
     path = status_path()
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
     tmp.replace(path)
-    return current
+    return read_status()
 
 
 def write_request(tag: str, username: str) -> None:
@@ -494,6 +549,14 @@ def start_apply(tag: str, username: str, allowed_tags: set[str] | None = None) -
     elif version_tuple(tag) < version_tuple(running):
         action = "downgrade"
     write_request(tag, username)
+    # Truncate previous apply log so the UI terminal starts clean for this run.
+    try:
+        apply_log_path().write_text(
+            f"===== {utcnow_iso()} queue {action} {tag} by {username} =====\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.warning("Could not reset update-apply.log")
     write_status(
         state="queued",
         tag=tag,
@@ -503,11 +566,15 @@ def start_apply(tag: str, username: str, allowed_tags: set[str] | None = None) -
         finished_at=None,
         log_tail="",
         requested_by=username,
+        progress=5,
+        step="queued",
     )
     spawned = spawn_host_apply(tag)
     if not spawned:
         write_status(
             state="queued",
+            progress=8,
+            step="waiting-host",
             message=(
                 f"{action.title()} to {tag} is waiting for the host updater. "
                 "On the server run: sudo ./scripts/linux/install-host-updater.sh"
@@ -576,7 +643,13 @@ def spawn_host_apply(tag: str) -> bool:
             start_status, start_body = _docker_api("POST", f"/v1.41/containers/{cid}/start")
             if start_status >= 300:
                 raise RuntimeError(f"container start failed ({start_status}): {start_body}")
-            write_status(state="running", message=f"Host apply started for {tag}", log_tail=str(cid))
+            write_status(
+                state="running",
+                progress=12,
+                step="host-apply",
+                message=f"Host apply started for {tag}",
+                log_tail=str(cid),
+            )
             logger.info("Spawned host apply container %s", cid)
             return True
         except Exception as exc:  # noqa: BLE001

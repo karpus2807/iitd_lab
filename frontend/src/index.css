@@ -197,6 +197,67 @@ select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
   border-radius: 8px;
 }
 
+.progress-panel { margin-bottom: 16px; }
+.progress-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.progress-step { font-weight: 400; font-size: 13px; }
+.progress-pct { font-size: 14px; color: var(--accent-2); }
+.progress-panel[data-state='error'] .progress-pct { color: var(--crit); }
+.progress-panel[data-state='ok'] .progress-pct { color: var(--online); }
+.progress-msg { margin: 0 0 10px; font-size: 14px; }
+.progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.35s ease;
+}
+.progress-panel[data-state='error'] .progress-fill {
+  background: linear-gradient(90deg, #a33, var(--crit));
+}
+.progress-panel[data-state='ok'] .progress-fill {
+  background: linear-gradient(90deg, #1f7a63, var(--online));
+}
+.progress-track.indeterminate .progress-fill {
+  width: 35% !important;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+.progress-log {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #0a0e12;
+  color: #c8d6e0;
+  border: 1px solid var(--line);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+:root[data-theme='light'] .progress-log {
+  background: #1a222c;
+  color: #e7eef5;
+}
+
 .build-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

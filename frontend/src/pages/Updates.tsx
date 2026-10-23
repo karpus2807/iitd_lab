@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ago, api, currentUser } from '../api'
+import ProgressPanel from '../components/ProgressPanel'
 
 type Build = {
   tag: string
@@ -11,6 +12,17 @@ type Build = {
   is_current: boolean
   is_latest: boolean
   action: 'update' | 'downgrade' | 'current' | 'reinstall'
+}
+
+type UpdateStatus = {
+  state: string
+  tag?: string | null
+  message?: string
+  requested_at?: string | null
+  progress?: number | null
+  step?: string
+  log?: string
+  log_tail?: string
 }
 
 type Catalog = {
@@ -27,7 +39,7 @@ type Catalog = {
   used_proxy?: boolean
   direct_ok?: boolean
   apply_ready: { can_spawn: boolean; host_watcher: boolean; repo_dir: string }
-  status: { state: string; tag?: string | null; message?: string; requested_at?: string | null }
+  status: UpdateStatus
 }
 
 export default function Updates() {
@@ -39,6 +51,7 @@ export default function Updates() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [fetchProgress, setFetchProgress] = useState<number | null>(null)
 
   function applyCatalog(catalog: Catalog) {
     setData(catalog)
@@ -68,35 +81,60 @@ export default function Updates() {
     if (role === 'ADMIN') void loadCatalog()
   }, [role])
 
+  const applyActive = data?.status?.state === 'queued' || data?.status?.state === 'running'
+
   useEffect(() => {
-    const active = data?.status?.state === 'queued' || data?.status?.state === 'running'
-    if (!active) return
-    const id = window.setInterval(() => {
-      api('/api/admin/updates/status')
+    if (!applyActive) return
+    const tick = () => {
+      api<{ status: UpdateStatus }>('/api/admin/updates/status')
         .then((row) => setData((prev) => (prev ? { ...prev, status: row.status } : prev)))
-        .catch(() => setData((prev) => (prev ? { ...prev, status: { ...prev.status, message: 'API restarting after rebuild…' } } : prev)))
-    }, 2500)
+        .catch(() =>
+          setData((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: {
+                    ...prev.status,
+                    message: 'API restarting after rebuild…',
+                    progress: prev.status.progress != null ? Math.min(95, Number(prev.status.progress) || 70) : 70,
+                    step: 'restart',
+                  },
+                }
+              : prev,
+          ),
+        )
+    }
+    tick()
+    const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
-  }, [data?.status?.state])
+  }, [applyActive])
 
   async function fetchBuilds(e: FormEvent) {
     e.preventDefault()
     if (!proxyRequired) return
     setBusy(true)
     setErr('')
+    setFetchProgress(15)
+    const bump = window.setInterval(() => {
+      setFetchProgress((p) => (p == null || p >= 85 ? p : p + 8))
+    }, 400)
     try {
       const catalog = await api<Catalog>('/api/admin/updates/fetch', {
         method: 'POST',
         body: JSON.stringify({ proxy_user: proxyUser, proxy_password: proxyPassword }),
       })
+      setFetchProgress(100)
       applyCatalog(catalog)
       if (catalog.source !== 'github') {
         setErr(catalog.source_error || 'GitHub fetch failed')
       }
     } catch (e: any) {
       setErr(e.message)
+      setFetchProgress(null)
     } finally {
+      window.clearInterval(bump)
       setBusy(false)
+      window.setTimeout(() => setFetchProgress(null), 800)
     }
   }
 
@@ -105,7 +143,7 @@ export default function Updates() {
     setBusy(true)
     try {
       await api('/api/admin/updates/apply', { method: 'POST', body: JSON.stringify({ tag: selected }) })
-      const catalog = await api<Catalog>('/api/admin/updates/status')
+      const catalog = await api<{ status: UpdateStatus }>('/api/admin/updates/status')
       setData((prev) => (prev ? { ...prev, status: catalog.status } : prev))
     } catch (e: any) {
       setErr(e.message)
@@ -119,9 +157,10 @@ export default function Updates() {
   const proxyRequired = Boolean(data?.proxy_required)
   const shown = data && (data.source === 'github' || (data.source === 'cache' && data.builds.length > 0)) ? data : null
   const chosen = shown?.builds.find((b) => b.tag === selected)
-  const applying = shown?.status?.state === 'queued' || shown?.status?.state === 'running'
+  const applying = applyActive
   const actionLabel = chosen?.action === 'downgrade' ? 'Downgrade' : chosen?.action === 'current' ? 'Reinstall' : 'Update'
   const currentTag = data?.current.tag
+  const st = data?.status
 
   return (
     <>
@@ -175,16 +214,34 @@ export default function Updates() {
         </p>
       )}
 
+      {(busy && proxyRequired) || fetchProgress != null ? (
+        <ProgressPanel
+          job={{
+            active: busy && proxyRequired,
+            label: 'Fetching GitHub releases',
+            message: busy ? 'Campus proxy login + GitHub API…' : 'Done',
+            progress: fetchProgress,
+            state: busy ? 'running' : 'ok',
+          }}
+        />
+      ) : null}
+
       {err && <p className="err">{err}</p>}
 
-      {shown?.status?.state && shown.status.state !== 'idle' && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <strong className={`badge ${shown.status.state === 'ok' ? 'ONLINE' : shown.status.state === 'error' ? 'OFFLINE' : 'WARNING'}`}>
-            {shown.status.state}
-          </strong>
-          <span style={{ marginLeft: 10 }}>{shown.status.message}</span>
-          {shown.status.requested_at && <div className="muted">{ago(shown.status.requested_at)}</div>}
-        </div>
+      {st && st.state !== 'idle' && (
+        <ProgressPanel
+          showWhenIdle
+          job={{
+            active: applying,
+            label: st.tag ? `Apply ${st.tag}` : 'Server apply',
+            message: st.message,
+            progress: st.progress,
+            step: st.step,
+            state: st.state,
+            log: st.log || st.log_tail || '',
+            error: st.state === 'error',
+          }}
+        />
       )}
 
       {!loading && !shown && !err && (

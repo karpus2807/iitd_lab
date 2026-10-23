@@ -9,10 +9,10 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
-        "tag": "v1.1.41",
-        "name": "LabWatch 1.1.41",
+        "tag": "v1.1.42",
+        "name": "LabWatch 1.1.42",
         "published_at": "2026-10-23T09:55:00Z",
-        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.41",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.42",
         "notes": "Better Intel/AMD iGPU+dGPU details on Linux/Windows; fix Intel mislabeled as AMD",
         "prerelease": False,
     },
@@ -330,6 +330,20 @@ def test_extract_session_id_from_proxy_cgi_html():
     assert update_svc._extract_session_id(html2) == "0123456789abcdef"
 
 
+def test_read_status_includes_apply_log_and_progress(tmp_path, monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setattr(update_svc, "repo_dir", lambda: tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "update-apply.log").write_text("line1\ncompose building…\n", encoding="utf-8")
+    update_svc.write_status(state="running", tag="v1.1.42", message="Rebuilding Docker", progress=60, step="compose")
+    status = update_svc.read_status()
+    assert status["progress"] == 60
+    assert status["step"] == "compose"
+    assert "compose building" in status["log"]
+    assert status["log_tail"] == status["log"]
+    get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 async def test_campus_proxy_cgi_login_posts_validate(monkeypatch):
     get_settings.cache_clear()
@@ -424,7 +438,7 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert idle["source"] == "github"
     assert idle["direct_ok"] is True
     assert idle["proxy_required"] is False
-    assert idle["current"]["tag"] == "v1.1.41"
+    assert idle["current"]["tag"] == "v1.1.42"
 
     # Empty proxy credentials still work (direct path).
     direct = await client.post(
@@ -452,8 +466,8 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.41"
-    assert body["current"]["tag"] == "v1.1.41"
+    assert body["latest"]["tag"] == "v1.1.42"
+    assert body["current"]["tag"] == "v1.1.42"
     assert body["source"] == "github"
     assert body["used_proxy"] is True
     assert body["proxy_required"] is True
