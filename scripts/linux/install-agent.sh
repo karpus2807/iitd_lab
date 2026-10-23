@@ -279,10 +279,21 @@ _ensure_host_tools() {
   command -v smartctl >/dev/null || pkgs+=(smartmontools)
   if ((${#pkgs[@]} == 0)); then
     echo "Host collector tools already present."
-    return 0
+  else
+    echo "Installing missing collector tools: ${pkgs[*]}"
+    _pkg_install "${pkgs[@]}"
   fi
-  echo "Installing missing collector tools: ${pkgs[*]}"
-  _pkg_install "${pkgs[@]}"
+  # Optional GPU helpers (free). Sysfs is primary; these fill util when present.
+  # Failures are ignored — lab machines may lack repos or be offline.
+  local gpu_pkgs=()
+  if command -v apt-get >/dev/null; then
+    command -v intel_gpu_top >/dev/null || gpu_pkgs+=(intel-gpu-tools)
+    command -v glxinfo >/dev/null || gpu_pkgs+=(mesa-utils)
+  fi
+  if ((${#gpu_pkgs[@]})); then
+    echo "Installing optional GPU tools (best-effort): ${gpu_pkgs[*]}"
+    _pkg_install "${gpu_pkgs[@]}" || true
+  fi
 }
 
 _python_ok() {

@@ -160,3 +160,70 @@ def test_merge_gpu_soc_hides_pci():
     assert merged["model"] == "NVIDIA Jetson AGX Orin"
     assert merged["vram_bytes"] == 61 * 1024**3
     assert merged["extra"]["bus"] == "soc"
+
+
+def test_dedupe_gpus_same_pci():
+    from labwatch_agent.collectors.gpu_sysfs import dedupe_gpus
+
+    rows = [
+        {"index": 0, "model": "A", "pci_bus": "0000:00:02.0"},
+        {"index": 1, "model": "A", "pci_bus": "0000:00:02.0"},
+        {"index": 2, "model": "B", "pci_bus": "0000:01:00.0"},
+    ]
+    out = dedupe_gpus(rows)
+    assert len(out) == 2
+    assert out[0]["index"] == 0
+    assert out[1]["pci_bus"] == "0000:01:00.0"
+
+
+def test_compute_telemetry_pct_integrated():
+    from labwatch_agent.collectors.gpu_sysfs import compute_telemetry_pct
+
+    sparse = {
+        "driver_version": "i915",
+        "pci_bus": "0000:00:02.0",
+        "extra": {"gpu_kind": "integrated"},
+    }
+    assert compute_telemetry_pct(sparse) < 50
+    rich = {
+        "temperature_c": 45,
+        "utilization_pct": 10,
+        "power_w": 5,
+        "graphics_clock_mhz": 600,
+        "driver_version": "i915",
+        "pci_bus": "0000:00:02.0",
+        "extra": {"gpu_kind": "integrated"},
+    }
+    assert compute_telemetry_pct(rich) >= 50
+
+
+def test_enrich_replaces_srcversion_hash_driver():
+    from labwatch_agent.collectors.gpu_sysfs import enrich_linux_gpu
+
+    gpu = {
+        "index": 0,
+        "vendor": "Intel",
+        "model": "UHD Graphics",
+        "pci_bus": "0000:00:02.0",
+        "driver_version": "AD9B846A7B0941179320D5F",
+    }
+    drm = [
+        {
+            "pci_bus": "0000:00:02.0",
+            "vendor": "Intel",
+            "driver_module": "i915",
+            "driver_bound": True,
+            "temperature_c": 48.0,
+            "graphics_clock_mhz": 600,
+            "utilization_pct": 3.0,
+            "power_w": None,
+            "memory_clock_mhz": None,
+            "vram_bytes": None,
+            "card": "card0",
+        }
+    ]
+    out = enrich_linux_gpu(gpu, drm)
+    assert out["driver_version"] == "i915"
+    assert out["extra"]["driver_status"] == "ok"
+    assert out["extra"]["telemetry_pct"] >= 50
+    assert out["graphics_clock_mhz"] == 600

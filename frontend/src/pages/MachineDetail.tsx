@@ -72,8 +72,20 @@ function Stat({ label, value }: { label: string; value?: ReactNode }) {
 
 function Show({ label, value, supported = true }: { label: string; value?: unknown; supported?: boolean }) {
   if (!supported) return null
-  if (isBlank(value)) return <p>{label}: Not reported</p>
+  if (isBlank(value)) return null
   return <p>{label}: {String(value)}</p>
+}
+
+function driverStatusLabel(extra: any): string | null {
+  const status = String(extra?.driver_status || '').toLowerCase()
+  if (!status) {
+    if (extra?.driver_ok === true) return 'Working'
+    if (extra?.driver_ok === false) return 'Not bound / missing'
+    return null
+  }
+  if (status === 'ok' || status === 'working') return 'Working'
+  if (status === 'unbound' || status === 'not_bound') return 'Not bound / missing'
+  return status.replace(/_/g, ' ')
 }
 
 export default function MachineDetail() {
@@ -368,6 +380,7 @@ export default function MachineDetail() {
               const unifiedUsed = extra.unified_ram_used_bytes
               const sharedBytes = extra.shared_graphics_bytes || (integrated ? g.vram_bytes : null)
               const kindLabel = soc ? 'SoC (nvgpu)' : integrated ? 'Integrated' : (g.slot_designation || 'Dedicated')
+              const driverStatus = driverStatusLabel(extra)
               return (
                 <div className="card" key={g.index}>
                   <h3 style={{ marginTop: 0 }}>GPU {g.index} · {g.model}</h3>
@@ -387,7 +400,7 @@ export default function MachineDetail() {
                   ) : integrated ? (
                     <Show
                       label="Graphics memory"
-                      value={sharedBytes ? `Shared with system RAM ${bytes(sharedBytes)}` : 'Shared with system RAM'}
+                      value={sharedBytes ? `Shared with system RAM ${bytes(sharedBytes)}` : null}
                     />
                   ) : (
                     <Show label="VRAM" value={bytes(g.vram_bytes)} />
@@ -395,9 +408,10 @@ export default function MachineDetail() {
                   <Show label="GPU power" value={g.power_w != null ? `${g.power_w} W` : null} />
                   <Show label="Board power" value={extra.board_power_w != null ? `${extra.board_power_w} W` : null} supported={soc} />
                   {soc && railText ? <p className="muted">{railText}</p> : null}
-                  <Show label="Graphics clock" value={g.graphics_clock_mhz != null ? `${g.graphics_clock_mhz} MHz` : null} />
-                  <Show label={soc ? 'EMC / memory clock' : 'Memory clock'} value={g.memory_clock_mhz != null ? `${g.memory_clock_mhz} MHz` : null} />
+                  <Show label="Graphics clock" value={g.graphics_clock_mhz != null && g.graphics_clock_mhz > 0 ? `${g.graphics_clock_mhz} MHz` : null} />
+                  <Show label={soc ? 'EMC / memory clock' : 'Memory clock'} value={g.memory_clock_mhz != null && g.memory_clock_mhz > 0 ? `${g.memory_clock_mhz} MHz` : null} />
                   <Show label="Driver" value={g.driver_version} />
+                  <Show label="Driver status" value={driverStatus} />
                   <Show label="L4T" value={extra.l4t_version} supported={Boolean(soc && extra.l4t_version && extra.l4t_version !== g.driver_version)} />
                   <Show label="PCI" value={g.pci_bus || g.pci_device_id} supported={!soc} />
                   <Show label="Serial" value={g.serial_number} supported={!soc && !integrated} />

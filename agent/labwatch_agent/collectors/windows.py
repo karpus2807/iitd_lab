@@ -313,7 +313,7 @@ $map | ConvertTo-Json -Compress
 
 
 def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
-    from labwatch_agent.collectors.gpu_sysfs import classify_gpu_kind
+    from labwatch_agent.collectors.gpu_sysfs import classify_gpu_kind, compute_telemetry_pct
 
     notes: list[str] = []
     gpus: list[dict[str, Any]] = []
@@ -328,7 +328,10 @@ def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
         if code == 0:
             gpus = parse_nvidia_smi_csv(out)
             for g in gpus:
-                g.setdefault("extra", {})["gpu_kind"] = "discrete"
+                extra = g.setdefault("extra", {})
+                extra["gpu_kind"] = "discrete"
+                extra["driver_status"] = "ok"
+                extra["driver_ok"] = True
                 g.setdefault("slot_designation", "Dedicated")
                 if g.get("model"):
                     nvidia_names.add(str(g["model"]).lower())
@@ -371,7 +374,15 @@ def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
             driver=None,
             vram_bytes=vram if vendor != "Intel" else None,
         )
-        extra: dict[str, Any] = {"gpu_kind": kind, "pnp_device_id": pnp}
+        status = str(v.get("Status") or "").strip() or "OK"
+        driver_ok = status.upper() in {"OK", "DEGRADED"} or not status
+        extra: dict[str, Any] = {
+            "gpu_kind": kind,
+            "pnp_device_id": pnp,
+            "driver_status": "ok" if driver_ok else status.lower() or "unknown",
+            "driver_ok": driver_ok,
+            "windows_status": status,
+        }
         if kind == "integrated":
             extra["memory_kind"] = "shared"
             if vram:
@@ -389,7 +400,7 @@ def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
                 "index": idx,
                 "vendor": vendor,
                 "model": name,
-                "vram_bytes": vram,
+                "vram_bytes": vram if kind != "integrated" else None,
                 "driver_version": v.get("DriverVersion"),
                 "pci_device_id": pci_device_id or pnp,
                 "utilization_pct": util,
@@ -407,6 +418,7 @@ def collect_gpus_windows() -> tuple[list[dict[str, Any]], list[str]]:
             notes.append("GPU utilization counters unavailable on this Windows build.")
     for i, g in enumerate(gpus):
         g["index"] = i
+        g.setdefault("extra", {})["telemetry_pct"] = compute_telemetry_pct(g)
     return gpus, notes
 
 

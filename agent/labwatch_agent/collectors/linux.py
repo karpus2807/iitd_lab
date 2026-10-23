@@ -424,6 +424,7 @@ def _lspci_devices() -> list[dict[str, Any]]:
 
 def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
     from labwatch_agent.collectors.gpu_sysfs import (
+        dedupe_gpus,
         enrich_linux_gpu,
         iter_drm_gpus,
         normalize_pci_bus,
@@ -442,7 +443,10 @@ def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
         if code == 0:
             gpus = parse_nvidia_smi_csv(out)
             for g in gpus:
-                g.setdefault("extra", {})["gpu_kind"] = "discrete"
+                extra = g.setdefault("extra", {})
+                extra["gpu_kind"] = "discrete"
+                extra["driver_status"] = "ok"
+                extra["driver_ok"] = True
                 g.setdefault("slot_designation", "Dedicated")
                 bus = normalize_pci_bus(g.get("pci_bus"))
                 if bus:
@@ -489,14 +493,17 @@ def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
 
     drm_rows = iter_drm_gpus()
     gpus = [enrich_linux_gpu(g, drm_rows) for g in gpus]
-    # Re-index after merges.
-    for i, g in enumerate(gpus):
-        g["index"] = i
+    gpus = dedupe_gpus(gpus)
 
     jetson = collect_jetson_gpu()
     if jetson:
         if gpus:
             gpus[0] = merge_gpu(gpus[0], jetson)
+            from labwatch_agent.collectors.gpu_sysfs import compute_telemetry_pct
+
+            gpus[0].setdefault("extra", {})["telemetry_pct"] = compute_telemetry_pct(gpus[0])
+            gpus[0]["extra"]["driver_status"] = gpus[0]["extra"].get("driver_status") or "ok"
+            gpus[0]["extra"]["driver_ok"] = True
         else:
             gpus = [jetson]
         notes.append("Jetson/L4T GPU telemetry filled from sysfs/tegrastats (nvidia-smi fields are often N/A).")

@@ -40,6 +40,33 @@ def _dt(value: datetime | None) -> datetime:
     return value or datetime.now(timezone.utc)
 
 
+def _gpu_telemetry_ok(gpu) -> bool:
+    """True when at least ~50% of applicable GPU telemetry fields are present."""
+    extra = gpu.extra or {}
+    pct = extra.get("telemetry_pct")
+    try:
+        if pct is not None:
+            return float(pct) >= 50.0
+    except (TypeError, ValueError):
+        pass
+    # Legacy payloads without telemetry_pct: require half of core live metrics.
+    checks = [
+        gpu.temperature_c is not None,
+        gpu.utilization_pct is not None,
+        gpu.power_w is not None,
+        bool(gpu.graphics_clock_mhz),
+        bool(gpu.driver_version),
+        bool(gpu.pci_bus or gpu.pci_device_id),
+    ]
+    kind = str(extra.get("gpu_kind") or gpu.slot_designation or "").lower()
+    integrated = "integrated" in kind or "soc" in kind
+    if not integrated:
+        checks.append(gpu.memory_clock_mhz is not None)
+        checks.append(gpu.vram_bytes is not None)
+    filled = sum(1 for c in checks if c)
+    return filled * 2 >= len(checks)
+
+
 async def persist_inventory(db: AsyncSession, machine: Machine, payload: InventoryPayload) -> list[HardwareEvent]:
     previous_row = (
         await db.execute(
@@ -83,7 +110,8 @@ async def persist_inventory(db: AsyncSession, machine: Machine, payload: Invento
     machine.system_serial = _clip(ident.system_serial or payload.bios.system_serial or machine.system_serial, 128)
     machine.is_virtual = ident.is_virtual
     machine.virtualization = _clip(ident.virtualization or machine.virtualization, 120)
-    machine.gpu_count = len(payload.gpus)
+    # Count only GPUs with usable telemetry (≥50% of applicable fields populated).
+    machine.gpu_count = sum(1 for g in payload.gpus if _gpu_telemetry_ok(g))
     apply_reported_addresses(
         machine,
         [ip for nic in payload.network.interfaces for ip in (nic.ipv4 or []) + (nic.ipv6 or [])],
