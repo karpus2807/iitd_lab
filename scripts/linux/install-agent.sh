@@ -70,26 +70,39 @@ _ensure_host_tools() {
 }
 
 _python_ok() {
-  # Need 3.8+ AND a working sqlite3 (_sqlite3). Source builds under /usr/local
-  # often omit libsqlite3-dev and then the agent crashes on import.
-  "$1" -c 'import sys, sqlite3; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
+  # 3.8+ required. sqlite3 is preferred but not mandatory anymore (pysqlite3-binary
+  # ships in the agent wheelhouse for broken /usr/local builds).
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
+}
+
+_python_has_sqlite() {
+  "$1" -c 'import sqlite3; sqlite3.connect(":memory:").close()' 2>/dev/null
 }
 
 _find_python() {
   local c path
-  # Prefer distro Pythons (usually /usr/bin) before /usr/local source builds.
-  # Also prefer 3.12/3.11 over bleeding-edge 3.14 which is often incomplete.
+  # 1) Distro interpreters only (/usr/bin) — never trust PATH=/usr/local first.
   for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
-    path="$(command -v "$c" 2>/dev/null || true)"
-    [[ -n "$path" ]] || continue
+    path="/usr/bin/$c"
+    [[ -x "$path" ]] || continue
     if _python_ok "$path"; then
       echo "$path"
       return 0
     fi
   done
-  # Explicit /usr/bin pass in case PATH puts broken /usr/local first.
-  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
-    path="/usr/bin/$c"
+  # 2) Anything else on PATH that is NOT under /usr/local
+  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
+    path="$(command -v "$c" 2>/dev/null || true)"
+    [[ -n "$path" ]] || continue
+    [[ "$path" == /usr/local/* ]] && continue
+    if _python_ok "$path"; then
+      echo "$path"
+      return 0
+    fi
+  done
+  # 3) Last resort: /usr/local (may lack _sqlite3; agent falls back to pysqlite3-binary)
+  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
+    path="/usr/local/bin/$c"
     [[ -x "$path" ]] || continue
     if _python_ok "$path"; then
       echo "$path"
@@ -127,7 +140,13 @@ PYTHON_BIN="$(_ensure_python)" || {
   echo "python3 3.8+ is required."
   exit 1
 }
-echo "Using $($PYTHON_BIN -V)"
+echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN -V 2>&1))"
+if ! _python_has_sqlite "$PYTHON_BIN"; then
+  echo "NOTE: $PYTHON_BIN has no stdlib _sqlite3 — will use pysqlite3-binary from LabWatch wheels."
+fi
+if [[ "$PYTHON_BIN" == /usr/local/* ]]; then
+  echo "WARNING: using /usr/local Python. Prefer: apt install python3 python3-venv"
+fi
 if ! command -v curl >/dev/null; then
   echo "curl is required."
   exit 1

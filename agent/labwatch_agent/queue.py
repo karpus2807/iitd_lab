@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _load_sqlite3():
+    """Prefer stdlib sqlite3; fall back to pysqlite3-binary for broken source builds."""
+    try:
+        import sqlite3 as std_sqlite3
+
+        std_sqlite3.connect(":memory:").close()
+        return std_sqlite3
+    except Exception:
+        try:
+            import pysqlite3 as pip_sqlite3  # type: ignore
+
+            pip_sqlite3.connect(":memory:").close()
+            return pip_sqlite3
+        except Exception as exc:  # noqa: BLE001
+            raise ModuleNotFoundError(
+                "Python is missing _sqlite3. Install distro python3 (apt install python3) "
+                "or ensure pysqlite3-binary is in the agent wheelhouse."
+            ) from exc
+
+
+sqlite3 = _load_sqlite3()
 
 
 class EventQueue:

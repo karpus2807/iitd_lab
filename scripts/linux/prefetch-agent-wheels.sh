@@ -38,7 +38,7 @@ for py_abi in 38:cp38 39:cp39 310:cp310 311:cp311 312:cp312 313:cp313 314:cp314;
   download win_amd64 "$py" "$abi"
 done
 
-"$PIP" download pip setuptools wheel tomli exceptiongroup -d "$DEST" || true
+"$PIP" download pip setuptools wheel tomli exceptiongroup "pysqlite3-binary>=0.5.4" -d "$DEST" || true
 "$PIP" download -r "$REQ" -d "$DEST" --only-binary=:all: || true
 
 if [[ ! -f "$DEST/get-pip.py" ]]; then
