@@ -29,9 +29,11 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # IITD campus squid (IP session after proxy.cgi login — not HTTP Basic in the URL).
+# Proxy is ONLY used when direct internet fails (home / open network needs no proxy).
 CAMPUS_PROXY_URL="${LABWATCH_HTTP_PROXY:-http://10.10.78.21:3128}"
 CAMPUS_PROXY_CGI="${LABWATCH_PROXY_CGI:-https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi}"
 PROXY_READY=0
+DIRECT_OK="" # "" unknown, 1 yes, 0 no
 PROXY_USER="${LABWATCH_PROXY_USER:-}"
 PROXY_PASSWORD="${LABWATCH_PROXY_PASSWORD:-}"
 
@@ -136,13 +138,46 @@ PY
   printf '%s' "$resp" | grep -qiE 'logged in successfully|already logged in'
 }
 
+_probe_direct_internet() {
+  # True if this host can reach the public internet without campus proxy.
+  if [[ "$DIRECT_OK" == "1" ]]; then
+    return 0
+  fi
+  if [[ "$DIRECT_OK" == "0" ]]; then
+    return 1
+  fi
+  if ! command -v curl >/dev/null; then
+    DIRECT_OK=0
+    return 1
+  fi
+  local ok=0
+  # Probe without inheriting any proxy env (campus squid would 302).
+  if curl -fsSIL --noproxy '*' --connect-timeout 5 --max-time 10 \
+      https://pypi.org/simple/pip/ >/dev/null 2>&1; then
+    ok=1
+  elif curl -fsSIL --noproxy '*' --connect-timeout 5 --max-time 10 \
+      http://archive.ubuntu.com/ubuntu/ >/dev/null 2>&1; then
+    ok=1
+  elif curl -fsS --noproxy '*' --connect-timeout 5 --max-time 10 \
+      -o /dev/null https://www.google.com/generate_204 >/dev/null 2>&1; then
+    ok=1
+  fi
+  if [[ "$ok" == "1" ]]; then
+    DIRECT_OK=1
+    return 0
+  fi
+  DIRECT_OK=0
+  return 1
+}
+
 _ensure_campus_proxy() {
   # One-shot: prompt + proxy.cgi login + export HTTP(S)_PROXY for apt/pip.
+  # Call only after direct internet has failed.
   if [[ "$PROXY_READY" == "1" ]]; then
     return 0
   fi
   _say ""
-  _say "Outer network (apt/PyPI) needs IITD campus proxy login on this host."
+  _say "Direct internet is not available. IITD campus proxy login is required for apt/PyPI."
   if [[ -z "$PROXY_USER" ]]; then
     _ask "Proxy username (IITD kerberos id): " || return 1
     PROXY_USER="$REPLY_TTY"
@@ -153,7 +188,7 @@ _ensure_campus_proxy() {
     PROXY_PASSWORD="$REPLY_TTY"
   fi
   if [[ -z "$PROXY_USER" || -z "$PROXY_PASSWORD" ]]; then
-    _say "Proxy username and password are required for apt/PyPI."
+    _say "Proxy username and password are required when direct internet is blocked."
     return 1
   fi
   _say "Logging into campus proxy (${CAMPUS_PROXY_CGI})…"
@@ -176,27 +211,56 @@ _ensure_campus_proxy() {
   return 0
 }
 
+_ensure_outer_network() {
+  # Prefer direct internet; only ask for campus proxy when direct fails.
+  if [[ "$PROXY_READY" == "1" ]]; then
+    return 0
+  fi
+  if _probe_direct_internet; then
+    _say "Direct internet OK — installing without campus proxy."
+    return 0
+  fi
+  _ensure_campus_proxy
+}
+
+_pkg_install_once() {
+  local pkgs=("$@")
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || return 1
+    return 0
+  elif command -v dnf >/dev/null; then
+    dnf install -y "${pkgs[@]}" || return 1
+  elif command -v yum >/dev/null; then
+    yum install -y "${pkgs[@]}" || return 1
+  elif command -v zypper >/dev/null; then
+    zypper --non-interactive install "${pkgs[@]}" || return 1
+  elif command -v pacman >/dev/null; then
+    pacman -Sy --noconfirm "${pkgs[@]}" || return 1
+  else
+    echo "Install these packages by hand if fields are empty: ${pkgs[*]}"
+    return 1
+  fi
+}
+
 _pkg_install() {
   local pkgs=("$@")
   ((${#pkgs[@]})) || return 0
+  if [[ "$PROXY_READY" == "1" ]]; then
+    _pkg_install_once "${pkgs[@]}" || true
+    return 0
+  fi
+  # Try without proxy first (home / open network).
+  if _pkg_install_once "${pkgs[@]}" 2>/dev/null; then
+    DIRECT_OK=1
+    return 0
+  fi
+  _say "Package install over direct network failed — trying campus proxy…"
   _ensure_campus_proxy || {
-    echo "Cannot install packages without campus proxy: ${pkgs[*]}"
+    echo "Cannot install packages (no direct internet and proxy login failed): ${pkgs[*]}"
     return 1
   }
-  if command -v apt-get >/dev/null; then
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}" || true
-  elif command -v dnf >/dev/null; then
-    dnf install -y "${pkgs[@]}" || true
-  elif command -v yum >/dev/null; then
-    yum install -y "${pkgs[@]}" || true
-  elif command -v zypper >/dev/null; then
-    zypper --non-interactive install "${pkgs[@]}" || true
-  elif command -v pacman >/dev/null; then
-    pacman -Sy --noconfirm "${pkgs[@]}" || true
-  else
-    echo "Install these packages by hand if fields are empty: ${pkgs[*]}"
-  fi
+  _pkg_install_once "${pkgs[@]}" || true
 }
 
 _ensure_host_tools() {
@@ -574,20 +638,30 @@ _pip_offline() {
   "$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" "$@"
 }
 _pip_online() {
+  # Prefer direct PyPI; campus proxy only if direct fails.
+  if [[ "$PROXY_READY" == "1" ]]; then
+    "$PREFIX/venv/bin/python" -m pip install -q "$@" || return 1
+    return 0
+  fi
+  if "$PREFIX/venv/bin/python" -m pip install -q "$@"; then
+    DIRECT_OK=1
+    return 0
+  fi
+  _say "Direct PyPI failed — campus proxy required…"
   _ensure_campus_proxy || return 1
   "$PREFIX/venv/bin/python" -m pip install -q "$@"
 }
 
 echo "Installing Python deps from LabWatch wheelhouse (offline)…"
 if ! _pip_offline -U pip setuptools wheel; then
-  echo "Offline pip bootstrap failed — trying PyPI via campus proxy…"
+  echo "Offline pip bootstrap failed — trying PyPI (direct internet first)…"
   _pip_online -U pip setuptools wheel || {
     echo "ERROR: could not install pip/setuptools/wheel"
     exit 1
   }
 fi
 if ! _pip_offline -r "$AGENT_SRC/requirements.txt"; then
-  echo "Offline requirements incomplete — installing missing packages from PyPI via campus proxy…"
+  echo "Offline requirements incomplete — trying PyPI (direct internet first)…"
   _pip_online -r "$AGENT_SRC/requirements.txt" || {
     echo "ERROR: could not install agent requirements"
     exit 1
@@ -599,12 +673,12 @@ if ! "$PREFIX/venv/bin/python" -c 'import sqlite3; sqlite3.connect(":memory:").c
   OPT_REQ="$AGENT_SRC/requirements-optional-linux.txt"
   if [[ -f "$OPT_REQ" ]]; then
     _pip_offline -r "$OPT_REQ" || _pip_online -r "$OPT_REQ" || {
-      echo "ERROR: need sqlite3. Prefer: apt install python3 python3-venv (after proxy login)."
+      echo "ERROR: need sqlite3. Prefer: apt install python3 python3-venv"
       exit 1
     }
   else
     _pip_offline "pysqlite3-binary>=0.5.4" || _pip_online "pysqlite3-binary>=0.5.4" || {
-      echo "ERROR: need sqlite3. Prefer: apt install python3 python3-venv (after proxy login)."
+      echo "ERROR: need sqlite3. Prefer: apt install python3 python3-venv"
       exit 1
     }
   fi
