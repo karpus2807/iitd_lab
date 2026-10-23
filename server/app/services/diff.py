@@ -370,8 +370,11 @@ def _diff_gpus(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
 
 
 def _diff_disks(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
-    # Empty disk list with collection errors → probe failure, not a wipe.
-    if old.storage.disks and not new.storage.disks and _notes_suggest_incomplete(new):
+    # N→0: empty disk scrape is a common probe failure; never treat as a full wipe.
+    # Partial removals (e.g. 2→1) still emit DISK_REMOVED.
+    if old.storage.disks and not new.storage.disks:
+        return []
+    if not old.storage.disks and new.storage.disks and _notes_suggest_incomplete(old):
         return []
     events: list[DiffEvent] = []
     old_disks = {_disk_key(d): d for d in old.storage.disks}

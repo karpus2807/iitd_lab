@@ -18,7 +18,8 @@ def test_inventory_id_format():
 def test_hostname_server_url_ignores_lan_ip(monkeypatch):
     monkeypatch.setenv("LABWATCH_PUBLIC_URL", "http://10.10.1.5")
     get_settings.cache_clear()
-    assert hostname_server_url() == "http://hobbit2.cse.iitd.ac.in"
+    # LAN IP is ignored; default hobbit hostname keeps :8080 (not port 80).
+    assert hostname_server_url() == "http://hobbit2.cse.iitd.ac.in:8080"
     get_settings.cache_clear()
 
 

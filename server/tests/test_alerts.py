@@ -52,9 +52,18 @@ async def test_hardware_event_creates_gpu_removed_alert(db_session: AsyncSession
     machine = Machine(hostname="LAB-PC-042")
     db_session.add(machine)
     await db_session.flush()
-    before = InventoryPayload(gpus=[GPUInfo(index=0, model="RTX 3090", pci_bus="0000:02:00.0", slot_designation="Slot 2")])
-    after = InventoryPayload(gpus=[])
+    # Partial removal (2→1) is verified; N→0 empty scrapes are suppressed in diff.py.
+    before = InventoryPayload(
+        gpus=[
+            GPUInfo(index=0, model="RTX 4090", pci_bus="0000:01:00.0", slot_designation="Slot 1"),
+            GPUInfo(index=1, model="RTX 3090", pci_bus="0000:02:00.0", slot_designation="Slot 2"),
+        ]
+    )
+    after = InventoryPayload(
+        gpus=[GPUInfo(index=0, model="RTX 4090", pci_bus="0000:01:00.0", slot_designation="Slot 1")]
+    )
     events = diff_inventory(before, after)
+    assert any(e.event_type == "GPU_REMOVED" for e in events)
     await evaluate_hardware_events(db_session, machine, events)
     await db_session.flush()
     from sqlalchemy import select

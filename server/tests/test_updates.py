@@ -9,6 +9,14 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
+        "tag": "v1.1.35",
+        "name": "LabWatch 1.1.35",
+        "published_at": "2026-10-23T07:10:00Z",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.35",
+        "notes": "Fix :8080 default, disk N->0 FPs, Windows CIM refresh",
+        "prerelease": False,
+    },
+    {
         "tag": "v1.1.34",
         "name": "LabWatch 1.1.34",
         "published_at": "2026-10-22T10:30:00Z",
@@ -309,7 +317,7 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert idle["source"] == "github"
     assert idle["direct_ok"] is True
     assert idle["proxy_required"] is False
-    assert idle["current"]["tag"] == "v1.1.34"
+    assert idle["current"]["tag"] == "v1.1.35"
 
     # Empty proxy credentials still work (direct path).
     direct = await client.post(
@@ -337,18 +345,18 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.34"
-    assert body["current"]["tag"] == "v1.1.34"
+    assert body["latest"]["tag"] == "v1.1.35"
+    assert body["current"]["tag"] == "v1.1.35"
     assert body["source"] == "github"
     assert body["used_proxy"] is True
     assert body["proxy_required"] is True
     assert body["builds"][0]["is_latest"] is True
     assert any(b["is_current"] for b in body["builds"])
 
-    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.32"})
+    apply = await client.post("/api/admin/updates/apply", headers=auth_headers, json={"tag": "v1.1.33"})
     assert apply.status_code == 200, apply.text
     status = apply.json()["status"]
-    assert status["tag"] == "v1.1.32"
+    assert status["tag"] == "v1.1.33"
     assert status["state"] == "queued"
     assert (update_harness / "data" / "update-request.json").is_file()
 

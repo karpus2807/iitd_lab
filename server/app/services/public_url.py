@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 from app.config import get_settings
 
 DEFAULT_PUBLIC_HOST = "hobbit2.cse.iitd.ac.in"
+DEFAULT_PUBLIC_PORT = 8080
 INVENTORY_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}(/[A-Za-z0-9][A-Za-z0-9._-]{0,31}){1,5}$"
 )
@@ -50,6 +51,9 @@ def hostname_server_url(request: Request | None = None) -> str:
         proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
         if proto:
             scheme = proto
+    # LabWatch on hobbit listens on 8080, not 80 — keep the port when falling back to the default host.
+    if port is None and host == DEFAULT_PUBLIC_HOST:
+        port = DEFAULT_PUBLIC_PORT
     if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
         return f"{scheme}://{host}:{port}"
     return f"{scheme}://{host}"

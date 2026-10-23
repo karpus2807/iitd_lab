@@ -27,6 +27,8 @@ def collect_inventory(agent_uuid: str) -> tuple[dict[str, Any], list[str]]:
             return fallback
 
     if os.name == "nt":
+        # Refresh WMI/CIM each inventory cycle — a one-shot failed cache would stick forever.
+        win_col.refresh_cim()
         osinfo = safe("os", win_col.collect_os_windows, {"name": "Windows", "hostname": "unknown"})
         try:
             cpu, cpu_notes = win_col.collect_cpu_windows()

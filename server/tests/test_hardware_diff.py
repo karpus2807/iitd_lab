@@ -200,3 +200,16 @@ def test_cpu_blank_after_failure_is_not_change():
     before = InventoryPayload(cpu=CPUInfo(model="Ryzen 9", physical_cores=8))
     after = InventoryPayload(cpu=CPUInfo(model=None), collection_notes=["cpu collector failed; partial data returned."])
     assert not any(e.event_type == EventType.CPU_CHANGED.value for e in diff_inventory(before, after))
+
+
+def test_disk_empty_scrape_is_not_removal():
+    before = InventoryPayload(
+        storage=StorageInfo(disks=[DiskInfo(name="nvme0n1", model="Samsung 980", serial_number="NV1", capacity_bytes=10**12)])
+    )
+    after = InventoryPayload(storage=StorageInfo(disks=[]))
+    assert not any(e.event_type == EventType.DISK_REMOVED.value for e in diff_inventory(before, after))
+    after_notes = InventoryPayload(
+        storage=StorageInfo(disks=[], notes=["smartctl failed"]),
+        collection_notes=["storage collector failed; partial data returned."],
+    )
+    assert not any(e.event_type == EventType.DISK_REMOVED.value for e in diff_inventory(before, after_notes))
