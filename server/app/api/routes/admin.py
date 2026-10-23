@@ -185,27 +185,38 @@ async def revoke_token(token_id: UUID, db: DbDep, admin: AdminUser, request: Req
 
 @router.get("/agents")
 async def list_agents(db: DbDep, admin: AdminUser):
+    current = server_version
+    current_t = _version_tuple(current)
     rows = (await db.execute(select(Agent, Machine).join(Machine, Agent.machine_id == Machine.id))).all()
-    return [
-        {
-            "id": str(a.id),
-            "agent_id": a.agent_public_id,
-            "machine_id": str(m.id),
-            "hostname": m.hostname,
-            "inventory_id": m.inventory_id or "",
-            "status": a.status,
-            "health": a.health,
-            "version": a.agent_version,
-            "last_heartbeat_at": a.last_heartbeat_at,
-            "approved": m.approved,
-            "update_status": a.update_status or "",
-            "update_message": a.update_message or "",
-            "update_target_version": a.update_target_version or "",
-            "update_requested_at": a.update_requested_at,
-            "remote_update_capable": _remote_update_capable(a.agent_version or ""),
-        }
-        for a, m in rows
-    ]
+    agents = []
+    for a, m in rows:
+        ver = a.agent_version or ""
+        ver_t = _version_tuple(ver) if ver else (0, 0, 0)
+        update_available = bool(ver) and ver_t < current_t
+        up_to_date = bool(ver) and ver_t >= current_t
+        agents.append(
+            {
+                "id": str(a.id),
+                "agent_id": a.agent_public_id,
+                "machine_id": str(m.id),
+                "hostname": m.hostname,
+                "inventory_id": m.inventory_id or "",
+                "status": a.status,
+                "health": a.health,
+                "version": ver,
+                "last_heartbeat_at": a.last_heartbeat_at,
+                "approved": m.approved,
+                "update_status": a.update_status or "",
+                "update_message": a.update_message or "",
+                "update_target_version": a.update_target_version or "",
+                "update_requested_at": a.update_requested_at,
+                "remote_update_capable": _remote_update_capable(ver),
+                "update_available": update_available,
+                "up_to_date": up_to_date,
+                "current_version": current,
+            }
+        )
+    return {"current_version": current, "agents": agents}
 
 
 def _queue_agent_update(agent: Agent, target_version: str) -> None:

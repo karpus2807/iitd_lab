@@ -206,6 +206,7 @@ function Tokens() {
 
 function Agents() {
   const [rows, setRows] = useState<any[]>([])
+  const [currentVersion, setCurrentVersion] = useState('')
   const [secret, setSecret] = useState('')
   const [q, setQ] = useState('')
   const [selected, setSelected] = useState<Record<string, boolean>>({})
@@ -214,10 +215,12 @@ function Agents() {
 
   function load() {
     api('/api/admin/agents').then((data) => {
-      setRows(data)
+      const list = Array.isArray(data) ? data : (data.agents || [])
+      setCurrentVersion(Array.isArray(data) ? '' : (data.current_version || ''))
+      setRows(list)
       setSelected((prev) => {
         const next: Record<string, boolean> = {}
-        for (const a of data) {
+        for (const a of list) {
           if (prev[a.id]) next[a.id] = true
         }
         return next
@@ -289,7 +292,7 @@ function Agents() {
           Update all agents{selectedIds.length ? ` (${selectedIds.length})` : ''}
         </button>
         <span className="muted" style={{ fontSize: 13 }}>
-          Remote update needs agent ≥1.1.40 (one manual reinstall for older hosts).
+          Current pack {currentVersion || '…'} · remote update needs agent ≥1.1.40 (one manual reinstall for older hosts).
         </span>
       </div>
       {notice && <p className="muted" style={{ marginBottom: 8 }}>{notice}</p>}
@@ -311,7 +314,12 @@ function Agents() {
               <th>Agent ID</th>
               <th>Ver</th>
               <th>Status</th>
-              <th>Update</th>
+              <th>
+                Update
+                {currentVersion ? (
+                  <div className="muted" style={{ fontWeight: 400, fontSize: 12 }}>current {currentVersion}</div>
+                ) : null}
+              </th>
               <th>Seen</th>
               <th></th>
             </tr>
@@ -335,14 +343,43 @@ function Agents() {
                 <td>{a.hostname}</td>
                 <td className="mono">{a.inventory_id || '—'}</td>
                 <td className="mono">{a.agent_id}</td>
-                <td className="mono">{a.version || '—'}</td>
+                <td>
+                  <span
+                    className="mono agent-ver-pill"
+                    data-state={a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
+                    title={
+                      a.update_available
+                        ? `Update available → ${currentVersion || a.current_version || '?'}`
+                        : a.up_to_date
+                          ? `Up to date (${a.version})`
+                          : 'Version unknown'
+                    }
+                  >
+                    {a.version || '—'}
+                  </span>
+                </td>
                 <td>{a.status} {a.approved ? '' : '(pending)'}</td>
-                <td className="muted" style={{ fontSize: 12 }}>
-                  {a.update_status
-                    ? `${a.update_status}${a.update_target_version ? ` → ${a.update_target_version}` : ''}${a.update_message ? ` (${a.update_message})` : ''}`
-                    : '—'}
+                <td
+                  className="agent-update-cell"
+                  data-state={a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
+                  style={{ fontSize: 12 }}
+                >
+                  {a.update_available ? (
+                    <strong>update available</strong>
+                  ) : a.up_to_date ? (
+                    <strong>up to date</strong>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                  {a.update_status ? (
+                    <div className="muted">
+                      {a.update_status}
+                      {a.update_target_version ? ` → ${a.update_target_version}` : ''}
+                      {a.update_message ? ` (${a.update_message})` : ''}
+                    </div>
+                  ) : null}
                   {!a.remote_update_capable && a.version ? (
-                    <div title="Needs one manual install of ≥1.1.40">manual first</div>
+                    <div className="muted" title="Needs one manual install of ≥1.1.40">manual first</div>
                   ) : null}
                 </td>
                 <td>{ago(a.last_heartbeat_at)}</td>

@@ -175,6 +175,28 @@ select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
 .muted { color: var(--muted); }
 .row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+.agent-ver-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.agent-ver-pill[data-state='behind'],
+.agent-update-cell[data-state='behind'] {
+  background: color-mix(in srgb, var(--crit) 28%, transparent);
+  color: var(--text);
+}
+.agent-ver-pill[data-state='current'],
+.agent-update-cell[data-state='current'] {
+  background: color-mix(in srgb, var(--online) 28%, transparent);
+  color: var(--text);
+}
+.agent-update-cell {
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
 .build-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
