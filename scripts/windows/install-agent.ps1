@@ -321,16 +321,36 @@ try {
   Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue |
     Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
 
+  $wheelsDir = Join-Path $agentSrc "wheels"
+  $wheelFiles = @()
+  if (Test-Path -LiteralPath $wheelsDir) {
+    $wheelFiles = @(Get-ChildItem -LiteralPath $wheelsDir -Filter "*.whl" -ErrorAction SilentlyContinue)
+  }
+  if ($wheelFiles.Count -lt 1) {
+    throw "Offline wheelhouse missing in agent pack ($wheelsDir). On LabWatch server run scripts/linux/prefetch-agent-wheels.sh and recreate api/web."
+  }
+  Write-Host "Using offline wheels from LabWatch server ($($wheelFiles.Count) files) - no PyPI / no campus proxy."
+
   $venvDir = Join-Path $InstallDir "venv"
   if (Test-Path -LiteralPath $venvDir) { Remove-Item -LiteralPath $venvDir -Recurse -Force }
   & $pythonExe -m venv $venvDir
   $py = Join-Path $venvDir "Scripts\python.exe"
   if (-not (Test-Path -LiteralPath $py)) { throw "venv python missing at $py" }
 
-  & $py -m pip install -U pip
-  if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
-  & $py -m pip install -r (Join-Path $agentSrc "requirements.txt")
-  if ($LASTEXITCODE -ne 0) { throw "pip install requirements failed (check network / campus proxy for pypi.org)" }
+  $getPip = Join-Path $wheelsDir "get-pip.py"
+  $pipExe = Join-Path $venvDir "Scripts\pip.exe"
+  if (-not (Test-Path -LiteralPath $pipExe)) {
+    if (-not (Test-Path -LiteralPath $getPip)) {
+      throw "get-pip.py missing from wheelhouse; cannot bootstrap pip offline."
+    }
+    & $py $getPip --no-index --find-links $wheelsDir
+    if ($LASTEXITCODE -ne 0) { throw "offline get-pip failed" }
+  }
+
+  & $py -m pip install --no-index --find-links $wheelsDir -U pip setuptools wheel
+  if ($LASTEXITCODE -ne 0) { throw "offline pip bootstrap failed" }
+  & $py -m pip install --no-index --find-links $wheelsDir -r (Join-Path $agentSrc "requirements.txt")
+  if ($LASTEXITCODE -ne 0) { throw "offline pip install requirements failed (wheelhouse may lack this Python version/platform)" }
 
   $destPkg = Join-Path $InstallDir "labwatch_agent"
   if (Test-Path -LiteralPath $destPkg) { Remove-Item -LiteralPath $destPkg -Recurse -Force }

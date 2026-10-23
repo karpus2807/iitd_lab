@@ -54,17 +54,39 @@ async def install_agent_ps1(request: Request):
     )
 
 
+def _add_wheels(tar: tarfile.TarFile, wheels_dir: Path) -> int:
+    """Bundle offline pip wheels + get-pip.py into the agent pack."""
+    if not wheels_dir.is_dir():
+        return 0
+    n = 0
+    for path in sorted(wheels_dir.iterdir()):
+        if path.name.startswith("."):
+            continue
+        if path.suffix == ".whl" or path.name == "get-pip.py":
+            tar.add(path, arcname=f"wheels/{path.name}")
+            n += 1
+    return n
+
+
 @router.get("/agent-pack.tgz")
 async def agent_pack():
     agent = repo_dir() / "agent"
     req = agent / "requirements.txt"
     src = agent / "labwatch_agent"
+    wheels = agent / "wheels"
     if not src.is_dir() or not req.is_file():
         return PlainTextResponse("agent pack missing on server\n", status_code=404)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(src, arcname="labwatch_agent")
         tar.add(req, arcname="requirements.txt")
+        wheel_count = _add_wheels(tar, wheels)
+        if wheel_count == 0:
+            # Marker so installers can give a clear error instead of hitting PyPI.
+            info = tarfile.TarInfo(name="wheels/.missing")
+            payload = b"run scripts/linux/prefetch-agent-wheels.sh on the LabWatch server\n"
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
     buf.seek(0)
     return Response(
         content=buf.getvalue(),

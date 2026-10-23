@@ -52,7 +52,7 @@ Then hard-refresh the browser (`Ctrl+Shift+R`).
 
 ## Campus proxy / Docker build
 
-Keep `iitd-proxy` logged in. Prefetch wheels if needed:
+Keep `iitd-proxy` logged in. Prefetch **server** image wheels if needed:
 
 ```bash
 ./scripts/linux/prefetch-pypi-wheels.sh
@@ -60,6 +60,18 @@ sudo docker compose up -d --build
 ```
 
 API needs `greenlet` (in `server/requirements.txt`).
+
+## Agent pip / “requirements failed” on lab PC
+
+Agent packs include an offline wheelhouse (`agent/wheels/`) so installs use LabWatch only — no PyPI. If install says wheelhouse missing:
+
+```bash
+cd ~/iitd_lab
+./scripts/linux/prefetch-agent-wheels.sh   # needs proxy once on hobbit
+sudo docker compose up -d --force-recreate --no-deps api web
+```
+
+Still need a local Python 3.8+ on the lab PC (OS package / python.org). Only pip packages come from hobbit.
 
 ## Agent NEVER_CONNECTED / enrolled=no
 

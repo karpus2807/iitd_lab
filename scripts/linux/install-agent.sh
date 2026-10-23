@@ -392,12 +392,27 @@ fi
 echo "Installing LabWatch agent to $PREFIX"
 systemctl stop labwatch-agent 2>/dev/null || true
 mkdir -p "$PREFIX" "$CONFIG_DIR" "$STATE_DIR"
+
+WHEELS_DIR="$AGENT_SRC/wheels"
+if [[ ! -d "$WHEELS_DIR" ]] || ! compgen -G "$WHEELS_DIR"/*.whl >/dev/null; then
+  echo "ERROR: offline wheelhouse missing in agent pack ($WHEELS_DIR)."
+  echo "On the LabWatch server run: ./scripts/linux/prefetch-agent-wheels.sh"
+  echo "Then recreate api/web so /agent-pack.tgz includes wheels."
+  exit 1
+fi
+
 "$PYTHON_BIN" -m venv --without-pip "$PREFIX/venv" 2>/dev/null || "$PYTHON_BIN" -m venv "$PREFIX/venv"
 if [[ ! -x "$PREFIX/venv/bin/pip" ]]; then
-  curl -sS https://bootstrap.pypa.io/get-pip.py | "$PREFIX/venv/bin/python"
+  if [[ -f "$WHEELS_DIR/get-pip.py" ]]; then
+    "$PREFIX/venv/bin/python" "$WHEELS_DIR/get-pip.py" --no-index --find-links="$WHEELS_DIR"
+  else
+    echo "ERROR: get-pip.py missing from wheelhouse; cannot bootstrap pip offline."
+    exit 1
+  fi
 fi
-"$PREFIX/venv/bin/python" -m pip install -q -U pip
-"$PREFIX/venv/bin/python" -m pip install -q -r "$AGENT_SRC/requirements.txt"
+# Install only from LabWatch-bundled wheels — no PyPI / no campus proxy.
+"$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -U pip setuptools wheel
+"$PREFIX/venv/bin/python" -m pip install -q --no-index --find-links="$WHEELS_DIR" -r "$AGENT_SRC/requirements.txt"
 mkdir -p "$PREFIX/labwatch_agent"
 cp -a "$AGENT_SRC/labwatch_agent/." "$PREFIX/labwatch_agent/"
 cat > "$PREFIX/run.py" <<'PY'

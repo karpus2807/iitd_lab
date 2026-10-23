@@ -127,7 +127,10 @@ export default function Install() {
         <h3 className="section-title">Quick notes</h3>
         <ul className="install-list">
           <li>
-            Server: <code className="mono">{base}</code> — always serves the latest agent pack (no version to type).
+            Server: <code className="mono">{base}</code> — latest agent pack + pip wheels (no version to type).
+          </li>
+          <li>
+            Dependencies install from this server only — lab PCs do not need campus proxy / PyPI for agent packages.
           </li>
           <li>Login with LabWatch admin/operator (not SSH). Prompts: username → password → machine ID → lab number.</li>
           <li>Windows: Python 3.8+ from python.org with “Add to PATH”. Linux: curl + Python 3.8+ + sudo.</li>

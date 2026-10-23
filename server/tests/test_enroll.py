@@ -130,7 +130,14 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     pack = await client.get("/agent-pack.tgz")
     assert pack.status_code == 200
     assert pack.content[:2] == b"\x1f\x8b"
-    gzip.decompress(pack.content)
+    raw = gzip.decompress(pack.content)
+    assert b"labwatch_agent/" in raw or b"labwatch_agent\\" in raw
+    # Offline wheelhouse must ship inside the pack (no PyPI on lab PCs).
+    assert b"wheels/" in raw
+    assert b".whl" in raw
+    assert b"get-pip.py" in raw
+    assert b"--no-index" in (await client.get("/install-agent.sh")).text.encode()
+    assert b"--no-index" in (await client.get("/install-agent.ps1")).content
 
 
 def _identity(suffix: str) -> dict:
