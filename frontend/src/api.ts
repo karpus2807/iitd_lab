@@ -27,7 +27,9 @@ export function clearSession() {
 
 export async function api<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
+  if (!headers.has('Content-Type') && init.body && !(init.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json')
+  }
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
   const res = await fetch(path, { ...init, headers })
@@ -53,6 +55,41 @@ export async function api<T = any>(path: string, init: RequestInit = {}): Promis
   }
   if (res.status === 204) return undefined as T
   return res.json()
+}
+
+/** Authenticated file download (xlsx/csv). */
+export async function downloadFile(path: string, fallbackName = 'download') {
+  const headers = new Headers()
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const res = await fetch(path, { headers })
+  if (res.status === 401) {
+    clearSession()
+    window.location.href = '/login'
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const body = await res.json()
+      detail = body.detail || JSON.stringify(body)
+    } catch {
+      /* ignore */
+    }
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  const blob = await res.blob()
+  const cd = res.headers.get('Content-Disposition') || ''
+  const match = /filename="?([^"]+)"?/i.exec(cd)
+  const name = match?.[1] || fallbackName
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 export function bytes(n?: number | null) {

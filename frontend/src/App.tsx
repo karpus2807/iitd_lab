@@ -7,6 +7,7 @@ import Admin from './pages/Admin'
 import Alerts from './pages/Alerts'
 import Dashboard from './pages/Dashboard'
 import Install from './pages/Install'
+import Inventory from './pages/Inventory'
 import Login from './pages/Login'
 import MachineDetail from './pages/MachineDetail'
 import Machines from './pages/Machines'
@@ -31,6 +32,7 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="machines" element={<Machines />} />
         <Route path="machines/:id" element={<MachineDetail />} />
+        <Route path="inventory" element={<Inventory />} />
         <Route path="labs" element={<Navigate to="/admin?tab=labs" replace />} />
         <Route path="infra" element={<Navigate to="/admin?tab=labs" replace />} />
         <Route path="updates" element={<Navigate to="/admin?tab=updates" replace />} />

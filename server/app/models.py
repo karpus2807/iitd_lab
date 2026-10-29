@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, Uuid
+from sqlalchemy import BigInteger, Boolean, Date, Float, ForeignKey, Index, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base, json_column, TZDateTime
@@ -545,3 +545,25 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
     value: Mapped[dict] = mapped_column(json_column(), default=dict)
     updated_at: Mapped[datetime] = mapped_column(TZDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class InventoryItem(Base, TimestampMixin):
+    """Lab asset registry (IC No. based) — separate from machines.inventory_id enroll IDs."""
+
+    __tablename__ = "inventory_items"
+    __table_args__ = (Index("ix_inventory_items_status_ic", "status", "ic_no"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    ic_no: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    item_name: Mapped[str] = mapped_column(String(512), default="", index=True)
+    item_description: Mapped[str] = mapped_column(Text, default="")
+    net_effective_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    inventory_type: Mapped[str] = mapped_column(String(64), default="", index=True)  # Lab / Personal
+    inventory_location: Mapped[str] = mapped_column(String(255), default="", index=True)
+    gis_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inv_type: Mapped[str] = mapped_column(String(64), default="", index=True)  # Institute / IRD / …
+    remark: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
+    removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    removal_remark: Mapped[str | None] = mapped_column(Text, nullable=True)

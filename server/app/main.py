@@ -6,7 +6,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api.routes import admin, agents, alerts, audit, auth, dashboard, install, labs, machines, notifications, updates
+from app.api.routes import (
+    admin,
+    agents,
+    alerts,
+    audit,
+    auth,
+    dashboard,
+    install,
+    inventory,
+    labs,
+    machines,
+    notifications,
+    updates,
+)
 from app.config import get_settings
 from app.db import get_session_factory, init_models
 from app.services.alerts import seed_default_rules
@@ -129,7 +142,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    for r in (auth, agents, machines, labs, alerts, admin, dashboard, notifications, audit, updates, install):
+    for r in (
+        auth,
+        agents,
+        machines,
+        labs,
+        inventory,
+        alerts,
+        admin,
+        dashboard,
+        notifications,
+        audit,
+        updates,
+        install,
+    ):
         app.include_router(r.router)
 
     @app.get("/health")

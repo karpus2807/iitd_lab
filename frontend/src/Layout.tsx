@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 const links = [
   ['/', 'Dashboard'],
   ['/machines', 'Machines'],
+  ['/inventory', 'Inv Management'],
   ['/alerts', 'Alerts'],
   ['/install', 'Install'],
   ['/admin', 'Admin'],
