@@ -837,7 +837,18 @@ export default function Inventory() {
                     </div>
                   </td>
                 ) : (
-                  <td>{r.remark || '—'}</td>
+                  <td>
+                    <div>{r.remark || '—'}</div>
+                    {(r.assigned_to || '').trim() ? (
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        Assigned to: <strong>{r.assigned_to}</strong>
+                      </div>
+                    ) : r.assigned ? (
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        Assigned (Personal)
+                      </div>
+                    ) : null}
+                  </td>
                 )}
                 <td>
                   <LinkStatus item={r} />
