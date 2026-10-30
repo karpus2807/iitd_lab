@@ -7,9 +7,10 @@ from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
-from app.models import InventoryItem, utcnow
+from app.models import InventoryItem, Machine, utcnow
 from app.schemas.inv_mgmt import (
     InventoryBatchUpdate,
+    InventoryIdsBody,
     InventoryItemCreate,
     InventoryItemOut,
     InventoryItemUpdate,
@@ -22,8 +23,21 @@ from app.services import inv_mgmt as svc
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
 
-def _out(row: InventoryItem) -> InventoryItemOut:
-    return InventoryItemOut.model_validate(row)
+def _out(
+    row: InventoryItem,
+    *,
+    machine: Machine | None = None,
+) -> InventoryItemOut:
+    base = InventoryItemOut.model_validate(row)
+    registered = machine is not None
+    return base.model_copy(
+        update={
+            "registered": registered,
+            "assigned": svc.is_assigned_item(row),
+            "machine_id": machine.id if machine else None,
+            "machine_hostname": (machine.hostname or machine.display_name or None) if machine else None,
+        }
+    )
 
 
 def _apply_fields(row: InventoryItem, data: dict) -> None:
@@ -33,7 +47,15 @@ def _apply_fields(row: InventoryItem, data: dict) -> None:
         val = data[key]
         if key == "ic_no" and val is not None:
             setattr(row, key, str(val).strip())
-        elif key in {"item_name", "item_description", "inventory_type", "inventory_location", "inv_type", "remark"}:
+        elif key in {
+            "item_name",
+            "item_description",
+            "inventory_type",
+            "inventory_location",
+            "inv_type",
+            "remark",
+            "assigned_to",
+        }:
             if val is not None:
                 setattr(row, key, str(val).strip())
         elif key in {"net_effective_value", "gis_date"}:
@@ -45,6 +67,22 @@ async def _get_or_404(db, item_id: UUID) -> InventoryItem:
     if not row:
         raise HTTPException(404, "Inventory item not found")
     return row
+
+
+async def _machines_by_ic(db, ic_nos: list[str]) -> dict[str, Machine]:
+    """Map lower(ic_no) → Machine where machines.inventory_id matches."""
+    needles = sorted({(ic or "").strip().lower() for ic in ic_nos if (ic or "").strip()})
+    if not needles:
+        return {}
+    rows = (
+        await db.execute(select(Machine).where(func.lower(Machine.inventory_id).in_(needles)))
+    ).scalars().all()
+    out: dict[str, Machine] = {}
+    for m in rows:
+        key = (m.inventory_id or "").strip().lower()
+        if key and key not in out:
+            out[key] = m
+    return out
 
 
 @router.get("", response_model=InventoryListOut)
@@ -72,6 +110,7 @@ async def list_inventory(
             InventoryItem.inventory_type.ilike(like),
             InventoryItem.inv_type.ilike(like),
             InventoryItem.remark.ilike(like),
+            InventoryItem.assigned_to.ilike(like),
         )
         stmt = stmt.where(filt)
         count_stmt = count_stmt.where(filt)
@@ -79,7 +118,12 @@ async def list_inventory(
     rows = (
         await db.execute(stmt.order_by(InventoryItem.ic_no.asc()).offset(offset).limit(limit))
     ).scalars().all()
-    return InventoryListOut(items=[_out(r) for r in rows], total=total, status=status)
+    machines = await _machines_by_ic(db, [r.ic_no for r in rows])
+    items = [
+        _out(r, machine=machines.get((r.ic_no or "").strip().lower()))
+        for r in rows
+    ]
+    return InventoryListOut(items=items, total=total, status=status)
 
 
 @router.get("/suggest", response_model=list[InventorySuggestItem])
@@ -308,6 +352,85 @@ async def remove_inventory(body: InventoryRemoveBody, db: DbDep, user: OperatorU
     return {"ok": True, "removed": removed, "missing": missing}
 
 
+@router.post("/restore", response_model=dict)
+async def restore_inventory(body: InventoryIdsBody, db: DbDep, user: OperatorUser, request: Request):
+    restored = 0
+    missing: list[str] = []
+    skipped: list[str] = []
+    for item_id in body.ids:
+        row = await db.get(InventoryItem, item_id)
+        if not row:
+            missing.append(str(item_id))
+            continue
+        if row.status != "removed":
+            skipped.append(row.ic_no)
+            continue
+        row.status = "active"
+        row.removed_at = None
+        row.removed_by = None
+        row.removal_remark = None
+        restored += 1
+    await write_audit(
+        db,
+        "inventory.restore",
+        user=user,
+        details={"restored": restored, "missing": missing, "skipped": skipped},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True, "restored": restored, "missing": missing, "skipped": skipped}
+
+
+@router.post("/purge", response_model=dict)
+async def purge_inventory(body: InventoryIdsBody, db: DbDep, user: OperatorUser, request: Request):
+    """Permanently delete soft-removed inventory rows. Active items are skipped."""
+    deleted = 0
+    missing: list[str] = []
+    skipped: list[str] = []
+    deleted_ics: list[str] = []
+    for item_id in body.ids:
+        row = await db.get(InventoryItem, item_id)
+        if not row:
+            missing.append(str(item_id))
+            continue
+        if row.status != "removed":
+            skipped.append(row.ic_no)
+            continue
+        deleted_ics.append(row.ic_no)
+        await db.delete(row)
+        deleted += 1
+    await write_audit(
+        db,
+        "inventory.purge",
+        user=user,
+        details={"deleted": deleted, "ic_nos": deleted_ics[:50], "missing": missing, "skipped": skipped},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True, "deleted": deleted, "missing": missing, "skipped": skipped}
+
+
+@router.post("/empty-removed", response_model=dict)
+async def empty_removed_inventory(db: DbDep, user: OperatorUser, request: Request):
+    """Permanently delete every soft-removed inventory row."""
+    rows = (
+        await db.execute(select(InventoryItem).where(InventoryItem.status == "removed"))
+    ).scalars().all()
+    deleted_ics = [r.ic_no for r in rows]
+    for row in rows:
+        await db.delete(row)
+    deleted = len(deleted_ics)
+    await write_audit(
+        db,
+        "inventory.empty_removed",
+        user=user,
+        details={"deleted": deleted, "ic_nos": deleted_ics[:50]},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True, "deleted": deleted}
+
+
 @router.post("", response_model=InventoryItemOut)
 async def create_inventory(body: InventoryItemCreate, db: DbDep, user: OperatorUser, request: Request):
     ic = body.ic_no.strip()
@@ -328,18 +451,22 @@ async def create_inventory(body: InventoryItemCreate, db: DbDep, user: OperatorU
         gis_date=body.gis_date,
         inv_type=(body.inv_type or "").strip(),
         remark=(body.remark or "").strip(),
+        assigned_to=(body.assigned_to or "").strip(),
         status="active",
     )
     db.add(row)
     await write_audit(db, "inventory.create", user=user, details={"ic_no": ic}, request=request)
     await db.commit()
     await db.refresh(row)
-    return _out(row)
+    machines = await _machines_by_ic(db, [row.ic_no])
+    return _out(row, machine=machines.get(row.ic_no.strip().lower()))
 
 
 @router.get("/{item_id}", response_model=InventoryItemOut)
 async def get_inventory(item_id: UUID, db: DbDep, user: CurrentUser):
-    return _out(await _get_or_404(db, item_id))
+    row = await _get_or_404(db, item_id)
+    machines = await _machines_by_ic(db, [row.ic_no])
+    return _out(row, machine=machines.get((row.ic_no or "").strip().lower()))
 
 
 @router.patch("/{item_id}", response_model=InventoryItemOut)
@@ -369,4 +496,5 @@ async def update_inventory(
     )
     await db.commit()
     await db.refresh(row)
-    return _out(row)
+    machines = await _machines_by_ic(db, [row.ic_no])
+    return _out(row, machine=machines.get((row.ic_no or "").strip().lower()))

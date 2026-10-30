@@ -6,7 +6,7 @@ import pytest
 from httpx import AsyncClient
 from openpyxl import Workbook, load_workbook
 
-from app.services.inv_mgmt import EXCEL_HEADERS
+from app.services.inv_mgmt import EXCEL_HEADERS, map_headers, normalize_header, parse_import_bytes
 
 
 async def _create(client: AsyncClient, headers: dict, ic: str, **extra):
@@ -60,6 +60,74 @@ async def test_crud_remove_and_list(client: AsyncClient, auth_headers: dict):
 
 
 @pytest.mark.asyncio
+async def test_restore_and_purge(client: AsyncClient, auth_headers: dict):
+    a = await _create(client, auth_headers, "IRD/TEST/2026/RESTORE")
+    b = await _create(client, auth_headers, "IRD/TEST/2026/PURGE")
+    rem = await client.post(
+        "/api/inventory/remove",
+        headers=auth_headers,
+        json={"ids": [a["id"], b["id"]], "remark": "temp out"},
+    )
+    assert rem.status_code == 200
+    assert rem.json()["removed"] == 2
+
+    restored = await client.post(
+        "/api/inventory/restore",
+        headers=auth_headers,
+        json={"ids": [a["id"]]},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["restored"] == 1
+    active = await client.get("/api/inventory?status=active&q=IRD/TEST/2026/RESTORE", headers=auth_headers)
+    row = next(x for x in active.json()["items"] if x["id"] == a["id"])
+    assert row["status"] == "active"
+    assert row["removal_remark"] is None
+    assert row["removed_at"] is None
+
+    # Active items are skipped by purge
+    skip = await client.post(
+        "/api/inventory/purge",
+        headers=auth_headers,
+        json={"ids": [a["id"]]},
+    )
+    assert skip.status_code == 200
+    assert skip.json()["deleted"] == 0
+    assert a["ic_no"] in skip.json()["skipped"]
+
+    purged = await client.post(
+        "/api/inventory/purge",
+        headers=auth_headers,
+        json={"ids": [b["id"]]},
+    )
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["deleted"] == 1
+    gone = await client.get(f"/api/inventory/{b['id']}", headers=auth_headers)
+    assert gone.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_empty_removed(client: AsyncClient, auth_headers: dict):
+    a = await _create(client, auth_headers, "IRD/TEST/2026/EMPTY-A")
+    b = await _create(client, auth_headers, "IRD/TEST/2026/EMPTY-B")
+    rem = await client.post(
+        "/api/inventory/remove",
+        headers=auth_headers,
+        json={"ids": [a["id"], b["id"]], "remark": "bulk wipe"},
+    )
+    assert rem.status_code == 200
+    emptied = await client.post("/api/inventory/empty-removed", headers=auth_headers)
+    assert emptied.status_code == 200, emptied.text
+    assert emptied.json()["deleted"] >= 2
+    listed = await client.get("/api/inventory?status=removed&q=IRD/TEST/2026/EMPTY", headers=auth_headers)
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 0
+    gone_a = await client.get(f"/api/inventory/{a['id']}", headers=auth_headers)
+    gone_b = await client.get(f"/api/inventory/{b['id']}", headers=auth_headers)
+    assert gone_a.status_code == 404
+    assert gone_b.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_remove_requires_remark(client: AsyncClient, auth_headers: dict):
     a = await _create(client, auth_headers, "IRD/TEST/2026/2")
     bad = await client.post(
@@ -68,6 +136,109 @@ async def test_remove_requires_remark(client: AsyncClient, auth_headers: dict):
         json={"ids": [a["id"]], "remark": ""},
     )
     assert bad.status_code == 422
+
+
+def test_excel_header_maps_net_value_with_rs_dot():
+    """Excel uses 'Net Effective Value (Rs.)' — period inside parens must still map."""
+    headers = [
+        "IC No.",
+        "Item Name",
+        "Item Description",
+        "Net Effective Value (Rs.)",
+        "Inventory Type",
+        "Inventory Location.",
+        "GIS Date",
+        "Inv Type",
+        "remark",
+    ]
+    assert normalize_header("Net Effective Value (Rs.)") == "net effective value (rs)"
+    mapping = map_headers(headers)
+    assert set(mapping.values()) == {
+        "ic_no",
+        "item_name",
+        "item_description",
+        "net_effective_value",
+        "inventory_type",
+        "inventory_location",
+        "gis_date",
+        "inv_type",
+        "remark",
+    }
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(headers)
+    ws.append(
+        [
+            "IRD/VAL/1",
+            "Box",
+            "desc",
+            "1797767.00",
+            "Personal",
+            "CSE",
+            "17-03-2026",
+            "IRD",
+            "",
+        ]
+    )
+    buf = io.BytesIO()
+    wb.save(buf)
+    parsed = parse_import_bytes(buf.getvalue(), "sample.xlsx")
+    assert len(parsed) == 1
+    assert parsed[0]["net_effective_value"] == 1797767.0
+    assert parsed[0]["inventory_type"] == "Personal"
+    assert parsed[0]["inventory_location"] == "CSE"
+
+
+@pytest.mark.asyncio
+async def test_registered_and_assigned_status(client: AsyncClient, auth_headers: dict):
+    await _create(
+        client,
+        auth_headers,
+        "IRD/LINK/PERSONAL",
+        item_name="Laptop",
+        inventory_type="Personal",
+    )
+    lab_item = await _create(
+        client,
+        auth_headers,
+        "IRD/LINK/LAB",
+        item_name="Server",
+        inventory_type="Lab",
+    )
+    from app.db import get_session_factory
+    from app.models import Machine
+
+    factory = get_session_factory()
+    async with factory() as db:
+        db.add(
+            Machine(
+                hostname="link-host",
+                inventory_id="IRD/LINK/LAB",
+                os_name="Linux",
+                approved=True,
+            )
+        )
+        await db.commit()
+
+    listed = await client.get("/api/inventory?q=IRD/LINK", headers=auth_headers)
+    assert listed.status_code == 200
+    by_ic = {x["ic_no"]: x for x in listed.json()["items"]}
+    assert by_ic["IRD/LINK/PERSONAL"]["assigned"] is True
+    assert by_ic["IRD/LINK/PERSONAL"]["registered"] is False
+    assert by_ic["IRD/LINK/LAB"]["registered"] is True
+    assert by_ic["IRD/LINK/LAB"]["assigned"] is False
+    assert by_ic["IRD/LINK/LAB"]["machine_hostname"] == "link-host"
+
+    patched = await client.patch(
+        f"/api/inventory/{lab_item['id']}",
+        headers=auth_headers,
+        json={"assigned_to": "Student A"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["assigned"] is True
+    assert patched.json()["registered"] is True
+    assert patched.json()["assigned_to"] == "Student A"
 
 
 @pytest.mark.asyncio

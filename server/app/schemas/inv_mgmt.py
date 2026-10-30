@@ -17,12 +17,18 @@ class InventoryItemOut(BaseModel):
     gis_date: date | None = None
     inv_type: str = ""
     remark: str = ""
+    assigned_to: str = ""
     status: str = "active"
     removed_at: datetime | None = None
     removed_by: str | None = None
     removal_remark: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Link to LabWatch machines (machine.inventory_id == ic_no)
+    registered: bool = False
+    assigned: bool = False
+    machine_id: UUID | None = None
+    machine_hostname: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -37,6 +43,7 @@ class InventoryItemCreate(BaseModel):
     gis_date: date | None = None
     inv_type: str = ""
     remark: str = ""
+    assigned_to: str = ""
 
 
 class InventoryItemUpdate(BaseModel):
@@ -49,6 +56,7 @@ class InventoryItemUpdate(BaseModel):
     gis_date: date | None = None
     inv_type: str | None = None
     remark: str | None = None
+    assigned_to: str | None = None
 
 
 class InventoryBatchUpdate(BaseModel):
@@ -59,6 +67,12 @@ class InventoryBatchUpdate(BaseModel):
 class InventoryRemoveBody(BaseModel):
     ids: list[UUID] = Field(min_length=1)
     remark: str = Field(min_length=1, max_length=2000)
+
+
+class InventoryIdsBody(BaseModel):
+    """Restore or permanently delete removed inventory items."""
+
+    ids: list[UUID] = Field(min_length=1)
 
 
 class InventorySuggestItem(BaseModel):

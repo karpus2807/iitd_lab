@@ -563,6 +563,7 @@ class InventoryItem(Base, TimestampMixin):
     gis_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     inv_type: Mapped[str] = mapped_column(String(64), default="", index=True)  # Institute / IRD / …
     remark: Mapped[str] = mapped_column(Text, default="")
+    assigned_to: Mapped[str] = mapped_column(String(255), default="")  # student / person name when issued
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
     removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)

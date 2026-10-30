@@ -56,12 +56,27 @@ MUTABLE_FIELDS = (
     "gis_date",
     "inv_type",
     "remark",
+    "assigned_to",
 )
 
 
+def is_assigned_item(item: Any) -> bool:
+    """Assigned when issued to someone, or Excel Inventory Type is Personal."""
+    assigned_to = str(getattr(item, "assigned_to", "") or "").strip()
+    if assigned_to:
+        return True
+    inv_type = str(getattr(item, "inventory_type", "") or "").strip().lower()
+    return inv_type == "personal"
+
+
 def normalize_header(raw: Any) -> str:
+    """Normalize Excel headers for mapping.
+
+    Strips all dots so ``Net Effective Value (Rs.)`` and ``Inventory Location.``
+    both match the canonical FIELD_BY_NORM keys (``… (rs)``, ``inventory location``).
+    """
     text = str(raw or "").strip().lower()
-    text = text.rstrip(".")
+    text = text.replace(".", "")
     text = re.sub(r"\s+", " ", text)
     return text
 

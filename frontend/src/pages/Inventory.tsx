@@ -12,10 +12,15 @@ type InvItem = {
   gis_date: string | null
   inv_type: string
   remark: string
+  assigned_to?: string
   status: string
   removed_at?: string | null
   removed_by?: string | null
   removal_remark?: string | null
+  registered?: boolean
+  assigned?: boolean
+  machine_id?: string | null
+  machine_hostname?: string | null
 }
 
 type Suggest = {
@@ -36,11 +41,34 @@ const EMPTY_FORM = {
   gis_date: '',
   inv_type: '',
   remark: '',
+  assigned_to: '',
 }
 
 function money(v: number | null | undefined) {
   if (v == null || Number.isNaN(Number(v))) return '—'
   return Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })
+}
+
+function LinkStatus({ item }: { item: InvItem }) {
+  const registered = !!item.registered
+  const assigned = !!item.assigned
+  if (!registered && !assigned) return <span className="muted">—</span>
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      {registered && (
+        <span className="badge ONLINE" title={item.machine_hostname || item.machine_id || 'LabWatch machine'}>
+          <i className="dot" />
+          Registered
+        </span>
+      )}
+      {assigned && (
+        <span className="badge INFO" title={item.assigned_to || 'Personal / issued'}>
+          <i className="dot" />
+          Assigned{item.assigned_to ? `: ${item.assigned_to}` : ''}
+        </span>
+      )}
+    </div>
+  )
 }
 
 export default function Inventory() {
@@ -157,6 +185,7 @@ export default function Inventory() {
       gis_date: item.gis_date || '',
       inv_type: item.inv_type || '',
       remark: item.remark || '',
+      assigned_to: item.assigned_to || '',
     })
   }
 
@@ -175,6 +204,7 @@ export default function Inventory() {
       gis_date: form.gis_date || null,
       inv_type: form.inv_type.trim(),
       remark: form.remark.trim(),
+      assigned_to: form.assigned_to.trim(),
     }
   }
 
@@ -259,6 +289,79 @@ export default function Inventory() {
     }
   }
 
+  async function runRestore(ids: string[] = selectedIds, label?: string) {
+    if (!ids.length) return
+    const who = label || `${ids.length} item(s)`
+    if (!confirm(`Restore ${who} back to Active?`)) return
+    setBusy(true)
+    setErr('')
+    setNotice('')
+    try {
+      const r = await api('/api/inventory/restore', {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      })
+      setNotice(`Restored ${r.restored} item(s)`)
+      setSelected({})
+      setTab('active')
+      await load()
+    } catch (e: any) {
+      setErr(e?.message || 'Restore failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runPurge(ids: string[] = selectedIds, label?: string) {
+    if (!ids.length) return
+    const who = label || `${ids.length} removed item(s)`
+    if (!confirm(`Permanently delete ${who}? This cannot be undone.`)) return
+    setBusy(true)
+    setErr('')
+    setNotice('')
+    try {
+      const r = await api('/api/inventory/purge', {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      })
+      setNotice(`Permanently deleted ${r.deleted} item(s)`)
+      setSelected({})
+      await load()
+    } catch (e: any) {
+      setErr(e?.message || 'Permanent delete failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runEmptyRemoved() {
+    if (!total) {
+      setErr('Removed list is already empty')
+      return
+    }
+    if (
+      !confirm(
+        `Empty Removed — permanently delete ALL ${total} removed item(s)? This cannot be undone.`,
+      )
+    ) {
+      return
+    }
+    if (!confirm('Final confirm: delete every removed inventory row forever?')) return
+    setBusy(true)
+    setErr('')
+    setNotice('')
+    try {
+      const r = await api('/api/inventory/empty-removed', { method: 'POST' })
+      setNotice(`Emptied Removed — permanently deleted ${r.deleted} item(s)`)
+      setSelected({})
+      await load()
+    } catch (e: any) {
+      setErr(e?.message || 'Empty removed failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function onImport(file: File | null) {
     if (!file || !canEdit) return
     setBusy(true)
@@ -289,7 +392,9 @@ export default function Inventory() {
           <h2>Inv Management</h2>
           <p>
             Lab asset registry (IC No.) · {total} {tab}
-            {canEdit ? ' · add, edit, import/export, soft-remove with remark' : ' · view / export'}
+            {canEdit
+              ? ' · add, edit, import/export, soft-remove, restore, permanent delete'
+              : ' · view / export'}
           </p>
         </div>
       </div>
@@ -369,6 +474,34 @@ export default function Inventory() {
             </button>
             <button className="btn danger" disabled={busy || !selectedIds.length} onClick={() => setRemoveOpen(true)}>
               Remove ({selectedIds.length})
+            </button>
+          </>
+        )}
+        {canEdit && tab === 'removed' && (
+          <>
+            <button
+              className="btn"
+              disabled={busy || !selectedIds.length}
+              onClick={() => void runRestore(selectedIds)}
+              title="Restore selected items back to Active"
+            >
+              Restore selected ({selectedIds.length})
+            </button>
+            <button
+              className="btn danger"
+              disabled={busy || !selectedIds.length}
+              onClick={() => void runPurge(selectedIds)}
+              title="Permanently delete only the selected removed items"
+            >
+              Permanent delete selected ({selectedIds.length})
+            </button>
+            <button
+              className="btn danger"
+              disabled={busy || total < 1}
+              onClick={() => void runEmptyRemoved()}
+              title="Permanently delete every item in Removed"
+            >
+              Empty removed ({total})
             </button>
           </>
         )}
@@ -460,6 +593,14 @@ export default function Inventory() {
             remark
             <input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} />
           </label>
+          <label style={{ display: 'block', marginTop: 12 }}>
+            Assigned to (student / person)
+            <input
+              value={form.assigned_to}
+              onChange={(e) => setForm({ ...form, assigned_to: e.target.value })}
+              placeholder="Leave blank if unassigned"
+            />
+          </label>
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
             <button className="btn" disabled={busy} type="submit">
               {busy ? 'Saving…' : 'Save'}
@@ -534,7 +675,7 @@ export default function Inventory() {
         <table>
           <thead>
             <tr>
-              {tab === 'active' && canEdit && (
+              {canEdit && (
                 <th style={{ width: 36 }}>
                   <input type="checkbox" checked={allSelected} onChange={(e) => toggleAll(e.target.checked)} aria-label="Select all" />
                 </th>
@@ -547,13 +688,14 @@ export default function Inventory() {
               <th>Value (Rs.)</th>
               <th>GIS Date</th>
               {tab === 'removed' ? <th>Removal remark</th> : <th>remark</th>}
-              {canEdit && tab === 'active' && <th></th>}
+              <th>Status</th>
+              {canEdit && <th></th>}
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
-                {tab === 'active' && canEdit && (
+                {canEdit && (
                   <td>
                     <input
                       type="checkbox"
@@ -594,10 +736,33 @@ export default function Inventory() {
                 ) : (
                   <td>{r.remark || '—'}</td>
                 )}
+                <td>
+                  <LinkStatus item={r} />
+                </td>
                 {canEdit && tab === 'active' && (
                   <td className="row-actions">
                     <button className="btn secondary" type="button" onClick={() => openEdit(r)}>
                       Edit
+                    </button>
+                  </td>
+                )}
+                {canEdit && tab === 'removed' && (
+                  <td className="row-actions">
+                    <button
+                      className="btn secondary"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void runRestore([r.id], r.ic_no)}
+                    >
+                      Restore
+                    </button>
+                    <button
+                      className="btn danger"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void runPurge([r.id], r.ic_no)}
+                    >
+                      Delete forever
                     </button>
                   </td>
                 )}
@@ -606,7 +771,9 @@ export default function Inventory() {
             {!rows.length && (
               <tr>
                 <td colSpan={10} className="muted" style={{ padding: 16 }}>
-                  No inventory items. Download the template, fill it, then Import — or Add inv.
+                  {tab === 'removed'
+                    ? 'No removed inventory. Soft-removed items appear here for restore or permanent delete.'
+                    : 'No inventory items. Download the template, fill it, then Import — or Add inv.'}
                 </td>
               </tr>
             )}
