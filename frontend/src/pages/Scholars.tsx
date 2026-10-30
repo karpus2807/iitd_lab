@@ -90,7 +90,6 @@ export default function Scholars() {
   const [tab, setTab] = useState<'active' | 'removed'>('active')
   const [labs, setLabs] = useState<Lab[]>([])
   const [labId, setLabId] = useState('')
-  const [enrollLabId, setEnrollLabId] = useState('')
   const [rows, setRows] = useState<Scholar[]>([])
   const [total, setTotal] = useState(0)
   const [q, setQ] = useState('')
@@ -115,19 +114,9 @@ export default function Scholars() {
   const suggestRef = useRef<HTMLDivElement>(null)
 
   const selectedLab = useMemo(() => labs.find((l) => l.id === labId) || null, [labs, labId])
-  const enrollLab = useMemo(() => labs.find((l) => l.id === enrollLabId) || null, [labs, enrollLabId])
   const selectedIds = useMemo(() => rows.filter((r) => selected[r.id]).map((r) => r.id), [rows, selected])
   const allSelected = rows.length > 0 && rows.every((r) => selected[r.id])
   const filtersActive = !!(filterGroup || filterFaculty || q)
-
-  function openEnroll() {
-    const pick = labId || labs[0]?.id || ''
-    setEnrollLabId(pick)
-    setForm({ ...EMPTY })
-    setPhotoFile(null)
-    if (photoRef.current) photoRef.current.value = ''
-    setEnrollOpen(true)
-  }
 
   const loadLabs = useCallback(async () => {
     const data = await api<Lab[]>('/api/labs')
@@ -230,17 +219,13 @@ export default function Scholars() {
 
   async function submitEnroll(e: FormEvent) {
     e.preventDefault()
-    if (!canEdit) return
-    if (!enrollLabId) {
-      setErr('Select a lab for enrolment')
-      return
-    }
+    if (!canEdit || !labId) return
     setBusy(true)
     setErr('')
     setNotice('')
     try {
       const fd = new FormData()
-      fd.append('lab_id', enrollLabId)
+      fd.append('lab_id', labId)
       fd.append('full_name', form.full_name.trim())
       fd.append('scholar_id', form.scholar_id.trim())
       fd.append('group_name', form.group_name.trim())
@@ -459,7 +444,7 @@ export default function Scholars() {
         <button className="btn secondary" type="button" disabled={busy} onClick={() => void load()}>Refresh</button>
         {canEdit && tab === 'active' && (
           <>
-            <button className="btn" type="button" disabled={busy || !labs.length} onClick={openEnroll}>
+            <button className="btn" type="button" disabled={!labId} onClick={() => setEnrollOpen(true)} title="Select a lab first">
               Enrol
             </button>
             <button className="btn danger" type="button" disabled={busy || !selectedIds.length} onClick={() => setRemoveOpen(true)}>
@@ -523,23 +508,9 @@ export default function Scholars() {
 
       {enrollOpen && canEdit && (
         <form className="card" onSubmit={submitEnroll} style={{ marginBottom: 16 }}>
-          <h3 style={{ marginTop: 0 }}>
-            Enrol{enrollLab ? ` into ${labLabel(enrollLab)}` : ''}
-          </h3>
+          <h3 style={{ marginTop: 0 }}>Enrol into {selectedLab ? labLabel(selectedLab) : 'lab'}</h3>
+          {!labId && <p className="err">Select a lab above first.</p>}
           <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-            <label>
-              Lab *
-              <select required value={enrollLabId} onChange={(e) => setEnrollLabId(e.target.value)}>
-                <option value="" disabled>
-                  Select lab
-                </option>
-                {labs.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {labLabel(l)}
-                  </option>
-                ))}
-              </select>
-            </label>
             <label>Name *<input required value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></label>
             <label>ID<input value={form.scholar_id} onChange={(e) => setForm({ ...form, scholar_id: e.target.value })} /></label>
             <label>
@@ -614,9 +585,7 @@ export default function Scholars() {
             </div>
           )}
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" disabled={busy || !enrollLabId || !labs.length} type="submit">
-              {busy ? 'Saving…' : 'Save enrolment'}
-            </button>
+            <button className="btn" disabled={busy || !labId} type="submit">{busy ? 'Saving…' : 'Save enrolment'}</button>
             <button className="btn secondary" type="button" onClick={() => setEnrollOpen(false)}>Cancel</button>
           </div>
         </form>
