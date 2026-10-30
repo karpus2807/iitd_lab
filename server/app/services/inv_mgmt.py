@@ -166,11 +166,26 @@ def item_to_excel_row(item: Any) -> list[Any]:
     ]
 
 
+# Example first data row so users see the expected format (delete before real import).
+TEMPLATE_EXAMPLE_ROW = [
+    "IRD/3371/2026/1",
+    "Dell Precision 7960 Workstation",
+    "Example description — replace this row with real data",
+    "1797767.00",
+    "Lab",
+    "ARCHITECTURE LAB",
+    "17-03-2026",
+    "IRD",
+    "sample row — delete before import",
+]
+
+
 def build_template_xlsx() -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Inventory"
     ws.append(EXCEL_HEADERS)
+    ws.append(TEMPLATE_EXAMPLE_ROW)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -180,6 +195,7 @@ def build_template_csv() -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(EXCEL_HEADERS)
+    writer.writerow(TEMPLATE_EXAMPLE_ROW)
     return buf.getvalue().encode("utf-8-sig")
 
 

@@ -106,6 +106,54 @@ async def test_restore_and_purge(client: AsyncClient, auth_headers: dict):
 
 
 @pytest.mark.asyncio
+async def test_inventory_filters_and_facets(client: AsyncClient, auth_headers: dict):
+    await _create(
+        client,
+        auth_headers,
+        "IRD/FILT/LAB",
+        inventory_type="Lab",
+        inventory_location="VLSI LAB",
+        inv_type="Institute",
+    )
+    await _create(
+        client,
+        auth_headers,
+        "IRD/FILT/PERSONAL",
+        inventory_type="Personal",
+        inventory_location="CSE",
+        inv_type="IRD",
+    )
+    facets = await client.get("/api/inventory/facets?status=active", headers=auth_headers)
+    assert facets.status_code == 200, facets.text
+    body = facets.json()
+    assert "Lab" in body["inventory_types"]
+    assert "Personal" in body["inventory_types"]
+    assert "VLSI LAB" in body["inventory_locations"]
+    assert "IRD" in body["inv_types"]
+
+    only_lab = await client.get(
+        "/api/inventory?status=active&inventory_type=Lab&q=IRD/FILT",
+        headers=auth_headers,
+    )
+    assert only_lab.status_code == 200
+    ics = {x["ic_no"] for x in only_lab.json()["items"]}
+    assert "IRD/FILT/LAB" in ics
+    assert "IRD/FILT/PERSONAL" not in ics
+
+    only_ird = await client.get(
+        "/api/inventory?status=active&inv_type=IRD&q=IRD/FILT",
+        headers=auth_headers,
+    )
+    assert {x["ic_no"] for x in only_ird.json()["items"]} == {"IRD/FILT/PERSONAL"}
+
+    assigned = await client.get(
+        "/api/inventory?status=active&link=assigned&q=IRD/FILT",
+        headers=auth_headers,
+    )
+    assert {x["ic_no"] for x in assigned.json()["items"]} == {"IRD/FILT/PERSONAL"}
+
+
+@pytest.mark.asyncio
 async def test_empty_removed(client: AsyncClient, auth_headers: dict):
     a = await _create(client, auth_headers, "IRD/TEST/2026/EMPTY-A")
     b = await _create(client, auth_headers, "IRD/TEST/2026/EMPTY-B")
@@ -204,19 +252,29 @@ async def test_registered_and_assigned_status(client: AsyncClient, auth_headers:
         auth_headers,
         "IRD/LINK/LAB",
         item_name="Server",
-        inventory_type="Lab",
+        inventory_type="",
+        inventory_location="",
     )
     from app.db import get_session_factory
-    from app.models import Machine
+    from app.models import Lab, Machine
+    from sqlalchemy import select
 
     factory = get_session_factory()
     async with factory() as db:
+        lab = (
+            await db.execute(select(Lab).where(Lab.name == "ARCHITECTURE LAB"))
+        ).scalar_one_or_none()
+        if not lab:
+            lab = Lab(name="ARCHITECTURE LAB", code="ARCH")
+            db.add(lab)
+            await db.flush()
         db.add(
             Machine(
                 hostname="link-host",
                 inventory_id="IRD/LINK/LAB",
                 os_name="Linux",
                 approved=True,
+                lab_id=lab.id,
             )
         )
         await db.commit()
@@ -229,6 +287,10 @@ async def test_registered_and_assigned_status(client: AsyncClient, auth_headers:
     assert by_ic["IRD/LINK/LAB"]["registered"] is True
     assert by_ic["IRD/LINK/LAB"]["assigned"] is False
     assert by_ic["IRD/LINK/LAB"]["machine_hostname"] == "link-host"
+    # Blank template location/type → fall back to machine lab / Lab
+    assert by_ic["IRD/LINK/LAB"]["inventory_location"] == "ARCHITECTURE LAB"
+    assert by_ic["IRD/LINK/LAB"]["inventory_type"] == "Lab"
+    assert by_ic["IRD/LINK/LAB"]["machine_lab_name"] == "ARCHITECTURE LAB"
 
     patched = await client.patch(
         f"/api/inventory/{lab_item['id']}",
@@ -239,6 +301,7 @@ async def test_registered_and_assigned_status(client: AsyncClient, auth_headers:
     assert patched.json()["assigned"] is True
     assert patched.json()["registered"] is True
     assert patched.json()["assigned_to"] == "Student A"
+    assert patched.json()["inventory_location"] == "ARCHITECTURE LAB"
 
 
 @pytest.mark.asyncio

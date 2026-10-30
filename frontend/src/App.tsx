@@ -11,6 +11,7 @@ import Inventory from './pages/Inventory'
 import Login from './pages/Login'
 import MachineDetail from './pages/MachineDetail'
 import Machines from './pages/Machines'
+import Scholars from './pages/Scholars'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   if (!currentUser() && !localStorage.getItem('lw_access')) return <Navigate to="/login" replace />
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="machines" element={<Machines />} />
         <Route path="machines/:id" element={<MachineDetail />} />
         <Route path="inventory" element={<Inventory />} />
+        <Route path="scholars" element={<Scholars />} />
         <Route path="labs" element={<Navigate to="/admin?tab=labs" replace />} />
         <Route path="infra" element={<Navigate to="/admin?tab=labs" replace />} />
         <Route path="updates" element={<Navigate to="/admin?tab=updates" replace />} />

@@ -563,8 +563,45 @@ class InventoryItem(Base, TimestampMixin):
     gis_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     inv_type: Mapped[str] = mapped_column(String(64), default="", index=True)  # Institute / IRD / …
     remark: Mapped[str] = mapped_column(Text, default="")
-    assigned_to: Mapped[str] = mapped_column(String(255), default="")  # student / person name when issued
+    assigned_to: Mapped[str] = mapped_column(String(255), default="")  # scholar / person name when issued
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
     removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
     removal_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Scholar(Base, TimestampMixin):
+    """Lab scholar / researcher enrolment (M.Tech, Ph.D., Postdoc, …) — not only students."""
+
+    __tablename__ = "scholars"
+    __table_args__ = (
+        Index("ix_scholars_lab_status", "lab_id", "status"),
+        Index("ix_scholars_scholar_id", "scholar_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    lab_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("labs.id", ondelete="CASCADE"), index=True
+    )
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    scholar_id: Mapped[str] = mapped_column(String(120), default="")  # entry / roll / employee id
+    group_name: Mapped[str] = mapped_column(String(120), default="", index=True)  # M.Tech / Ph.D. / …
+    faculty: Mapped[str] = mapped_column(String(255), default="", index=True)
+    system_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    # none | listed | non_list
+    inventory_kind: Mapped[str] = mapped_column(String(16), default="none")
+    inventory_item_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("inventory_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    inventory_label: Mapped[str] = mapped_column(String(255), default="")  # IC / free text for non-list
+    email: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    photo_path: Mapped[str] = mapped_column(String(512), default="")  # relative under data/scholar-photos
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
+    notes: Mapped[str] = mapped_column(Text, default="")
+    removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    removal_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    lab: Mapped["Lab"] = relationship()
+    inventory_item: Mapped["InventoryItem | None"] = relationship()

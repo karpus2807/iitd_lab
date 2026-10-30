@@ -100,6 +100,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_memory_extra_column)
         await conn.run_sync(ensure_agent_update_columns)
         await conn.run_sync(ensure_inventory_assigned_column)
+        await conn.run_sync(ensure_scholar_removal_columns)
 
 
 def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
@@ -302,3 +303,27 @@ def ensure_inventory_assigned_column(sync_conn) -> None:
     existing = {c["name"] for c in insp.get_columns("inventory_items")}
     if "assigned_to" not in existing:
         sync_conn.execute(text("ALTER TABLE inventory_items ADD COLUMN assigned_to VARCHAR(255) DEFAULT ''"))
+
+
+def ensure_scholar_removal_columns(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "scholars" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("scholars")}
+    if sync_conn.dialect.name == "postgresql":
+        types = {
+            "removed_at": "TIMESTAMPTZ",
+            "removed_by": "VARCHAR(80)",
+            "removal_remark": "TEXT",
+        }
+    else:
+        types = {
+            "removed_at": "DATETIME",
+            "removed_by": "VARCHAR(80)",
+            "removal_remark": "TEXT",
+        }
+    for name, sql_type in types.items():
+        if name not in existing:
+            sync_conn.execute(text(f"ALTER TABLE scholars ADD COLUMN {name} {sql_type}"))

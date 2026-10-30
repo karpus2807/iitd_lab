@@ -78,6 +78,13 @@ export default function Inventory() {
   const [rows, setRows] = useState<InvItem[]>([])
   const [total, setTotal] = useState(0)
   const [q, setQ] = useState('')
+  const [filterType, setFilterType] = useState('')
+  const [filterLocation, setFilterLocation] = useState('')
+  const [filterInvType, setFilterInvType] = useState('')
+  const [filterLink, setFilterLink] = useState('any')
+  const [facetTypes, setFacetTypes] = useState<string[]>([])
+  const [facetLocations, setFacetLocations] = useState<string[]>([])
+  const [facetInvTypes, setFacetInvTypes] = useState<string[]>([])
   const [err, setErr] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -99,13 +106,36 @@ export default function Inventory() {
   const suggestRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  const filtersActive = !!(filterType || filterLocation || filterInvType || (filterLink && filterLink !== 'any'))
+
+  const loadFacets = useCallback(async () => {
+    try {
+      const data = await api<{
+        inventory_types: string[]
+        inventory_locations: string[]
+        inv_types: string[]
+      }>(`/api/inventory/facets?status=${tab}`)
+      setFacetTypes(data.inventory_types || [])
+      setFacetLocations(data.inventory_locations || [])
+      setFacetInvTypes(data.inv_types || [])
+    } catch {
+      setFacetTypes([])
+      setFacetLocations([])
+      setFacetInvTypes([])
+    }
+  }, [tab])
+
   const load = useCallback(async () => {
     setErr('')
     try {
       const qs = new URLSearchParams()
       qs.set('status', tab)
-      qs.set('limit', '500')
+      qs.set('limit', '2000')
       if (q.trim()) qs.set('q', q.trim())
+      if (filterType) qs.set('inventory_type', filterType)
+      if (filterLocation) qs.set('inventory_location', filterLocation)
+      if (filterInvType) qs.set('inv_type', filterInvType)
+      if (filterLink && filterLink !== 'any') qs.set('link', filterLink)
       const data = await api<{ items: InvItem[]; total: number }>(`/api/inventory?${qs}`)
       setRows(data.items || [])
       setTotal(data.total || 0)
@@ -121,11 +151,15 @@ export default function Inventory() {
       setRows([])
       setTotal(0)
     }
-  }, [tab, q])
+  }, [tab, q, filterType, filterLocation, filterInvType, filterLink])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    void loadFacets()
+  }, [loadFacets])
 
   useEffect(() => {
     const needle = q.trim()
@@ -400,11 +434,80 @@ export default function Inventory() {
       </div>
 
       <div className="tabs" style={{ marginBottom: 12 }}>
-        <button className={tab === 'active' ? 'active' : ''} onClick={() => { setTab('active'); setSelected({}) }}>
+        <button
+          className={tab === 'active' ? 'active' : ''}
+          onClick={() => {
+            setTab('active')
+            setSelected({})
+          }}
+        >
           Active
         </button>
-        <button className={tab === 'removed' ? 'active' : ''} onClick={() => { setTab('removed'); setSelected({}) }}>
+        <button
+          className={tab === 'removed' ? 'active' : ''}
+          onClick={() => {
+            setTab('removed')
+            setSelected({})
+          }}
+        >
           Removed
+        </button>
+      </div>
+
+      <div className="card toolbar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 140 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Type</span>
+          <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+            <option value="">All types</option>
+            <option value="__blank__">(blank)</option>
+            {facetTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Location</span>
+          <select value={filterLocation} onChange={(e) => setFilterLocation(e.target.value)}>
+            <option value="">All locations</option>
+            <option value="__blank__">(blank)</option>
+            {facetLocations.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 140 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Inv Type</span>
+          <select value={filterInvType} onChange={(e) => setFilterInvType(e.target.value)}>
+            <option value="">All inv types</option>
+            <option value="__blank__">(blank)</option>
+            {facetInvTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Link status</span>
+          <select value={filterLink} onChange={(e) => setFilterLink(e.target.value)}>
+            <option value="any">Any status</option>
+            <option value="registered">Registered</option>
+            <option value="assigned">Assigned</option>
+            <option value="registered_assigned">Registered + Assigned</option>
+            <option value="unlinked">Not registered</option>
+          </select>
+        </label>
+        <button
+          className="btn secondary"
+          type="button"
+          disabled={!filtersActive && !q}
+          onClick={() => {
+            setFilterType('')
+            setFilterLocation('')
+            setFilterInvType('')
+            setFilterLink('any')
+            setQ('')
+          }}
+        >
+          Clear filters
         </button>
       </div>
 

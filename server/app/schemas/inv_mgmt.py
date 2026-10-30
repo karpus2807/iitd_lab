@@ -29,6 +29,7 @@ class InventoryItemOut(BaseModel):
     assigned: bool = False
     machine_id: UUID | None = None
     machine_hostname: str | None = None
+    machine_lab_name: str | None = None
 
     model_config = {"from_attributes": True}
 

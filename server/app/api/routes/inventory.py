@@ -4,10 +4,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
-from app.models import InventoryItem, Machine, utcnow
+from app.models import InventoryItem, Lab, Machine, utcnow
 from app.schemas.inv_mgmt import (
     InventoryBatchUpdate,
     InventoryIdsBody,
@@ -27,15 +27,30 @@ def _out(
     row: InventoryItem,
     *,
     machine: Machine | None = None,
+    lab_name: str | None = None,
 ) -> InventoryItemOut:
     base = InventoryItemOut.model_validate(row)
     registered = machine is not None
+    lab = (lab_name or "").strip() or None
+    if lab and lab.lower() == "unassigned":
+        lab = None
+    # Template location wins; else show registered machine's lab name.
+    location = (base.inventory_location or "").strip()
+    if not location and lab:
+        location = lab
+    # Template type wins; registered lab hosts default to Lab when blank.
+    inv_type_col = (base.inventory_type or "").strip()
+    if not inv_type_col and registered:
+        inv_type_col = "Lab"
     return base.model_copy(
         update={
+            "inventory_location": location,
+            "inventory_type": inv_type_col,
             "registered": registered,
             "assigned": svc.is_assigned_item(row),
             "machine_id": machine.id if machine else None,
             "machine_hostname": (machine.hostname or machine.display_name or None) if machine else None,
+            "machine_lab_name": lab,
         }
     )
 
@@ -69,36 +84,45 @@ async def _get_or_404(db, item_id: UUID) -> InventoryItem:
     return row
 
 
-async def _machines_by_ic(db, ic_nos: list[str]) -> dict[str, Machine]:
-    """Map lower(ic_no) → Machine where machines.inventory_id matches."""
+async def _machines_by_ic(db, ic_nos: list[str]) -> dict[str, tuple[Machine, str | None]]:
+    """Map lower(ic_no) → (Machine, lab_name) where machines.inventory_id matches."""
     needles = sorted({(ic or "").strip().lower() for ic in ic_nos if (ic or "").strip()})
     if not needles:
         return {}
     rows = (
-        await db.execute(select(Machine).where(func.lower(Machine.inventory_id).in_(needles)))
-    ).scalars().all()
-    out: dict[str, Machine] = {}
-    for m in rows:
+        await db.execute(
+            select(Machine, Lab.name)
+            .outerjoin(Lab, Machine.lab_id == Lab.id)
+            .where(func.lower(Machine.inventory_id).in_(needles))
+        )
+    ).all()
+    out: dict[str, tuple[Machine, str | None]] = {}
+    for m, lab_name in rows:
         key = (m.inventory_id or "").strip().lower()
         if key and key not in out:
-            out[key] = m
+            name = (lab_name or "").strip()
+            out[key] = (m, name or None)
     return out
 
 
-@router.get("", response_model=InventoryListOut)
-async def list_inventory(
-    db: DbDep,
-    user: CurrentUser,
-    q: str = "",
-    status: str = Query(default="active", pattern="^(active|removed|all)$"),
-    limit: int = Query(default=200, ge=1, le=2000),
-    offset: int = Query(default=0, ge=0),
+def _link_out(row: InventoryItem, links: dict[str, tuple[Machine, str | None]]) -> InventoryItemOut:
+    link = links.get((row.ic_no or "").strip().lower())
+    if not link:
+        return _out(row)
+    machine, lab_name = link
+    return _out(row, machine=machine, lab_name=lab_name)
+
+
+def _apply_inventory_filters(
+    stmt,
+    count_stmt,
+    *,
+    q: str,
+    inventory_type: str,
+    inventory_location: str,
+    inv_type: str,
+    link: str,
 ):
-    stmt = select(InventoryItem)
-    count_stmt = select(func.count()).select_from(InventoryItem)
-    if status != "all":
-        stmt = stmt.where(InventoryItem.status == status)
-        count_stmt = count_stmt.where(InventoryItem.status == status)
     needle = (q or "").strip()
     if needle:
         like = f"%{needle}%"
@@ -114,15 +138,193 @@ async def list_inventory(
         )
         stmt = stmt.where(filt)
         count_stmt = count_stmt.where(filt)
+
+    type_f = (inventory_type or "").strip()
+    if type_f:
+        if type_f.lower() == "__blank__":
+            blank_type = or_(InventoryItem.inventory_type == "", InventoryItem.inventory_type.is_(None))
+            registered_exists = (
+                select(Machine.id)
+                .where(func.lower(Machine.inventory_id) == func.lower(InventoryItem.ic_no))
+                .exists()
+            )
+            # blank stored type, and not showing as Lab via registration
+            filt_blank = and_(blank_type, ~registered_exists)
+            stmt = stmt.where(filt_blank)
+            count_stmt = count_stmt.where(filt_blank)
+        else:
+            stored_type = func.lower(InventoryItem.inventory_type) == type_f.lower()
+            # Display fallback: blank type + registered machine → shown as "Lab"
+            if type_f.lower() == "lab":
+                blank_registered = and_(
+                    or_(InventoryItem.inventory_type == "", InventoryItem.inventory_type.is_(None)),
+                    (
+                        select(Machine.id)
+                        .where(func.lower(Machine.inventory_id) == func.lower(InventoryItem.ic_no))
+                        .exists()
+                    ),
+                )
+                filt_type = or_(stored_type, blank_registered)
+            else:
+                filt_type = stored_type
+            stmt = stmt.where(filt_type)
+            count_stmt = count_stmt.where(filt_type)
+
+    inv_type_f = (inv_type or "").strip()
+    if inv_type_f:
+        if inv_type_f.lower() == "__blank__":
+            blank_inv = or_(InventoryItem.inv_type == "", InventoryItem.inv_type.is_(None))
+            stmt = stmt.where(blank_inv)
+            count_stmt = count_stmt.where(blank_inv)
+        else:
+            stmt = stmt.where(func.lower(InventoryItem.inv_type) == inv_type_f.lower())
+            count_stmt = count_stmt.where(func.lower(InventoryItem.inv_type) == inv_type_f.lower())
+
+    loc_f = (inventory_location or "").strip()
+    if loc_f:
+        if loc_f.lower() == "__blank__":
+            blank_loc = or_(InventoryItem.inventory_location == "", InventoryItem.inventory_location.is_(None))
+            # blank stored location AND no non-Unassigned machine lab
+            has_lab = (
+                select(Machine.id)
+                .outerjoin(Lab, Machine.lab_id == Lab.id)
+                .where(
+                    func.lower(Machine.inventory_id) == func.lower(InventoryItem.ic_no),
+                    Lab.name.is_not(None),
+                    func.lower(Lab.name) != "unassigned",
+                )
+                .exists()
+            )
+            filt_blank = and_(blank_loc, ~has_lab)
+            stmt = stmt.where(filt_blank)
+            count_stmt = count_stmt.where(filt_blank)
+        else:
+            stored = func.lower(InventoryItem.inventory_location) == loc_f.lower()
+            via_lab = and_(
+                or_(InventoryItem.inventory_location == "", InventoryItem.inventory_location.is_(None)),
+                (
+                    select(Machine.id)
+                    .join(Lab, Machine.lab_id == Lab.id)
+                    .where(
+                        func.lower(Machine.inventory_id) == func.lower(InventoryItem.ic_no),
+                        func.lower(Lab.name) == loc_f.lower(),
+                    )
+                    .exists()
+                ),
+            )
+            filt_loc = or_(stored, via_lab)
+            stmt = stmt.where(filt_loc)
+            count_stmt = count_stmt.where(filt_loc)
+
+    link_f = (link or "").strip().lower()
+    if link_f and link_f != "any":
+        registered_exists = (
+            select(Machine.id)
+            .where(func.lower(Machine.inventory_id) == func.lower(InventoryItem.ic_no))
+            .exists()
+        )
+        assigned_expr = or_(
+            and_(InventoryItem.assigned_to.is_not(None), InventoryItem.assigned_to != ""),
+            func.lower(InventoryItem.inventory_type) == "personal",
+        )
+        if link_f == "registered":
+            stmt = stmt.where(registered_exists)
+            count_stmt = count_stmt.where(registered_exists)
+        elif link_f == "assigned":
+            stmt = stmt.where(assigned_expr)
+            count_stmt = count_stmt.where(assigned_expr)
+        elif link_f == "unlinked":
+            stmt = stmt.where(~registered_exists)
+            count_stmt = count_stmt.where(~registered_exists)
+        elif link_f == "registered_assigned":
+            stmt = stmt.where(and_(registered_exists, assigned_expr))
+            count_stmt = count_stmt.where(and_(registered_exists, assigned_expr))
+
+    return stmt, count_stmt
+
+
+@router.get("/facets")
+async def inventory_facets(
+    db: DbDep,
+    user: CurrentUser,
+    status: str = Query(default="active", pattern="^(active|removed|all)$"),
+):
+    """Distinct filter values for the current Active/Removed tab."""
+    type_stmt = select(InventoryItem.inventory_type).distinct().order_by(InventoryItem.inventory_type)
+    loc_stmt = select(InventoryItem.inventory_location).distinct().order_by(InventoryItem.inventory_location)
+    inv_stmt = select(InventoryItem.inv_type).distinct().order_by(InventoryItem.inv_type)
+    if status != "all":
+        type_stmt = type_stmt.where(InventoryItem.status == status)
+        loc_stmt = loc_stmt.where(InventoryItem.status == status)
+        inv_stmt = inv_stmt.where(InventoryItem.status == status)
+
+    types = [r for (r,) in (await db.execute(type_stmt)).all() if (r or "").strip()]
+    locations = {r for (r,) in (await db.execute(loc_stmt)).all() if (r or "").strip()}
+    inv_types = [r for (r,) in (await db.execute(inv_stmt)).all() if (r or "").strip()]
+
+    # Include lab names from registered machines linked to this tab's items
+    lab_q = (
+        select(Lab.name)
+        .join(Machine, Machine.lab_id == Lab.id)
+        .join(InventoryItem, func.lower(InventoryItem.ic_no) == func.lower(Machine.inventory_id))
+        .where(Lab.name.is_not(None), func.lower(Lab.name) != "unassigned")
+        .distinct()
+        .order_by(Lab.name)
+    )
+    if status != "all":
+        lab_q = lab_q.where(InventoryItem.status == status)
+    for (name,) in (await db.execute(lab_q)).all():
+        if (name or "").strip():
+            locations.add(name.strip())
+
+    return {
+        "status": status,
+        "inventory_types": sorted(types, key=str.lower),
+        "inventory_locations": sorted(locations, key=str.lower),
+        "inv_types": sorted(inv_types, key=str.lower),
+        "links": [
+            {"value": "any", "label": "Any status"},
+            {"value": "registered", "label": "Registered"},
+            {"value": "assigned", "label": "Assigned"},
+            {"value": "registered_assigned", "label": "Registered + Assigned"},
+            {"value": "unlinked", "label": "Not registered"},
+        ],
+    }
+
+
+@router.get("", response_model=InventoryListOut)
+async def list_inventory(
+    db: DbDep,
+    user: CurrentUser,
+    q: str = "",
+    status: str = Query(default="active", pattern="^(active|removed|all)$"),
+    inventory_type: str = "",
+    inventory_location: str = "",
+    inv_type: str = "",
+    link: str = Query(default="any", pattern="^(any|registered|assigned|registered_assigned|unlinked)$"),
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+):
+    stmt = select(InventoryItem)
+    count_stmt = select(func.count()).select_from(InventoryItem)
+    if status != "all":
+        stmt = stmt.where(InventoryItem.status == status)
+        count_stmt = count_stmt.where(InventoryItem.status == status)
+    stmt, count_stmt = _apply_inventory_filters(
+        stmt,
+        count_stmt,
+        q=q,
+        inventory_type=inventory_type,
+        inventory_location=inventory_location,
+        inv_type=inv_type,
+        link=link,
+    )
     total = (await db.execute(count_stmt)).scalar_one()
     rows = (
         await db.execute(stmt.order_by(InventoryItem.ic_no.asc()).offset(offset).limit(limit))
     ).scalars().all()
-    machines = await _machines_by_ic(db, [r.ic_no for r in rows])
-    items = [
-        _out(r, machine=machines.get((r.ic_no or "").strip().lower()))
-        for r in rows
-    ]
+    links = await _machines_by_ic(db, [r.ic_no for r in rows])
+    items = [_link_out(r, links) for r in rows]
     return InventoryListOut(items=items, total=total, status=status)
 
 
@@ -458,15 +660,15 @@ async def create_inventory(body: InventoryItemCreate, db: DbDep, user: OperatorU
     await write_audit(db, "inventory.create", user=user, details={"ic_no": ic}, request=request)
     await db.commit()
     await db.refresh(row)
-    machines = await _machines_by_ic(db, [row.ic_no])
-    return _out(row, machine=machines.get(row.ic_no.strip().lower()))
+    links = await _machines_by_ic(db, [row.ic_no])
+    return _link_out(row, links)
 
 
 @router.get("/{item_id}", response_model=InventoryItemOut)
 async def get_inventory(item_id: UUID, db: DbDep, user: CurrentUser):
     row = await _get_or_404(db, item_id)
-    machines = await _machines_by_ic(db, [row.ic_no])
-    return _out(row, machine=machines.get((row.ic_no or "").strip().lower()))
+    links = await _machines_by_ic(db, [row.ic_no])
+    return _link_out(row, links)
 
 
 @router.patch("/{item_id}", response_model=InventoryItemOut)
@@ -496,5 +698,5 @@ async def update_inventory(
     )
     await db.commit()
     await db.refresh(row)
-    machines = await _machines_by_ic(db, [row.ic_no])
-    return _out(row, machine=machines.get((row.ic_no or "").strip().lower()))
+    links = await _machines_by_ic(db, [row.ic_no])
+    return _link_out(row, links)

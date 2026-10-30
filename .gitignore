@@ -23,6 +23,7 @@ agent/*.db
 *.log
 .DS_Store
 state/
+data/scholar-photos/
 data/postgres/
 data/update-request.json
 data/update-status.json

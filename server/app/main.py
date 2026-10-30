@@ -18,6 +18,7 @@ from app.api.routes import (
     labs,
     machines,
     notifications,
+    scholars,
     updates,
 )
 from app.config import get_settings
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
         machines,
         labs,
         inventory,
+        scholars,
         alerts,
         admin,
         dashboard,
