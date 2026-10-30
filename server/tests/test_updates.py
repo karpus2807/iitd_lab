@@ -9,10 +9,10 @@ from app.services import updates as update_svc
 
 RELEASES = [
     {
-        "tag": "v1.1.52",
-        "name": "LabWatch 1.1.52",
+        "tag": "v1.1.53",
+        "name": "LabWatch 1.1.53",
         "published_at": "2026-10-29T06:00:00Z",
-        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.52",
+        "html_url": "https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.53",
         "notes": "Inv Management: asset registry, search/typeahead, batch edit/remove, Excel template import/export",
         "prerelease": False,
     },
@@ -513,7 +513,7 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert idle["source"] == "github"
     assert idle["direct_ok"] is True
     assert idle["proxy_required"] is False
-    assert idle["current"]["tag"] == "v1.1.52"
+    assert idle["current"]["tag"] == "v1.1.53"
 
     # Empty proxy credentials still work (direct path).
     direct = await client.post(
@@ -541,8 +541,8 @@ async def test_list_last_three_builds_and_apply(client: AsyncClient, auth_header
     assert fetched.status_code == 200, fetched.text
     body = fetched.json()
     assert len(body["builds"]) == 3
-    assert body["latest"]["tag"] == "v1.1.52"
-    assert body["current"]["tag"] == "v1.1.52"
+    assert body["latest"]["tag"] == "v1.1.53"
+    assert body["current"]["tag"] == "v1.1.53"
     assert body["source"] == "github"
     assert body["used_proxy"] is True
     assert body["proxy_required"] is True
