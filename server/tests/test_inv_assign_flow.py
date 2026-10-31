@@ -160,6 +160,16 @@ async def test_inventory_assign_otp_and_revoke(client: AsyncClient, auth_headers
     assert "Dr Owner" in done.json()["item"]["assigned_to"]
     assert done.json()["item"]["assigned_scholar_id"] is None
 
+    issued = await client.get("/api/inventory/assigned-records", headers=auth_headers)
+    assert issued.status_code == 200
+    assert not any(x["ic_no"] == "IRD/REV/1" for x in issued.json()["items"])
+
+    revoked = await client.get("/api/inventory/revoked-records", headers=auth_headers)
+    assert revoked.status_code == 200
+    hit = next(x for x in revoked.json()["items"] if x["ic_no"] == "IRD/REV/1")
+    assert "Revoke Student" in hit["revoked_from"]
+    assert "Dr Owner" in hit["now_with"]
+
     # Owner-held items must leave revoke search and reject a second revoke.
     after = await client.get(
         "/api/inventory/assigned-search",

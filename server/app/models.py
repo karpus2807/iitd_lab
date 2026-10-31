@@ -607,6 +607,12 @@ class InventoryItem(Base, TimestampMixin):
     assigned_by: Mapped[str] = mapped_column(String(80), default="")
     assign_verify_method: Mapped[str] = mapped_column(String(16), default="")  # otp | document | owner
     assign_verify_doc_path: Mapped[str] = mapped_column(String(512), default="")
+    # Set when revoked to lab owner (Assign/Revoke records UI).
+    revoked_from: Mapped[str] = mapped_column(String(255), default="")
+    revoked_from_scholar_id: Mapped[str] = mapped_column(String(120), default="")
+    revoked_from_bio_id: Mapped[str] = mapped_column(String(64), default="")
+    revoked_from_email: Mapped[str] = mapped_column(String(255), default="")
+    revoked_lab_name: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
     removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)

@@ -169,10 +169,30 @@ export default function Inventory() {
   const [revokeQ, setRevokeQ] = useState('')
   const [revokeHits, setRevokeHits] = useState<AssignedHit[]>([])
   const [pickedRevoke, setPickedRevoke] = useState<AssignedHit | null>(null)
+  const [assignedRecords, setAssignedRecords] = useState<any[]>([])
+  const [revokedRecords, setRevokedRecords] = useState<any[]>([])
   const suggestRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const assignDocRef = useRef<HTMLInputElement>(null)
   const listTabs = tab === 'active' || tab === 'removed'
+
+  const loadAssignRecords = useCallback(async () => {
+    try {
+      const data = await api<{ items: any[] }>('/api/inventory/assigned-records')
+      setAssignedRecords(data.items || [])
+    } catch {
+      setAssignedRecords([])
+    }
+  }, [])
+
+  const loadRevokeRecords = useCallback(async () => {
+    try {
+      const data = await api<{ items: any[] }>('/api/inventory/revoked-records')
+      setRevokedRecords(data.items || [])
+    } catch {
+      setRevokedRecords([])
+    }
+  }, [])
 
   const filtersActive = !!(filterType || filterLocation || filterInvType || (filterLink && filterLink !== 'any'))
 
@@ -249,6 +269,11 @@ export default function Inventory() {
       void loadDashboard()
     }
   }, [tab, loadDashboard])
+
+  useEffect(() => {
+    if (tab === 'assign') void loadAssignRecords()
+    if (tab === 'revoke') void loadRevokeRecords()
+  }, [tab, loadAssignRecords, loadRevokeRecords])
 
   useEffect(() => {
     const needle = q.trim()
@@ -589,6 +614,8 @@ export default function Inventory() {
       setAssigneeQ('')
       setAssignDoc(null)
       if (assignDocRef.current) assignDocRef.current.value = ''
+      await loadAssignRecords()
+      await loadRevokeRecords()
     } catch (e: any) {
       setErr(e?.message || 'Assign failed')
     } finally {
@@ -654,6 +681,8 @@ export default function Inventory() {
         setRevokeQ('')
         setRevokeHits([])
       }
+      await loadAssignRecords()
+      await loadRevokeRecords()
     } catch (e: any) {
       setErr(e?.message || 'OTP verification failed')
     } finally {
@@ -752,7 +781,7 @@ export default function Inventory() {
       {(tab === 'assign' || tab === 'revoke') && !canEdit && (
         <div className="card" style={{ marginBottom: 16 }}>
           <p className="muted" style={{ margin: 0 }}>
-            Assign / Revoke requires Operator or Admin. Use Dashboard or Active to view inventory.
+            Starting assign/revoke needs Operator or Admin. You can still view the records below.
           </p>
         </div>
       )}
@@ -840,6 +869,53 @@ export default function Inventory() {
         </form>
       )}
 
+      {tab === 'assign' && (
+        <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
+          <div className="section-head" style={{ padding: 16, margin: 0 }}>
+            <h3 className="section-title" style={{ margin: 0 }}>Assigned inventory records</h3>
+            <button className="btn secondary" type="button" disabled={busy} onClick={() => void loadAssignRecords()}>Refresh</button>
+          </div>
+          <p className="muted" style={{ padding: '0 16px 12px', margin: 0, fontSize: 13 }}>
+            Currently issued to scholars · {assignedRecords.length} record{assignedRecords.length === 1 ? '' : 's'}
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>IC No.</th>
+                <th>Item</th>
+                <th>Assigned to</th>
+                <th>Scholar ID</th>
+                <th>Bio-ID</th>
+                <th>Lab</th>
+                <th>Email</th>
+                <th>Verify</th>
+                <th>Assigned</th>
+                <th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assignedRecords.map((r) => (
+                <tr key={r.item_id}>
+                  <td className="mono">{r.ic_no}</td>
+                  <td>{r.item_name || '—'}</td>
+                  <td><strong>{r.assigned_to || r.scholar?.full_name || '—'}</strong></td>
+                  <td className="mono">{r.scholar?.scholar_id || '—'}</td>
+                  <td className="mono">{r.scholar?.bio_id || '—'}</td>
+                  <td>{r.lab?.name || '—'}</td>
+                  <td>{r.scholar?.email || '—'}</td>
+                  <td className="muted">{r.verify_method || '—'}</td>
+                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>{r.assigned_at ? ago(r.assigned_at) : '—'}</td>
+                  <td className="muted">{r.assigned_by || '—'}</td>
+                </tr>
+              ))}
+              {!assignedRecords.length && (
+                <tr><td colSpan={10} className="muted" style={{ padding: 16 }}>No inventory currently assigned to scholars.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {tab === 'revoke' && canEdit && (
         <form className="card" onSubmit={submitRevoke} style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Revoke inventory</h3>
@@ -882,6 +958,53 @@ export default function Inventory() {
             <button className="btn" disabled={busy || !pickedRevoke} type="submit">{busy ? 'Sending…' : 'Send owner OTP'}</button>
           </div>
         </form>
+      )}
+
+      {tab === 'revoke' && (
+        <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
+          <div className="section-head" style={{ padding: 16, margin: 0 }}>
+            <h3 className="section-title" style={{ margin: 0 }}>Revoked inventory records</h3>
+            <button className="btn secondary" type="button" disabled={busy} onClick={() => void loadRevokeRecords()}>Refresh</button>
+          </div>
+          <p className="muted" style={{ padding: '0 16px 12px', margin: 0, fontSize: 13 }}>
+            Taken back by lab owner · {revokedRecords.length} record{revokedRecords.length === 1 ? '' : 's'}
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>IC No.</th>
+                <th>Item</th>
+                <th>Revoked from</th>
+                <th>Scholar ID</th>
+                <th>Bio-ID</th>
+                <th>From email</th>
+                <th>Now with</th>
+                <th>Lab</th>
+                <th>Revoked</th>
+                <th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {revokedRecords.map((r) => (
+                <tr key={r.item_id}>
+                  <td className="mono">{r.ic_no}</td>
+                  <td>{r.item_name || '—'}</td>
+                  <td><strong>{r.revoked_from || '—'}</strong></td>
+                  <td className="mono">{r.revoked_from_scholar_id || '—'}</td>
+                  <td className="mono">{r.revoked_from_bio_id || '—'}</td>
+                  <td>{r.revoked_from_email || '—'}</td>
+                  <td>{r.now_with || r.owner?.incharge || '—'}</td>
+                  <td>{r.revoked_lab_name || r.owner?.lab_name || '—'}</td>
+                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>{r.revoked_at ? ago(r.revoked_at) : '—'}</td>
+                  <td className="muted">{r.revoked_by || '—'}</td>
+                </tr>
+              ))}
+              {!revokedRecords.length && (
+                <tr><td colSpan={10} className="muted" style={{ padding: 16 }}>No revoked inventory on record yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {(otpKind === 'assign' || otpKind === 'revoke') && otpChallengeId && canEdit && (

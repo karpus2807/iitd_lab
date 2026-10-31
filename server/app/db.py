@@ -323,6 +323,11 @@ def ensure_inventory_assign_meta_columns(sync_conn) -> None:
             "assigned_by": "VARCHAR(80) DEFAULT ''",
             "assign_verify_method": "VARCHAR(16) DEFAULT ''",
             "assign_verify_doc_path": "VARCHAR(512) DEFAULT ''",
+            "revoked_from": "VARCHAR(255) DEFAULT ''",
+            "revoked_from_scholar_id": "VARCHAR(120) DEFAULT ''",
+            "revoked_from_bio_id": "VARCHAR(64) DEFAULT ''",
+            "revoked_from_email": "VARCHAR(255) DEFAULT ''",
+            "revoked_lab_name": "VARCHAR(255) DEFAULT ''",
         }
     else:
         types = {
@@ -331,6 +336,11 @@ def ensure_inventory_assign_meta_columns(sync_conn) -> None:
             "assigned_by": "VARCHAR(80) DEFAULT ''",
             "assign_verify_method": "VARCHAR(16) DEFAULT ''",
             "assign_verify_doc_path": "VARCHAR(512) DEFAULT ''",
+            "revoked_from": "VARCHAR(255) DEFAULT ''",
+            "revoked_from_scholar_id": "VARCHAR(120) DEFAULT ''",
+            "revoked_from_bio_id": "VARCHAR(64) DEFAULT ''",
+            "revoked_from_email": "VARCHAR(255) DEFAULT ''",
+            "revoked_lab_name": "VARCHAR(255) DEFAULT ''",
         }
     for name, sql_type in types.items():
         if name not in existing:

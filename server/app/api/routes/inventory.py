@@ -777,6 +777,28 @@ async def inventory_assigned_search(
     return await inv_assign.search_assigned(db, q, limit=limit)
 
 
+@router.get("/assigned-records")
+async def inventory_assigned_records(
+    db: DbDep,
+    user: CurrentUser,
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Full list of inventory currently issued to scholars (Assign Inv page)."""
+    rows = await inv_assign.list_issued_assignments(db, limit=limit)
+    return {"items": rows, "total": len(rows)}
+
+
+@router.get("/revoked-records")
+async def inventory_revoked_records(
+    db: DbDep,
+    user: CurrentUser,
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Inventory currently with lab owner after revoke (Revoke Inv page)."""
+    rows = await inv_assign.list_revoked_assignments(db, limit=limit)
+    return {"items": rows, "total": len(rows)}
+
+
 @router.post("/assign")
 async def inventory_assign_start(
     db: DbDep,
