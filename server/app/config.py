@@ -38,8 +38,9 @@ class Settings(BaseSettings):
     metrics_hourly_retention_days: int = Field(default=365, alias="METRICS_HOURLY_RETENTION_DAYS")
     audit_log_retention_days: int = Field(default=0, alias="AUDIT_LOG_RETENTION_DAYS")
     agent_log_retention_days: int = Field(default=90, alias="AGENT_LOG_RETENTION_DAYS")
-    # Unused registration tokens (use_count=0) are revoked+deleted after this many days.
-    unused_registration_token_days: int = Field(default=2, alias="UNUSED_REGISTRATION_TOKEN_DAYS")
+    # Legacy: time-based unused-token auto-delete. Default 0 = disabled.
+    # Revoke is machine/history based (superseded token) + manual revoke/delete only.
+    unused_registration_token_days: int = Field(default=0, alias="UNUSED_REGISTRATION_TOKEN_DAYS")
 
     smtp_host: str = Field(default="", alias="SMTP_HOST")
     smtp_port: int = Field(default=587, alias="SMTP_PORT")

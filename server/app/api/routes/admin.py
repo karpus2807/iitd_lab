@@ -177,37 +177,42 @@ def _token_status(row: RegistrationToken) -> str:
 
 @router.get("/tokens")
 async def list_tokens(db: DbDep, admin: AdminUser):
-    settings = get_settings()
-    # Opportunistic cleanup when admin opens Tokens (hourly job also runs this).
-    from app.services.retention import prune_unused_registration_tokens
-
-    await prune_unused_registration_tokens(db)
-    await db.commit()
-
     rows = (await db.execute(select(RegistrationToken).order_by(RegistrationToken.created_at.desc()))).scalars().all()
-    counts: dict[str, int] = {}
+    agents_by_token: dict[str, list[dict]] = {}
     if rows:
         ids = [r.id for r in rows]
-        enrolled = (
+        linked = (
             await db.execute(
-                select(Agent.registration_token_id, func.count())
+                select(Agent, Machine)
+                .join(Machine, Agent.machine_id == Machine.id)
                 .where(Agent.registration_token_id.in_(ids))
-                .group_by(Agent.registration_token_id)
+                .order_by(Machine.hostname.asc())
             )
         ).all()
-        counts = {str(tid): int(n) for tid, n in enrolled if tid}
+        for agent, machine in linked:
+            tid = str(agent.registration_token_id)
+            agents_by_token.setdefault(tid, []).append(
+                {
+                    "agent_id": str(agent.id),
+                    "agent_public_id": agent.agent_public_id,
+                    "machine_id": str(machine.id),
+                    "hostname": machine.hostname or "",
+                    "inventory_id": machine.inventory_id or "",
+                    "status": agent.status,
+                    "last_heartbeat_at": agent.last_heartbeat_at,
+                }
+            )
 
-    auto_days = settings.unused_registration_token_days
-    now = utcnow()
     out = []
     for r in rows:
         status = _token_status(r)
-        unused_deletes_at = None
-        unused_deletes_in_hours = None
-        if status == "unused" and auto_days > 0 and r.created_at:
-            unused_deletes_at = r.created_at + timedelta(days=auto_days)
-            secs = (unused_deletes_at - now).total_seconds()
-            unused_deletes_in_hours = max(0, int(secs // 3600))
+        agents = agents_by_token.get(str(r.id), [])
+        # Effective last use = enrollment touch OR latest heartbeat from linked agents.
+        last_used = r.last_used_at
+        for a in agents:
+            hb = a.get("last_heartbeat_at")
+            if hb and (last_used is None or hb > last_used):
+                last_used = hb
         out.append(
             {
                 "id": str(r.id),
@@ -217,14 +222,12 @@ async def list_tokens(db: DbDep, admin: AdminUser):
                 "expires_at": r.expires_at,
                 "max_uses": r.max_uses,
                 "use_count": r.use_count,
-                "last_used_at": r.last_used_at,
-                "enrolled_agents": counts.get(str(r.id), 0),
+                "last_used_at": last_used,
+                "enrolled_agents": len(agents),
+                "agents": agents,
                 "status": status,
                 "revoked": r.revoked,
                 "created_at": r.created_at,
-                "unused_auto_delete_days": auto_days,
-                "unused_deletes_at": unused_deletes_at,
-                "unused_deletes_in_hours": unused_deletes_in_hours,
             }
         )
     return out
@@ -241,6 +244,26 @@ async def revoke_token(token_id: UUID, db: DbDep, admin: AdminUser, request: Req
     return {"ok": True}
 
 
+@router.delete("/tokens/{token_id}")
+async def delete_token(token_id: UUID, db: DbDep, admin: AdminUser, request: Request):
+    """Permanently delete a registration token. Linked agents keep working (FK SET NULL)."""
+    row = await db.get(RegistrationToken, token_id)
+    if not row:
+        raise HTTPException(404, "Token not found")
+    label = row.label
+    prefix = row.token_prefix
+    await db.delete(row)
+    await write_audit(
+        db,
+        "token.delete",
+        user=admin,
+        details={"id": str(token_id), "label": label, "prefix": prefix},
+        request=request,
+    )
+    await db.commit()
+    return {"ok": True}
+
+
 @router.get("/agents")
 async def list_agents(db: DbDep, admin: AdminUser):
     # Compare to shipped agent pack — not LabWatch UI/API VERSION.
@@ -250,6 +273,13 @@ async def list_agents(db: DbDep, admin: AdminUser):
     # Drop timed-out in-flight updates so a leftover fleet queue does not look live.
     _expire_stale_updates([a for a, _m in rows])
     await db.commit()
+    token_ids = [a.registration_token_id for a, _m in rows if a.registration_token_id]
+    token_meta: dict[str, tuple[str, str]] = {}
+    if token_ids:
+        toks = (
+            await db.execute(select(RegistrationToken).where(RegistrationToken.id.in_(token_ids)))
+        ).scalars().all()
+        token_meta = {str(t.id): (t.token_prefix or "", t.label or "") for t in toks}
     agents = []
     for a, m in rows:
         ver = a.agent_version or ""
@@ -259,6 +289,8 @@ async def list_agents(db: DbDep, admin: AdminUser):
         display_status = a.update_status or ""
         if up_to_date and display_status.lower() == "ok":
             display_status = ""
+        tid = str(a.registration_token_id) if a.registration_token_id else None
+        tprefix, tlabel = token_meta.get(tid or "", ("", ""))
         agents.append(
             {
                 "id": str(a.id),
@@ -266,6 +298,9 @@ async def list_agents(db: DbDep, admin: AdminUser):
                 "machine_id": str(m.id),
                 "hostname": m.hostname,
                 "inventory_id": m.inventory_id or "",
+                "registration_token_id": tid,
+                "token_prefix": tprefix,
+                "token_label": tlabel,
                 "status": a.status,
                 "health": a.health,
                 "version": ver,

@@ -52,6 +52,10 @@ async def apply_heartbeat(db: AsyncSession, machine: Machine, agent: Agent, heal
     if machine.status != target:
         await record_status_event(db, machine, target)
         machine.status = target
+    # Track which enrollment token this agent still belongs to (last contact).
+    from app.services.registration_tokens import touch_token_last_used
+
+    await touch_token_last_used(db, getattr(agent, "registration_token_id", None))
 
 
 async def reconcile_machine_status(db: AsyncSession) -> None:

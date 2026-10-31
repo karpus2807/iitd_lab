@@ -261,6 +261,7 @@ async def register_agent(body: RegisterRequest, db: DbDep):
     secret = new_secret(32)
     agent = (await db.execute(select(Agent).where(Agent.machine_id == machine.id))).scalar_one_or_none()
     status_value = AgentStatus.PENDING.value if settings.require_agent_approval and not machine.approved else AgentStatus.ACTIVE.value
+    prev_token_id = agent.registration_token_id if agent else None
     if agent:
         agent.secret_hash = hash_token(secret)
         agent.agent_public_id = body.agent_uuid
@@ -278,6 +279,11 @@ async def register_agent(body: RegisterRequest, db: DbDep):
             registration_token_id=token.id,
         )
         db.add(agent)
+    await db.flush()
+    # Machine moved to a new enrollment token → revoke the old one if nothing else uses it.
+    from app.services.registration_tokens import revoke_superseded_token
+
+    await revoke_superseded_token(db, old_token_id=prev_token_id, new_token_id=token.id)
     token.use_count += 1
     token.last_used_at = utcnow()
     if inventory_id:

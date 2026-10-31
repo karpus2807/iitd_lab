@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ago, api } from '../api'
 import { currentUser } from '../api'
@@ -372,6 +372,7 @@ function Tokens() {
   const [created, setCreated] = useState('')
   const [label, setLabel] = useState('lab-enrollment')
   const [labId, setLabId] = useState('')
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   function load() { api('/api/admin/tokens').then(setRows) }
   useEffect(() => { load(); api('/api/labs').then(setLabs) }, [])
   async function create(e: FormEvent) {
@@ -382,7 +383,6 @@ function Tokens() {
     setCreated(r.token)
     load()
   }
-  const autoDays = rows[0]?.unused_auto_delete_days ?? 2
   return (
     <>
       <form className="card toolbar" onSubmit={create}>
@@ -394,8 +394,8 @@ function Tokens() {
         <button className="btn">New registration token</button>
       </form>
       <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>
-        Status shows whether a token enrolled any agent. Unused tokens (0 uses) are auto-revoked and deleted after {autoDays} day{autoDays === 1 ? '' : 's'}
-        (and immediately if already past expiry). Opening this page also runs cleanup.
+        Last used follows live agent heartbeats on machines enrolled with this token (offline hosts stay at their last contact — no time-based auto-revoke).
+        When a machine re-enrolls with a <em>new</em> token, the previous token is auto-revoked only if no other agent still uses it. Manual Revoke / Delete always available.
       </p>
       {created && <div className="card"><p>Store this token now; it will not be shown again.</p><code>{created}</code></div>}
       <div className="card" style={{ padding: 0 }}>
@@ -407,42 +407,70 @@ function Tokens() {
               <th>Status</th>
               <th>Uses</th>
               <th>Last used</th>
+              <th>Agents</th>
               <th>Created</th>
-              <th>Auto-remove</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {rows.map((t) => {
               const st = t.status || (t.revoked ? 'revoked' : t.use_count > 0 ? 'used' : 'unused')
+              const agents = Array.isArray(t.agents) ? t.agents : []
+              const open = !!expanded[t.id]
               return (
-                <tr key={t.id}>
-                  <td>{t.label}</td>
-                  <td className="mono">{t.prefix}</td>
-                  <td>
-                    <strong className={st === 'unused' ? 'err' : st === 'used' ? '' : 'muted'}>
-                      {tokenStatusLabel(st)}
-                    </strong>
-                    {typeof t.enrolled_agents === 'number' && t.enrolled_agents > 0 ? (
-                      <div className="muted" style={{ fontSize: 12 }}>{t.enrolled_agents} agent(s) enrolled</div>
-                    ) : null}
-                  </td>
-                  <td>{t.use_count}{t.max_uses ? ` / ${t.max_uses}` : ''}</td>
-                  <td>{t.last_used_at ? ago(t.last_used_at) : <span className="muted">never</span>}</td>
-                  <td>{ago(t.created_at)}</td>
-                  <td className="muted" style={{ fontSize: 12 }}>
-                    {st === 'unused'
-                      ? (t.unused_deletes_in_hours != null
-                        ? `in ~${t.unused_deletes_in_hours}h`
-                        : `after ${autoDays}d`)
-                      : '—'}
-                  </td>
-                  <td>
-                    {!t.revoked && st !== 'expired' && (
-                      <button className="btn danger" onClick={async () => { await api(`/api/admin/tokens/${t.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
-                    )}
-                  </td>
-                </tr>
+                <Fragment key={t.id}>
+                  <tr>
+                    <td>{t.label}</td>
+                    <td className="mono">{t.prefix}</td>
+                    <td>
+                      <strong className={st === 'unused' ? 'err' : st === 'used' ? '' : 'muted'}>
+                        {tokenStatusLabel(st)}
+                      </strong>
+                    </td>
+                    <td>{t.use_count}{t.max_uses ? ` / ${t.max_uses}` : ''}</td>
+                    <td>{t.last_used_at ? ago(t.last_used_at) : <span className="muted">never</span>}</td>
+                    <td>
+                      {agents.length > 0 ? (
+                        <button
+                          type="button"
+                          className="btn secondary"
+                          style={{ padding: '2px 8px', fontSize: 12 }}
+                          onClick={() => setExpanded((prev) => ({ ...prev, [t.id]: !prev[t.id] }))}
+                        >
+                          {agents.length} agent{agents.length === 1 ? '' : 's'}{open ? ' ▴' : ' ▾'}
+                        </button>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td>{ago(t.created_at)}</td>
+                    <td className="row-actions">
+                      {!t.revoked && st !== 'expired' && (
+                        <button className="btn danger" onClick={async () => { await api(`/api/admin/tokens/${t.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
+                      )}
+                      <button
+                        className="btn danger"
+                        onClick={async () => {
+                          if (!confirm(`Delete token ${t.prefix || t.label}? Agents keep running; only this enrollment token is removed.`)) return
+                          await api(`/api/admin/tokens/${t.id}`, { method: 'DELETE' })
+                          load()
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                  {open && agents.map((a: any) => (
+                    <tr key={`${t.id}-${a.agent_id || a.machine_id}`} style={{ background: 'rgba(0,0,0,0.03)' }}>
+                      <td colSpan={8} style={{ fontSize: 13, paddingLeft: 24 }}>
+                        <strong>{a.hostname || '—'}</strong>
+                        <span className="mono muted"> · {a.inventory_id || 'no Inv.ID'}</span>
+                        <span className="muted"> · {a.status || '—'}</span>
+                        <span className="muted"> · last HB {a.last_heartbeat_at ? ago(a.last_heartbeat_at) : 'never'}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
               )
             })}
             {!rows.length && (
@@ -495,7 +523,7 @@ function Agents() {
   const filtered = rows.filter((a) => {
     const needle = q.trim().toLowerCase()
     if (!needle) return true
-    const hay = [a.hostname, a.inventory_id, a.agent_id, a.version, a.status]
+    const hay = [a.hostname, a.inventory_id, a.agent_id, a.version, a.status, a.token_prefix, a.token_label]
       .map((x) => String(x || '').toLowerCase())
       .join(' ')
     return hay.includes(needle)
@@ -728,6 +756,7 @@ function Agents() {
               </th>
               <th>Host</th>
               <th>Inv.ID</th>
+              <th>Token</th>
               <th>Agent ID</th>
               <th>Ver</th>
               <th>Status</th>
@@ -765,6 +794,9 @@ function Agents() {
                   </td>
                   <td>{a.hostname}</td>
                   <td className="mono">{a.inventory_id || '—'}</td>
+                  <td className="mono" title={a.token_label || ''}>
+                    {a.token_prefix || <span className="muted">—</span>}
+                  </td>
                   <td className="mono">{a.agent_id}</td>
                   <td>
                     <span

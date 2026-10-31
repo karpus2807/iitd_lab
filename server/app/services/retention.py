@@ -19,45 +19,39 @@ logger = logging.getLogger("labwatch.retention")
 
 
 async def prune_unused_registration_tokens(db: AsyncSession) -> int:
-    """Revoke + delete registration tokens that were never used after N days,
-    and also drop unused tokens whose expires_at has already passed.
+    """Optional legacy time-based unused-token delete.
+
+    Disabled by default (UNUSED_REGISTRATION_TOKEN_DAYS=0). Preferred policy:
+    auto-revoke only when a machine re-enrolls with a newer token and no other
+    agent still uses the old one; otherwise admin manual revoke/delete.
     """
     settings = get_settings()
     days = settings.unused_registration_token_days
+    if days <= 0:
+        return 0
     now = utcnow()
-    # Never-used and past expiry → remove immediately
-    expired_unused = (
+    cut = now - timedelta(days=days)
+    stale_unused = (
         await db.execute(
             select(RegistrationToken).where(
                 RegistrationToken.use_count == 0,
-                RegistrationToken.expires_at.is_not(None),
-                RegistrationToken.expires_at < now,
+                RegistrationToken.created_at < cut,
             )
         )
     ).scalars().all()
-    stale_unused: list[RegistrationToken] = []
-    if days > 0:
-        cut = now - timedelta(days=days)
-        stale_unused = (
-            await db.execute(
-                select(RegistrationToken).where(
-                    RegistrationToken.use_count == 0,
-                    RegistrationToken.created_at < cut,
-                )
-            )
-        ).scalars().all()
-    victims = {row.id: row for row in [*expired_unused, *stale_unused]}
-    if not victims:
+    if not stale_unused:
         return 0
-    for row in victims.values():
+    for row in stale_unused:
         row.revoked = True
     await db.flush()
     deleted = (
-        await db.execute(delete(RegistrationToken).where(RegistrationToken.id.in_(list(victims.keys()))))
+        await db.execute(
+            delete(RegistrationToken).where(RegistrationToken.id.in_([r.id for r in stale_unused]))
+        )
     ).rowcount or 0
     if deleted:
         logger.info(
-            "Auto-deleted %s unused registration token(s) (stale>%sdays and/or expired)",
+            "Auto-deleted %s unused registration token(s) (stale>%sdays)",
             deleted,
             days,
         )
