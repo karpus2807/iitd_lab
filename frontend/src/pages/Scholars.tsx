@@ -746,140 +746,139 @@ export default function Scholars() {
                 <div className="card stat"><div className="label">With inventory</div><div className="value">{dash.with_inventory}</div></div>
                 <div className="card stat"><div className="label">Lab machines</div><div className="value">{dash.machines}</div></div>
               </div>
-              <div className="split" style={{ marginTop: 16 }}>
-                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-                  <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Labs</h3>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Lab</th>
-                        <th>Scholars</th>
-                        <th>Approved</th>
-                        <th>Pending</th>
-                        <th>No dues</th>
-                        <th>Inv assigned</th>
-                        <th>Machines</th>
+              <div className="card" style={{ padding: 0, overflowX: 'auto', marginTop: 16 }}>
+                <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Labs</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Lab</th>
+                      <th>Scholars</th>
+                      <th>Approved</th>
+                      <th>Pending</th>
+                      <th>No dues</th>
+                      <th>Inv assigned</th>
+                      <th>Machines</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dash.labs.map((l) => (
+                      <tr
+                        key={l.id}
+                        className="clickable"
+                        style={dashLab?.lab.id === l.id ? { outline: '1px solid var(--accent, #3b82f6)' } : undefined}
+                        onClick={() => void openDashLab(l.id)}
+                      >
+                        <td>
+                          <strong>{l.name}</strong>
+                          {(l.room || l.building) ? (
+                            <div className="muted" style={{ fontSize: 12 }}>
+                              {[l.building, l.room ? `Room ${l.room}` : ''].filter(Boolean).join(' · ')}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="mono">{l.scholars}</td>
+                        <td className="mono">{l.approved}</td>
+                        <td className="mono">{l.pending}</td>
+                        <td className="mono">{l.no_dues}</td>
+                        <td className="mono">{l.with_inventory}</td>
+                        <td className="mono">{l.machines}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {dash.labs.map((l) => (
-                        <tr
-                          key={l.id}
-                          className="clickable"
-                          style={dashLab?.lab.id === l.id ? { outline: '1px solid var(--accent, #3b82f6)' } : undefined}
-                          onClick={() => void openDashLab(l.id)}
-                        >
-                          <td>
-                            <strong>{l.name}</strong>
-                            {(l.room || l.building) ? (
-                              <div className="muted" style={{ fontSize: 12 }}>
-                                {[l.building, l.room ? `Room ${l.room}` : ''].filter(Boolean).join(' · ')}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td className="mono">{l.scholars}</td>
-                          <td className="mono">{l.approved}</td>
-                          <td className="mono">{l.pending}</td>
-                          <td className="mono">{l.no_dues}</td>
-                          <td className="mono">{l.with_inventory}</td>
-                          <td className="mono">{l.machines}</td>
-                        </tr>
-                      ))}
-                      {!dash.labs.length && (
-                        <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>No labs yet.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-                  <div className="section-head" style={{ padding: 16, margin: 0 }}>
-                    <h3 className="section-title" style={{ margin: 0 }}>
-                      {dashLab ? `${dashLab.lab.name} · scholars` : 'Lab detail'}
-                    </h3>
-                    {dashLab && (
-                      <button className="btn secondary" type="button" onClick={() => setDashLab(null)}>Close</button>
+                    ))}
+                    {!dash.labs.length && (
+                      <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>No labs yet.</td></tr>
                     )}
-                  </div>
-                  {!dashLab && !dashBusy && (
-                    <p className="muted" style={{ padding: 16, margin: 0 }}>Click a lab to see scholars and assigned inventory.</p>
-                  )}
-                  {dashBusy && !dashLab && <p className="muted" style={{ padding: 16 }}>Loading…</p>}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="card" style={{ padding: 0, overflowX: 'auto', marginTop: 16 }}>
+                <div className="section-head" style={{ padding: 16, margin: 0 }}>
+                  <h3 className="section-title" style={{ margin: 0 }}>
+                    {dashLab ? `${dashLab.lab.name} · scholars` : 'Lab detail'}
+                  </h3>
                   {dashLab && (
-                    <>
-                      <div className="toolbar" style={{ padding: '0 16px 12px', gap: 12, flexWrap: 'wrap' }}>
-                        <span className="muted">{dashLab.counts.scholars} scholars</span>
-                        <span className="muted">{dashLab.counts.approved} approved</span>
-                        <span className="muted">{dashLab.counts.with_inventory} with inv</span>
-                        <span className="muted">{dashLab.machines} machines in lab</span>
-                        <button
-                          className="btn secondary"
-                          type="button"
-                          onClick={() => {
-                            setLabId(dashLab.lab.id)
-                            setTab('active')
-                            setDashLab(null)
-                          }}
-                        >
-                          Open in Active
-                        </button>
-                      </div>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Name</th>
-                            <th>ID</th>
-                            <th>Bio-ID</th>
-                            <th>Group</th>
-                            <th>Status</th>
-                            <th>Inventory</th>
-                            <th>Assigned</th>
-                            <th>Faculty</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {dashLab.scholars.map((s) => (
-                            <tr key={s.id} style={rowTone(s)}>
-                              <td><strong>{s.full_name}</strong></td>
-                              <td className="mono">{s.scholar_id || '—'}</td>
-                              <td className="mono">{s.bio_id || '—'}</td>
-                              <td>{s.group_name || '—'}</td>
-                              <td>
-                                {s.no_dues ? (
-                                  <span className="badge CRITICAL">no dues</span>
-                                ) : s.approved ? (
-                                  <span className="badge ONLINE">active</span>
-                                ) : (
-                                  <span className="badge INFO">pending</span>
-                                )}
-                              </td>
-                              <td>
-                                {!s.inventory ? (
-                                  <span className="muted">—</span>
-                                ) : (
-                                  <>
-                                    <span className="mono">{s.inventory.ic_no || s.inventory_label || '—'}</span>
-                                    {s.inventory.item_name ? (
-                                      <div className="muted" style={{ fontSize: 12 }}>{s.inventory.item_name}</div>
-                                    ) : s.inventory_kind === 'non_list' ? (
-                                      <div className="muted" style={{ fontSize: 12 }}>non-list</div>
-                                    ) : null}
-                                  </>
-                                )}
-                              </td>
-                              <td className="muted" style={{ whiteSpace: 'nowrap' }}>
-                                {s.inventory_assigned_at ? ago(s.inventory_assigned_at) : '—'}
-                              </td>
-                              <td>{s.faculty || '—'}</td>
-                            </tr>
-                          ))}
-                          {!dashLab.scholars.length && (
-                            <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No active scholars in this lab.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </>
+                    <button className="btn secondary" type="button" onClick={() => setDashLab(null)}>Close</button>
                   )}
                 </div>
+                {!dashLab && !dashBusy && (
+                  <p className="muted" style={{ padding: 16, margin: 0 }}>Click a lab above to see its scholars and assigned inventory.</p>
+                )}
+                {dashBusy && !dashLab && <p className="muted" style={{ padding: 16 }}>Loading…</p>}
+                {dashLab && (
+                  <>
+                    <div className="toolbar" style={{ padding: '0 16px 12px', gap: 12, flexWrap: 'wrap' }}>
+                      <span className="muted">{dashLab.counts.scholars} scholars</span>
+                      <span className="muted">{dashLab.counts.approved} approved</span>
+                      <span className="muted">{dashLab.counts.with_inventory} with inv</span>
+                      <span className="muted">{dashLab.machines} machines in lab</span>
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        onClick={() => {
+                          setLabId(dashLab.lab.id)
+                          setTab('active')
+                          setDashLab(null)
+                        }}
+                      >
+                        Open in Active
+                      </button>
+                    </div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>ID</th>
+                          <th>Bio-ID</th>
+                          <th>Group</th>
+                          <th>Status</th>
+                          <th>Inventory</th>
+                          <th>Assigned</th>
+                          <th>Faculty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashLab.scholars.map((s) => (
+                          <tr key={s.id} style={rowTone(s)}>
+                            <td><strong>{s.full_name}</strong></td>
+                            <td className="mono">{s.scholar_id || '—'}</td>
+                            <td className="mono">{s.bio_id || '—'}</td>
+                            <td>{s.group_name || '—'}</td>
+                            <td>
+                              {s.no_dues ? (
+                                <span className="badge CRITICAL">no dues</span>
+                              ) : s.approved ? (
+                                <span className="badge ONLINE">active</span>
+                              ) : (
+                                <span className="badge INFO">pending</span>
+                              )}
+                            </td>
+                            <td>
+                              {!s.inventory ? (
+                                <span className="muted">—</span>
+                              ) : (
+                                <>
+                                  <span className="mono">{s.inventory.ic_no || s.inventory_label || '—'}</span>
+                                  {s.inventory.item_name ? (
+                                    <div className="muted" style={{ fontSize: 12 }}>{s.inventory.item_name}</div>
+                                  ) : s.inventory_kind === 'non_list' ? (
+                                    <div className="muted" style={{ fontSize: 12 }}>non-list</div>
+                                  ) : null}
+                                </>
+                              )}
+                            </td>
+                            <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                              {s.inventory_assigned_at ? ago(s.inventory_assigned_at) : '—'}
+                            </td>
+                            <td>{s.faculty || '—'}</td>
+                          </tr>
+                        ))}
+                        {!dashLab.scholars.length && (
+                          <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No active scholars in this lab.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </>
+                )}
               </div>
             </>
           )}
