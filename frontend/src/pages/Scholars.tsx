@@ -151,7 +151,13 @@ function ScholarPhoto({ id }: { id: string }) {
 export default function Scholars() {
   const role = currentUser()?.role
   const canEdit = role === 'ADMIN' || role === 'OPERATOR'
-  const [tab, setTab] = useState<'dashboard' | 'active' | 'removed'>('dashboard')
+  const [tab, setTab] = useState<'dashboard' | 'active' | 'removed' | 'logs'>('dashboard')
+  const [reports, setReports] = useState<any[]>([])
+  const [reportsTotal, setReportsTotal] = useState(0)
+  const [reportDetail, setReportDetail] = useState<any | null>(null)
+  const [reportFilter, setReportFilter] = useState('all')
+  const [customClearDays, setCustomClearDays] = useState('30')
+  const [logsBusy, setLogsBusy] = useState(false)
   const [labs, setLabs] = useState<Lab[]>([])
   const [labId, setLabId] = useState('')
   const [rows, setRows] = useState<Scholar[]>([])
@@ -199,7 +205,7 @@ export default function Scholars() {
   }, [])
 
   const loadFacets = useCallback(async () => {
-    if (tab === 'dashboard') return
+    if (tab === 'dashboard' || tab === 'logs') return
     const qs = new URLSearchParams()
     qs.set('status', tab)
     if (labId) qs.set('lab_id', labId)
@@ -209,7 +215,7 @@ export default function Scholars() {
   }, [labId, tab])
 
   const load = useCallback(async () => {
-    if (tab === 'dashboard') return
+    if (tab === 'dashboard' || tab === 'logs') return
     setErr('')
     try {
       const qs = new URLSearchParams()
@@ -281,6 +287,61 @@ export default function Scholars() {
       void loadDashboard()
     }
   }, [tab, loadDashboard])
+
+  const loadReports = useCallback(async () => {
+    setLogsBusy(true)
+    setErr('')
+    try {
+      const qs = new URLSearchParams()
+      qs.set('area', 'scholars')
+      qs.set('limit', '100')
+      if (reportFilter && reportFilter !== 'all') qs.set('action', reportFilter)
+      const data = await api<{ items: any[]; total: number }>(`/api/reports?${qs}`)
+      setReports(data.items || [])
+      setReportsTotal(data.total || 0)
+    } catch (e: any) {
+      setErr(e?.message || 'Could not load reports')
+      setReports([])
+      setReportsTotal(0)
+    } finally {
+      setLogsBusy(false)
+    }
+  }, [reportFilter])
+
+  useEffect(() => {
+    if (tab === 'logs') void loadReports()
+  }, [tab, loadReports])
+
+  async function openReport(id: string) {
+    setLogsBusy(true)
+    try {
+      const data = await api(`/api/reports/${id}`)
+      setReportDetail(data)
+    } catch (e: any) {
+      setErr(e?.message || 'Could not open report')
+    } finally {
+      setLogsBusy(false)
+    }
+  }
+
+  async function clearReports(days: number) {
+    const label = days <= 0 ? 'ALL reports' : `reports older than ${days} day(s)`
+    if (!confirm(`Clear ${label}? This cannot be undone.`)) return
+    setLogsBusy(true)
+    try {
+      const r = await api<{ deleted: number }>('/api/reports/clear', {
+        method: 'POST',
+        body: JSON.stringify({ older_than_days: days }),
+      })
+      setNotice(`Cleared ${r.deleted} report(s)`)
+      setReportDetail(null)
+      await loadReports()
+    } catch (e: any) {
+      setErr(e?.message || 'Clear failed')
+    } finally {
+      setLogsBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (form.system_required !== 'yes' || form.inventory_mode !== 'listed') {
@@ -502,12 +563,18 @@ export default function Scholars() {
       const r = await api('/api/scholars/import', { method: 'POST', body: fd })
       setNotice(
         `Import: ${r.created} created · ${r.updated} updated` +
-          (r.errors?.length ? ` · ${r.errors.length} errors` : ''),
+          (r.errors?.length ? ` · ${r.errors.length} errors` : '') +
+          (r.report_id ? ' · open Logs & reports for full row detail' : ''),
       )
-      if (r.errors?.length) setErr(r.errors.slice(0, 5).join('; '))
-      setTab('active')
-      await load()
-      await loadFacets()
+      if (r.errors?.length) setErr(r.errors.map((e: string) => e).join('\n'))
+      if (r.report) {
+        setReportDetail(r.report)
+        setTab('logs')
+      } else {
+        setTab('active')
+        await load()
+        await loadFacets()
+      }
     } catch (e: any) {
       setErr(e?.message || 'Import failed')
     } finally {
@@ -636,7 +703,9 @@ export default function Scholars() {
           <p>
             {tab === 'dashboard'
               ? 'Lab-wise scholar counts, inventory assignments, and drill-down'
-              : `Enrol M.Tech / Ph.D. / Postdoc / staff · ${total} ${tab}${canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}`}
+              : tab === 'logs'
+                ? 'Import/export activity reports — every row result, errors, and clear history'
+                : `Enrol M.Tech / Ph.D. / Postdoc / staff · ${total} ${tab}${canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}`}
           </p>
         </div>
       </div>
@@ -654,9 +723,12 @@ export default function Scholars() {
         <button className={tab === 'removed' ? 'active' : ''} onClick={() => { setTab('removed'); setSelected({}); setDetail(null); setDashLab(null) }}>
           Removed
         </button>
+        <button className={tab === 'logs' ? 'active' : ''} onClick={() => { setTab('logs'); setSelected({}); setDetail(null); setDashLab(null); setEnrollOpen(false); setEditFor(null); setRemoveOpen(false) }}>
+          Logs & reports
+        </button>
       </div>
 
-      {err && <p className="err">{err}</p>}
+      {err && <pre className="err" style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>{err}</pre>}
       {notice && tab !== 'dashboard' && <p className="muted">{notice}</p>}
 
       {tab === 'dashboard' && (
@@ -812,7 +884,164 @@ export default function Scholars() {
         </>
       )}
 
-      {tab !== 'dashboard' && (
+      {tab === 'logs' && (
+        <>
+          <div className="card toolbar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <select value={reportFilter} onChange={(e) => setReportFilter(e.target.value)}>
+              <option value="all">All actions</option>
+              <option value="import">Import</option>
+              <option value="export">Export</option>
+              <option value="remove">Remove</option>
+              <option value="restore">Restore</option>
+              <option value="empty_removed">Empty removed</option>
+            </select>
+            <button className="btn secondary" type="button" disabled={logsBusy} onClick={() => void loadReports()}>Refresh</button>
+            <span className="muted" style={{ fontSize: 13 }}>{reportsTotal} report(s)</span>
+            {canEdit && (
+              <>
+                <button className="btn danger" type="button" disabled={logsBusy} onClick={() => void clearReports(7)}>Clear &gt;1 week</button>
+                <button className="btn danger" type="button" disabled={logsBusy} onClick={() => void clearReports(14)}>Clear &gt;2 weeks</button>
+                <button className="btn danger" type="button" disabled={logsBusy} onClick={() => void clearReports(30)}>Clear &gt;1 month</button>
+                <input
+                  style={{ width: 72 }}
+                  value={customClearDays}
+                  onChange={(e) => setCustomClearDays(e.target.value)}
+                  title="Custom days"
+                  placeholder="days"
+                />
+                <button
+                  className="btn danger"
+                  type="button"
+                  disabled={logsBusy}
+                  onClick={() => {
+                    const n = Number(customClearDays)
+                    if (!Number.isFinite(n) || n < 1) {
+                      setErr('Enter custom days ≥ 1')
+                      return
+                    }
+                    void clearReports(Math.floor(n))
+                  }}
+                >
+                  Clear custom days
+                </button>
+                <button className="btn danger" type="button" disabled={logsBusy} onClick={() => void clearReports(0)}>Clear all</button>
+              </>
+            )}
+          </div>
+
+          {reportDetail && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <h3 style={{ marginTop: 0, marginBottom: 4 }}>
+                    {reportDetail.action} · {reportDetail.filename || 'activity'}
+                  </h3>
+                  <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+                    {ago(reportDetail.created_at)} · {reportDetail.username || '—'}
+                    {reportDetail.summary
+                      ? ` · ${Object.entries(reportDetail.summary)
+                          .filter(([k]) => !['error_messages'].includes(k))
+                          .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+                          .join(' · ')}`
+                      : ''}
+                  </p>
+                </div>
+                <button className="btn secondary" type="button" onClick={() => setReportDetail(null)}>Close detail</button>
+              </div>
+              {Array.isArray(reportDetail.summary?.error_messages) && reportDetail.summary.error_messages.length > 0 && (
+                <div className="err" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>
+                  {reportDetail.summary.error_messages.join('\n')}
+                </div>
+              )}
+              <div style={{ marginTop: 12, overflow: 'auto', maxHeight: 420 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Name</th>
+                      <th>ID</th>
+                      <th>Bio</th>
+                      <th>Lab</th>
+                      <th>Result</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(reportDetail.rows || []).map((r: any, i: number) => (
+                      <tr key={`${reportDetail.id}-${i}`} style={r.result === 'error' ? { background: 'rgba(220,38,38,0.08)' } : undefined}>
+                        <td className="mono">{r.row ?? i + 1}</td>
+                        <td>{r.full_name || '—'}</td>
+                        <td className="mono">{r.scholar_id || '—'}</td>
+                        <td className="mono">{r.bio_id || '—'}</td>
+                        <td>{r.lab || '—'}</td>
+                        <td>
+                          <strong className={r.result === 'error' ? 'err' : r.result === 'created' ? '' : 'muted'}>
+                            {r.result || '—'}
+                          </strong>
+                        </td>
+                        <td style={{ fontSize: 13 }}>{r.message || '—'}</td>
+                      </tr>
+                    ))}
+                    {!(reportDetail.rows || []).length && (
+                      <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>No per-row detail in this report.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="card" style={{ padding: 0 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Action</th>
+                  <th>File / note</th>
+                  <th>User</th>
+                  <th>Summary</th>
+                  <th>Rows</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {reports.map((r) => (
+                  <tr key={r.id}>
+                    <td className="muted" style={{ whiteSpace: 'nowrap' }}>{ago(r.created_at)}</td>
+                    <td><strong>{r.action}</strong></td>
+                    <td className="mono">{r.filename || '—'}</td>
+                    <td>{r.username || '—'}</td>
+                    <td style={{ fontSize: 13 }}>
+                      {r.summary
+                        ? Object.entries(r.summary)
+                            .filter(([k]) => !['error_messages'].includes(k))
+                            .slice(0, 6)
+                            .map(([k, v]) => `${k}:${v}`)
+                            .join(' · ')
+                        : '—'}
+                    </td>
+                    <td className="mono">{r.row_count ?? 0}</td>
+                    <td>
+                      <button className="btn secondary" type="button" disabled={logsBusy} onClick={() => void openReport(r.id)}>
+                        Open
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {!reports.length && (
+                  <tr>
+                    <td colSpan={7} className="muted" style={{ padding: 16 }}>
+                      {logsBusy ? 'Loading…' : 'No import/export reports yet. Import or export scholars to create one.'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {tab !== 'dashboard' && tab !== 'logs' && (
       <>
       <div className="card toolbar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>

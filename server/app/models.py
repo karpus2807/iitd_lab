@@ -527,6 +527,26 @@ class AuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class OpReport(Base):
+    """Detailed import/export/activity report (per-row results for imports)."""
+
+    __tablename__ = "op_reports"
+    __table_args__ = (Index("ix_op_reports_area_created", "area", "created_at"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime(), default=utcnow, index=True)
+    area: Mapped[str] = mapped_column(String(32), default="scholars", index=True)  # scholars|inventory|system
+    action: Mapped[str] = mapped_column(String(64), index=True)  # import|export|remove|…
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    username: Mapped[str] = mapped_column(String(80), default="")
+    user_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    summary: Mapped[dict] = mapped_column(json_column(), default=dict)
+    rows: Mapped[list] = mapped_column(json_column(), default=list)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class AgentLog(Base):
     __tablename__ = "agent_logs"
 

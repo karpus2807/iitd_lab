@@ -18,6 +18,7 @@ from app.api.routes import (
     labs,
     machines,
     notifications,
+    reports,
     scholars,
     updates,
 )
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
         labs,
         inventory,
         scholars,
+        reports,
         alerts,
         admin,
         dashboard,

@@ -392,6 +392,7 @@ async def download_template_csv(user: CurrentUser):
 async def export_xlsx(
     db: DbDep,
     user: CurrentUser,
+    request: Request,
     status: str = Query(default="active", pattern="^(active|removed|all)$"),
     lab_id: UUID | None = None,
 ):
@@ -405,6 +406,38 @@ async def export_xlsx(
     if lab_id:
         stmt = stmt.where(Scholar.lab_id == lab_id)
     rows = [(s, lab.name) for s, lab in (await db.execute(stmt)).all()]
+    from app.services import op_reports as op_reports_svc
+
+    detail = [
+        {
+            "row": i,
+            "full_name": s.full_name or "",
+            "scholar_id": s.scholar_id or "",
+            "bio_id": getattr(s, "bio_id", None) or "",
+            "lab": lab_name,
+            "result": "exported",
+            "message": f"status={s.status}",
+        }
+        for i, (s, lab_name) in enumerate(rows, start=1)
+    ]
+    await op_reports_svc.create_report(
+        db,
+        area="scholars",
+        action="export",
+        user=user,
+        filename=f"labwatch-scholars-{status}.xlsx",
+        summary={"exported": len(rows), "status": status, "lab_id": str(lab_id) if lab_id else None},
+        rows=detail,
+        request=request,
+    )
+    await write_audit(
+        db,
+        "scholar.export",
+        user=user,
+        details={"status": status, "count": len(rows), "lab_id": str(lab_id) if lab_id else None},
+        request=request,
+    )
+    await db.commit()
     return Response(
         content=xls.build_export_xlsx(rows),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -436,11 +469,21 @@ async def import_scholars(
     created = 0
     updated = 0
     errors: list[str] = []
-    for parsed in parsed_rows:
+    detail_rows: list[dict] = []
+    for idx, parsed in enumerate(parsed_rows, start=1):
         lab_key = parsed["lab_name"].lower()
         lab = lab_by_name.get(lab_key)
+        base = {
+            "row": idx,
+            "full_name": parsed.get("full_name") or "",
+            "scholar_id": (parsed.get("scholar_id") or "").strip(),
+            "bio_id": (parsed.get("bio_id") or "").strip(),
+            "lab": parsed.get("lab_name") or "",
+        }
         if not lab or lab.name.strip().lower() == "unassigned":
-            errors.append(f"{parsed['full_name']}: unknown lab '{parsed['lab_name']}'")
+            msg = f"unknown lab '{parsed['lab_name']}'"
+            errors.append(f"{parsed['full_name']}: {msg}")
+            detail_rows.append({**base, "result": "error", "message": msg})
             continue
         try:
             kind, inv_id, inv_label = await _resolve_import_inventory(
@@ -487,6 +530,13 @@ async def import_scholars(
                     inventory_label=inv_label,
                 )
                 updated += 1
+                detail_rows.append(
+                    {
+                        **base,
+                        "result": "updated",
+                        "message": f"Matched existing ID '{sid}' — row overwritten",
+                    }
+                )
             else:
                 await _assert_unique_scholar_id(db, sid)
                 await _assert_unique_bio_id(db, lab.id, bio)
@@ -516,11 +566,35 @@ async def import_scholars(
                 )
                 db.add(row)
                 created += 1
+                detail_rows.append({**base, "result": "created", "message": "New scholar created"})
         except HTTPException as exc:
-            errors.append(f"{parsed.get('full_name')}: {exc.detail}")
+            msg = str(exc.detail)
+            errors.append(f"{parsed.get('full_name')}: {msg}")
+            detail_rows.append({**base, "result": "error", "message": msg})
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{parsed.get('full_name')}: {exc}")
+            msg = str(exc)
+            errors.append(f"{parsed.get('full_name')}: {msg}")
+            detail_rows.append({**base, "result": "error", "message": msg})
 
+    summary = {
+        "created": created,
+        "updated": updated,
+        "errors": len(errors),
+        "total_rows": len(parsed_rows),
+        "error_messages": errors[:50],
+    }
+    from app.services import op_reports as op_reports_svc
+
+    report = await op_reports_svc.create_report(
+        db,
+        area="scholars",
+        action="import",
+        user=user,
+        filename=file.filename or "",
+        summary=summary,
+        rows=detail_rows,
+        request=request,
+    )
     await write_audit(
         db,
         "scholar.import",
@@ -530,6 +604,7 @@ async def import_scholars(
             "created": created,
             "updated": updated,
             "errors": errors[:20],
+            "report_id": str(report.id),
         },
         request=request,
     )
@@ -540,6 +615,8 @@ async def import_scholars(
         "updated": updated,
         "errors": errors,
         "total_rows": len(parsed_rows),
+        "report_id": str(report.id),
+        "report": op_reports_svc.report_out(report, include_rows=True),
     }
 
 
@@ -550,11 +627,15 @@ async def remove_scholars(body: ScholarRemoveBody, db: DbDep, user: OperatorUser
         raise HTTPException(400, "Removal remark is required")
     removed = 0
     missing: list[str] = []
+    detail_rows: list[dict] = []
     now = utcnow()
     for sid in body.ids:
         row = await db.get(Scholar, sid)
         if not row:
             missing.append(str(sid))
+            detail_rows.append(
+                {"row": len(detail_rows) + 1, "scholar_id": str(sid), "result": "error", "message": "not found"}
+            )
             continue
         await _clear_inv_assignment(db, row)
         row.status = "removed"
@@ -566,6 +647,27 @@ async def remove_scholars(body: ScholarRemoveBody, db: DbDep, user: OperatorUser
         row.inventory_label = ""
         row.system_required = False
         removed += 1
+        detail_rows.append(
+            {
+                "row": len(detail_rows) + 1,
+                "full_name": row.full_name or "",
+                "scholar_id": row.scholar_id or "",
+                "bio_id": row.bio_id or "",
+                "result": "removed",
+                "message": remark,
+            }
+        )
+    from app.services import op_reports as op_reports_svc
+
+    await op_reports_svc.create_report(
+        db,
+        area="scholars",
+        action="remove",
+        user=user,
+        summary={"removed": removed, "missing": len(missing), "remark": remark},
+        rows=detail_rows,
+        request=request,
+    )
     await write_audit(
         db,
         "scholar.remove",
@@ -582,19 +684,49 @@ async def restore_scholars(body: ScholarIdsBody, db: DbDep, user: OperatorUser, 
     restored = 0
     missing: list[str] = []
     skipped: list[str] = []
+    detail_rows: list[dict] = []
     for sid in body.ids:
         row = await db.get(Scholar, sid)
         if not row:
             missing.append(str(sid))
+            detail_rows.append({"result": "error", "scholar_id": str(sid), "message": "not found"})
             continue
         if row.status != "removed":
             skipped.append(row.full_name or str(sid))
+            detail_rows.append(
+                {
+                    "result": "skipped",
+                    "full_name": row.full_name or "",
+                    "scholar_id": row.scholar_id or "",
+                    "message": f"status={row.status}",
+                }
+            )
             continue
         row.status = "active"
         row.removed_at = None
         row.removed_by = None
         row.removal_remark = None
         restored += 1
+        detail_rows.append(
+            {
+                "result": "restored",
+                "full_name": row.full_name or "",
+                "scholar_id": row.scholar_id or "",
+                "bio_id": row.bio_id or "",
+                "message": "restored to active",
+            }
+        )
+    from app.services import op_reports as op_reports_svc
+
+    await op_reports_svc.create_report(
+        db,
+        area="scholars",
+        action="restore",
+        user=user,
+        summary={"restored": restored, "missing": len(missing), "skipped": len(skipped)},
+        rows=detail_rows,
+        request=request,
+    )
     await write_audit(
         db,
         "scholar.restore",
@@ -639,6 +771,17 @@ async def purge_scholars(body: ScholarIdsBody, db: DbDep, user: OperatorUser, re
 @router.post("/empty-removed", response_model=dict)
 async def empty_removed_scholars(db: DbDep, user: OperatorUser, request: Request):
     rows = (await db.execute(select(Scholar).where(Scholar.status == "removed"))).scalars().all()
+    detail_rows = [
+        {
+            "row": i,
+            "full_name": row.full_name or "",
+            "scholar_id": row.scholar_id or "",
+            "bio_id": row.bio_id or "",
+            "result": "deleted",
+            "message": "permanently deleted from Removed",
+        }
+        for i, row in enumerate(rows, start=1)
+    ]
     for row in rows:
         if row.photo_path:
             photos.delete_photo(row.photo_path)
@@ -646,6 +789,17 @@ async def empty_removed_scholars(db: DbDep, user: OperatorUser, request: Request
             inv_docs.delete_doc(row.inv_verify_doc_path)
         await db.delete(row)
     deleted = len(rows)
+    from app.services import op_reports as op_reports_svc
+
+    await op_reports_svc.create_report(
+        db,
+        area="scholars",
+        action="empty_removed",
+        user=user,
+        summary={"deleted": deleted},
+        rows=detail_rows,
+        request=request,
+    )
     await write_audit(db, "scholar.empty_removed", user=user, details={"deleted": deleted}, request=request)
     await db.commit()
     return {"ok": True, "deleted": deleted}
