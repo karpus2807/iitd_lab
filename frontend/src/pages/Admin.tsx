@@ -7,7 +7,7 @@ import ProgressPanel from '../components/ProgressPanel'
 import Infra from './Infra'
 import Updates from './Updates'
 
-const ADMIN_TABS = ['users', 'labs', 'updates', 'tokens', 'agents', 'rules', 'audit'] as const
+const ADMIN_TABS = ['users', 'labs', 'updates', 'mail', 'tokens', 'agents', 'rules', 'audit'] as const
 type AdminTab = (typeof ADMIN_TABS)[number]
 
 export default function Admin() {
@@ -18,7 +18,7 @@ export default function Admin() {
   const tab: AdminTab = (ADMIN_TABS as readonly string[]).includes(raw) ? (raw as AdminTab) : 'users'
   return (
     <>
-      <div className="topbar"><div><h2>Admin</h2><p>Users, labs, server updates, enrollment, thresholds</p></div></div>
+      <div className="topbar"><div><h2>Admin</h2><p>Users, labs, server updates, SMTP mail, enrollment, thresholds</p></div></div>
       <div className="tabs">
         {ADMIN_TABS.map((t) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setParams({ tab: t })}>{t}</button>
@@ -27,11 +27,140 @@ export default function Admin() {
       {tab === 'users' && <Users />}
       {tab === 'labs' && <Infra />}
       {tab === 'updates' && <Updates />}
+      {tab === 'mail' && <MailSmtp />}
       {tab === 'tokens' && <Tokens />}
       {tab === 'agents' && <Agents />}
       {tab === 'rules' && <Rules />}
       {tab === 'audit' && <Audit />}
     </>
+  )
+}
+
+function MailSmtp() {
+  const [form, setForm] = useState({
+    enabled: false,
+    host: '',
+    port: 587,
+    username: '',
+    password: '',
+    from_addr: '',
+    starttls: true,
+    password_set: false,
+  })
+  const [testTo, setTestTo] = useState('')
+  const [err, setErr] = useState('')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function load() {
+    const data = await api<any>('/api/admin/smtp')
+    setForm({
+      enabled: !!data.enabled,
+      host: data.host || '',
+      port: Number(data.port || 587),
+      username: data.username || '',
+      password: '',
+      from_addr: data.from_addr || '',
+      starttls: data.starttls !== false,
+      password_set: !!data.password_set,
+    })
+  }
+  useEffect(() => {
+    load().catch((e) => setErr(e.message))
+  }, [])
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setErr('')
+    setMsg('')
+    try {
+      const body: any = {
+        enabled: form.enabled,
+        host: form.host.trim(),
+        port: Number(form.port) || 587,
+        username: form.username.trim(),
+        from_addr: form.from_addr.trim(),
+        starttls: form.starttls,
+      }
+      if (form.password.trim()) body.password = form.password
+      const data = await api<any>('/api/admin/smtp', { method: 'PUT', body: JSON.stringify(body) })
+      setForm((f) => ({ ...f, password: '', password_set: !!data.password_set, enabled: !!data.enabled }))
+      setMsg('SMTP settings saved')
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function sendTest() {
+    setBusy(true)
+    setErr('')
+    setMsg('')
+    try {
+      await api('/api/admin/smtp/test', { method: 'POST', body: JSON.stringify({ to: testTo.trim() }) })
+      setMsg(`Test email sent to ${testTo.trim()}`)
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>SMTP mail server</h3>
+      <p className="muted">
+        Configure once here. Enrolment / inventory-assign OTPs use this SMTP. No automatic mails on import unless you opt in.
+      </p>
+      {err && <p className="err">{err}</p>}
+      {msg && <p className="muted">{msg}</p>}
+      <form onSubmit={save} className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+          Enable SMTP
+        </label>
+        <label>
+          Host
+          <input required={form.enabled} value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="smtp.example.com" />
+        </label>
+        <label>
+          Port
+          <input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
+        </label>
+        <label>
+          Username
+          <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+        </label>
+        <label>
+          Password {form.password_set ? <span className="muted">(saved — leave blank to keep)</span> : null}
+          <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder={form.password_set ? '••••••••' : ''} autoComplete="new-password" />
+        </label>
+        <label>
+          From address
+          <input value={form.from_addr} onChange={(e) => setForm({ ...form, from_addr: e.target.value })} placeholder="labwatch@example.com" />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={form.starttls} onChange={(e) => setForm({ ...form, starttls: e.target.checked })} />
+          STARTTLS
+        </label>
+        <div className="toolbar" style={{ gridColumn: '1 / -1', gap: 8 }}>
+          <button className="btn" disabled={busy} type="submit">{busy ? 'Saving…' : 'Save SMTP'}</button>
+        </div>
+      </form>
+      <div className="toolbar" style={{ marginTop: 16, gap: 8, flexWrap: 'wrap' }}>
+        <input
+          placeholder="Test recipient email"
+          value={testTo}
+          onChange={(e) => setTestTo(e.target.value)}
+          style={{ minWidth: 240 }}
+        />
+        <button className="btn secondary" type="button" disabled={busy || !testTo.trim()} onClick={() => void sendTest()}>
+          Send test email
+        </button>
+      </div>
+    </div>
   )
 }
 

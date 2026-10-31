@@ -10,12 +10,19 @@ from sqlalchemy import func, or_, select
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
 from app.models import InventoryItem, Lab, Scholar, utcnow
 from app.schemas.scholars import ScholarIdsBody, ScholarListOut, ScholarOut, ScholarRemoveBody
+from app.services import email_otp
 from app.services import scholar_mgmt as xls
 from app.services import scholar_photos as photos
 
 router = APIRouter(prefix="/api/scholars", tags=["scholars"])
 
 DEFAULT_GROUPS = ["M.Tech", "Ph.D.", "Postdoc", "Project Staff", "Intern", "Faculty", "Other"]
+
+
+def _truthy(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
 def _out(row: Scholar, lab: Lab | None = None, inv: InventoryItem | None = None) -> ScholarOut:
@@ -204,7 +211,9 @@ async def import_scholars(
     user: OperatorUser,
     request: Request,
     file: UploadFile = File(...),
+    require_otp: str = Form("false"),
 ):
+    """Import scholars. OTP/email is OFF by default; set require_otp=true to email-verify each row."""
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "Empty file")
@@ -215,12 +224,15 @@ async def import_scholars(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Could not parse file: {exc}") from exc
 
+    want_otp = _truthy(require_otp)
     labs = (await db.execute(select(Lab))).scalars().all()
-    lab_by_name = { (l.name or "").strip().lower(): l for l in labs if (l.name or "").strip() }
+    lab_by_name = {(l.name or "").strip().lower(): l for l in labs if (l.name or "").strip()}
 
     created = 0
     updated = 0
+    pending_otp = 0
     errors: list[str] = []
+    otp_challenges: list[dict] = []
     for parsed in parsed_rows:
         lab_key = parsed["lab_name"].lower()
         lab = lab_by_name.get(lab_key)
@@ -231,6 +243,47 @@ async def import_scholars(
             kind, inv_id, inv_label = await _resolve_import_inventory(
                 db, parsed.get("inventory_label") or "", bool(parsed.get("system_required"))
             )
+            email = (parsed.get("email") or "").strip()
+            # Import never auto-emails unless admin opted into OTP verification.
+            if want_otp:
+                if not email:
+                    errors.append(f"{parsed['full_name']}: email required when import OTP is enabled")
+                    continue
+                payload = {
+                    "lab_id": str(lab.id),
+                    "full_name": parsed["full_name"],
+                    "scholar_id": (parsed.get("scholar_id") or "").strip(),
+                    "group_name": parsed.get("group_name") or "",
+                    "faculty": parsed.get("faculty") or "",
+                    "email": email,
+                    "phone": parsed.get("phone") or "",
+                    "notes": parsed.get("notes") or "",
+                    "system_required": bool(parsed.get("system_required")),
+                    "inventory_kind": kind,
+                    "inventory_item_id": str(inv_id) if inv_id else "",
+                    "inventory_label": inv_label,
+                }
+                await email_otp.expire_open_for_email(db, email_otp.PURPOSE_IMPORT, email)
+                challenge, code = await email_otp.create_challenge(
+                    db,
+                    purpose=email_otp.PURPOSE_IMPORT,
+                    email=email,
+                    payload=payload,
+                    created_by=user.username,
+                )
+                try:
+                    await email_otp.send_otp_mail(
+                        db, to=email, code=code, context=f"scholar import · {parsed['full_name']}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{parsed['full_name']}: OTP email failed: {exc}")
+                    continue
+                pending_otp += 1
+                otp_challenges.append(
+                    {"challenge_id": str(challenge.id), "email": email, "full_name": parsed["full_name"]}
+                )
+                continue
+
             existing = None
             sid = (parsed.get("scholar_id") or "").strip()
             if sid:
@@ -239,7 +292,7 @@ async def import_scholars(
                         select(Scholar).where(
                             Scholar.lab_id == lab.id,
                             func.lower(Scholar.scholar_id) == sid.lower(),
-                            Scholar.status == "active",
+                            Scholar.status.in_(["active", "pending"]),
                         )
                     )
                 ).scalar_one_or_none()
@@ -247,9 +300,10 @@ async def import_scholars(
                 existing.full_name = parsed["full_name"]
                 existing.group_name = parsed.get("group_name") or ""
                 existing.faculty = parsed.get("faculty") or ""
-                existing.email = parsed.get("email") or ""
+                existing.email = email
                 existing.phone = parsed.get("phone") or ""
                 existing.notes = parsed.get("notes") or ""
+                existing.status = "active"
                 await _apply_inventory_link(
                     db,
                     existing,
@@ -266,7 +320,7 @@ async def import_scholars(
                     scholar_id=sid,
                     group_name=parsed.get("group_name") or "",
                     faculty=parsed.get("faculty") or "",
-                    email=parsed.get("email") or "",
+                    email=email,
                     phone=parsed.get("phone") or "",
                     notes=parsed.get("notes") or "",
                     status="active",
@@ -288,7 +342,14 @@ async def import_scholars(
         db,
         "scholar.import",
         user=user,
-        details={"filename": file.filename, "created": created, "updated": updated, "errors": errors[:20]},
+        details={
+            "filename": file.filename,
+            "created": created,
+            "updated": updated,
+            "pending_otp": pending_otp,
+            "require_otp": want_otp,
+            "errors": errors[:20],
+        },
         request=request,
     )
     await db.commit()
@@ -296,8 +357,11 @@ async def import_scholars(
         "ok": True,
         "created": created,
         "updated": updated,
+        "pending_otp": pending_otp,
+        "otp_challenges": otp_challenges[:50],
         "errors": errors,
         "total_rows": len(parsed_rows),
+        "require_otp": want_otp,
     }
 
 
@@ -411,7 +475,7 @@ async def list_scholars(
     user: CurrentUser,
     lab_id: UUID | None = None,
     q: str = "",
-    status: str = Query(default="active", pattern="^(active|removed|all)$"),
+    status: str = Query(default="active", pattern="^(active|removed|pending|all)$"),
     group_name: str = "",
     faculty: str = "",
     limit: int = Query(default=200, ge=1, le=2000),
@@ -469,7 +533,59 @@ async def list_scholars(
     return ScholarListOut(items=[_out(s, lab, inv) for s, lab, inv in rows], total=total)
 
 
-@router.post("", response_model=ScholarOut)
+async def _finalize_enroll_payload(db, payload: dict, *, photo_path: str = "") -> Scholar:
+    lab = await _lab_or_404(db, UUID(str(payload["lab_id"])))
+    inv_raw = str(payload.get("inventory_item_id") or "").strip()
+    inv_id = UUID(inv_raw) if inv_raw else None
+    sid = str(payload.get("scholar_id") or "").strip()
+    row = None
+    if sid:
+        row = (
+            await db.execute(
+                select(Scholar).where(
+                    Scholar.lab_id == lab.id,
+                    func.lower(Scholar.scholar_id) == sid.lower(),
+                    Scholar.status.in_(["active", "pending"]),
+                )
+            )
+        ).scalar_one_or_none()
+    if row:
+        row.full_name = str(payload.get("full_name") or "").strip()
+        row.group_name = str(payload.get("group_name") or "").strip()
+        row.faculty = str(payload.get("faculty") or "").strip()
+        row.email = str(payload.get("email") or "").strip()
+        row.phone = str(payload.get("phone") or "").strip()
+        row.notes = str(payload.get("notes") or "").strip()
+        row.status = "active"
+        if photo_path or payload.get("photo_path"):
+            row.photo_path = photo_path or str(payload.get("photo_path") or "")
+    else:
+        row = Scholar(
+            lab_id=lab.id,
+            full_name=str(payload.get("full_name") or "").strip(),
+            scholar_id=sid,
+            group_name=str(payload.get("group_name") or "").strip(),
+            faculty=str(payload.get("faculty") or "").strip(),
+            email=str(payload.get("email") or "").strip(),
+            phone=str(payload.get("phone") or "").strip(),
+            notes=str(payload.get("notes") or "").strip(),
+            status="active",
+            photo_path=photo_path or str(payload.get("photo_path") or ""),
+        )
+        db.add(row)
+    await _apply_inventory_link(
+        db,
+        row,
+        system_required=bool(payload.get("system_required")),
+        inventory_kind=str(payload.get("inventory_kind") or "none"),
+        inventory_item_id=inv_id,
+        inventory_label=str(payload.get("inventory_label") or ""),
+    )
+    await db.flush()
+    return row
+
+
+@router.post("")
 async def enroll_scholar(
     db: DbDep,
     user: OperatorUser,
@@ -486,42 +602,109 @@ async def enroll_scholar(
     email: str = Form(""),
     phone: str = Form(""),
     notes: str = Form(""),
+    require_otp: str = Form("false"),
     photo: UploadFile | None = File(None),
 ):
+    """Enrol a scholar.
+
+    - Registration OTP is optional (require_otp), unless inventory is being assigned
+      (inv assign OTP is always compulsory).
+    - No automatic mail except when an OTP challenge is created.
+    """
     lab = await _lab_or_404(db, lab_id)
     name = (full_name or "").strip()
     if not name:
         raise HTTPException(400, "Name is required")
-    sys_req = str(system_required).strip().lower() in {"1", "true", "yes", "y"}
+    sys_req = _truthy(system_required)
+    kind = (inventory_kind or "none").strip().lower()
     inv_id = None
     if (inventory_item_id or "").strip():
         try:
             inv_id = UUID(inventory_item_id.strip())
         except ValueError as exc:
             raise HTTPException(400, "Invalid inventory item id") from exc
+    if sys_req and kind not in {"listed", "non_list"}:
+        raise HTTPException(400, "System required needs listed or non-list inventory")
 
-    row = Scholar(
-        lab_id=lab.id,
-        full_name=name,
-        scholar_id=(scholar_id or "").strip(),
-        group_name=(group_name or "").strip(),
-        faculty=(faculty or "").strip(),
-        email=(email or "").strip(),
-        phone=(phone or "").strip(),
-        notes=(notes or "").strip(),
-        status="active",
-    )
-    await _apply_inventory_link(
-        db,
-        row,
-        system_required=sys_req,
-        inventory_kind=(inventory_kind or "none").strip().lower(),
-        inventory_item_id=inv_id,
-        inventory_label=(inventory_label or "").strip(),
-    )
-    db.add(row)
-    await db.flush()
+    # Inventory assign ⇒ OTP compulsory. Plain enrol ⇒ OTP optional (admin choice).
+    assigning_inv = bool(sys_req and kind in {"listed", "non_list"})
+    want_otp = assigning_inv or _truthy(require_otp)
+    email_norm = (email or "").strip()
 
+    payload = {
+        "lab_id": str(lab.id),
+        "full_name": name,
+        "scholar_id": (scholar_id or "").strip(),
+        "group_name": (group_name or "").strip(),
+        "faculty": (faculty or "").strip(),
+        "email": email_norm,
+        "phone": (phone or "").strip(),
+        "notes": (notes or "").strip(),
+        "system_required": sys_req,
+        "inventory_kind": kind if sys_req else "none",
+        "inventory_item_id": str(inv_id) if inv_id else "",
+        "inventory_label": (inventory_label or "").strip(),
+    }
+
+    if want_otp:
+        if not email_norm:
+            raise HTTPException(400, "Email is required for OTP verification")
+        # Validate inventory up-front before sending OTP (no DB mutation yet)
+        if assigning_inv:
+            if kind == "listed":
+                if not inv_id:
+                    raise HTTPException(400, "Select an inventory item from the list")
+                item = await db.get(InventoryItem, inv_id)
+                if not item or item.status != "active":
+                    raise HTTPException(400, "Inventory item not found or removed")
+                payload["inventory_label"] = item.ic_no
+            elif kind == "non_list" and not (inventory_label or "").strip():
+                raise HTTPException(400, "Type a non-list inventory label / IC No.")
+
+        await email_otp.expire_open_for_email(db, email_otp.PURPOSE_ENROLL, email_norm)
+        challenge, code = await email_otp.create_challenge(
+            db,
+            purpose=email_otp.PURPOSE_ENROLL,
+            email=email_norm,
+            payload=payload,
+            created_by=user.username,
+        )
+        if photo and photo.filename:
+            raw = await photo.read()
+            if raw:
+                try:
+                    payload["photo_path"] = photos.save_photo(
+                        challenge.id, raw, photo.filename, photo.content_type
+                    )
+                    from sqlalchemy.orm.attributes import flag_modified
+
+                    challenge.payload = dict(payload)
+                    flag_modified(challenge, "payload")
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+        try:
+            ctx = "inventory assign" if assigning_inv else "scholar enrolment"
+            await email_otp.send_otp_mail(db, to=email_norm, code=code, context=f"{ctx} · {name}")
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"Could not send OTP email: {exc}") from exc
+        await write_audit(
+            db,
+            "scholar.enroll_otp_sent",
+            user=user,
+            details={"challenge_id": str(challenge.id), "email": email_norm, "assigning_inv": assigning_inv},
+            request=request,
+        )
+        await db.commit()
+        return {
+            "pending_otp": True,
+            "challenge_id": str(challenge.id),
+            "email": email_norm,
+            "purpose": email_otp.PURPOSE_ENROLL,
+            "assigning_inventory": assigning_inv,
+            "message": f"OTP sent to {email_norm}. Enrolment completes after verification.",
+        }
+
+    row = await _finalize_enroll_payload(db, payload)
     if photo and photo.filename:
         raw = await photo.read()
         if raw:
@@ -541,6 +724,156 @@ async def enroll_scholar(
     await db.refresh(row)
     inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
     return _out(row, lab, inv)
+
+
+@router.post("/verify-otp")
+async def verify_scholar_otp(
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    challenge_id: UUID = Form(...),
+    code: str = Form(...),
+):
+    try:
+        challenge = await email_otp.verify_challenge(db, challenge_id=challenge_id, code=code)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    payload = dict(challenge.payload or {})
+    if challenge.purpose == email_otp.PURPOSE_ENROLL:
+        row = await _finalize_enroll_payload(db, payload)
+        # photo may already be stored under challenge id
+        if payload.get("photo_path") and not row.photo_path:
+            row.photo_path = str(payload["photo_path"])
+        await write_audit(
+            db,
+            "scholar.enroll_verified",
+            user=user,
+            details={"id": str(row.id), "challenge_id": str(challenge.id)},
+            request=request,
+        )
+        await db.commit()
+        await db.refresh(row)
+        lab = await db.get(Lab, row.lab_id)
+        inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
+        return {"ok": True, "purpose": challenge.purpose, "scholar": _out(row, lab, inv)}
+
+    if challenge.purpose == email_otp.PURPOSE_IMPORT:
+        row = await _finalize_enroll_payload(db, payload)
+        await write_audit(
+            db,
+            "scholar.import_verified",
+            user=user,
+            details={"id": str(row.id), "challenge_id": str(challenge.id)},
+            request=request,
+        )
+        await db.commit()
+        await db.refresh(row)
+        lab = await db.get(Lab, row.lab_id)
+        inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
+        return {"ok": True, "purpose": challenge.purpose, "scholar": _out(row, lab, inv)}
+
+    if challenge.purpose == email_otp.PURPOSE_INV_ASSIGN:
+        scholar_id = UUID(str(payload["scholar_id"]))
+        row = await _get_or_404(db, scholar_id)
+        inv_raw = str(payload.get("inventory_item_id") or "").strip()
+        inv_id = UUID(inv_raw) if inv_raw else None
+        await _apply_inventory_link(
+            db,
+            row,
+            system_required=True,
+            inventory_kind=str(payload.get("inventory_kind") or "non_list"),
+            inventory_item_id=inv_id,
+            inventory_label=str(payload.get("inventory_label") or ""),
+        )
+        await write_audit(
+            db,
+            "scholar.inv_assign_verified",
+            user=user,
+            details={"id": str(row.id), "challenge_id": str(challenge.id)},
+            request=request,
+        )
+        await db.commit()
+        await db.refresh(row)
+        lab = await db.get(Lab, row.lab_id)
+        inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
+        return {"ok": True, "purpose": challenge.purpose, "scholar": _out(row, lab, inv)}
+
+    raise HTTPException(400, f"Unsupported OTP purpose: {challenge.purpose}")
+
+
+@router.post("/{scholar_id}/assign-inventory")
+async def assign_inventory_with_otp(
+    scholar_id: UUID,
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    inventory_kind: str = Form(...),
+    inventory_item_id: str = Form(""),
+    inventory_label: str = Form(""),
+):
+    """Inventory assign always requires OTP to the scholar's email (compulsory)."""
+    row = await _get_or_404(db, scholar_id)
+    if row.status == "removed":
+        raise HTTPException(400, "Cannot assign inventory to a removed scholar")
+    email_norm = (row.email or "").strip()
+    if not email_norm:
+        raise HTTPException(400, "Scholar email is required for inventory-assign OTP")
+    kind = (inventory_kind or "").strip().lower()
+    if kind not in {"listed", "non_list"}:
+        raise HTTPException(400, "inventory_kind must be listed or non_list")
+    inv_id = None
+    if (inventory_item_id or "").strip():
+        try:
+            inv_id = UUID(inventory_item_id.strip())
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid inventory item id") from exc
+    label = (inventory_label or "").strip()
+    if kind == "listed":
+        if not inv_id:
+            raise HTTPException(400, "Select an inventory item from the list")
+        item = await db.get(InventoryItem, inv_id)
+        if not item or item.status != "active":
+            raise HTTPException(400, "Inventory item not found or removed")
+        label = item.ic_no
+    elif not label:
+        raise HTTPException(400, "Type a non-list inventory label / IC No.")
+
+    payload = {
+        "scholar_id": str(row.id),
+        "inventory_kind": kind,
+        "inventory_item_id": str(inv_id) if inv_id else "",
+        "inventory_label": label,
+    }
+    await email_otp.expire_open_for_email(db, email_otp.PURPOSE_INV_ASSIGN, email_norm)
+    challenge, code = await email_otp.create_challenge(
+        db,
+        purpose=email_otp.PURPOSE_INV_ASSIGN,
+        email=email_norm,
+        payload=payload,
+        created_by=user.username,
+    )
+    try:
+        await email_otp.send_otp_mail(
+            db, to=email_norm, code=code, context=f"inventory assign · {row.full_name}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Could not send OTP email: {exc}") from exc
+    await write_audit(
+        db,
+        "scholar.inv_assign_otp_sent",
+        user=user,
+        details={"scholar_id": str(row.id), "challenge_id": str(challenge.id)},
+        request=request,
+    )
+    await db.commit()
+    return {
+        "pending_otp": True,
+        "challenge_id": str(challenge.id),
+        "email": email_norm,
+        "purpose": email_otp.PURPOSE_INV_ASSIGN,
+        "message": f"OTP sent to {email_norm}. Inventory assigns after verification.",
+    }
 
 
 @router.get("/{scholar_id}", response_model=ScholarOut)

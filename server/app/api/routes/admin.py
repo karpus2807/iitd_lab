@@ -437,3 +437,56 @@ async def update_channel(channel: str, body: dict, db: DbDep, admin: AdminUser):
             row.config = body["config"]
     await db.commit()
     return {"ok": True}
+
+
+class SmtpBody(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str = ""
+    password: str | None = None
+    from_addr: str = ""
+    starttls: bool = True
+
+
+class SmtpTestBody(BaseModel):
+    to: str = Field(min_length=3)
+
+
+@router.get("/smtp")
+async def get_smtp(db: DbDep, admin: AdminUser):
+    from app.services.smtp_config import get_smtp_config, public_smtp_view
+
+    cfg = await get_smtp_config(db)
+    return public_smtp_view(cfg)
+
+
+@router.put("/smtp")
+async def put_smtp(body: SmtpBody, db: DbDep, admin: AdminUser, request: Request):
+    from app.services.smtp_config import public_smtp_view, save_smtp_config
+
+    payload = body.model_dump()
+    if body.password is None:
+        payload.pop("password", None)
+    cfg = await save_smtp_config(db, payload)
+    await write_audit(db, "smtp.update", user=admin, details={"host": cfg.get("host"), "enabled": cfg.get("enabled")}, request=request)
+    await db.commit()
+    return public_smtp_view(cfg)
+
+
+@router.post("/smtp/test")
+async def test_smtp(body: SmtpTestBody, db: DbDep, admin: AdminUser, request: Request):
+    from app.services.smtp_config import send_email
+
+    try:
+        await send_email(
+            db,
+            to=body.to.strip(),
+            subject="[LabWatch] SMTP test",
+            body="LabWatch SMTP configuration works.\n",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"SMTP test failed: {exc}") from exc
+    await write_audit(db, "smtp.test", user=admin, details={"to": body.to.strip()}, request=request)
+    await db.commit()
+    return {"ok": True, "sent_to": body.to.strip()}

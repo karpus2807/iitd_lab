@@ -1,6 +1,7 @@
 """Scholars enrolment API."""
 
 import io
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
@@ -9,8 +10,38 @@ from openpyxl import Workbook, load_workbook
 from app.services.scholar_mgmt import EXCEL_HEADERS, TEMPLATE_EXAMPLE_ROW
 
 
+async def _enroll_with_otp(client: AsyncClient, headers: dict, data: dict, code: str = "111111") -> dict:
+    """Inventory assign / OTP enrol returns pending_otp until verify-otp."""
+    pending = await client.post("/api/scholars", headers=headers, data=data)
+    assert pending.status_code == 200, pending.text
+    body = pending.json()
+    if not body.get("pending_otp"):
+        return body
+    verified = await client.post(
+        "/api/scholars/verify-otp",
+        headers=headers,
+        data={"challenge_id": body["challenge_id"], "code": code},
+    )
+    assert verified.status_code == 200, verified.text
+    return verified.json()["scholar"]
+
+
 @pytest.mark.asyncio
-async def test_enroll_listed_and_non_list(client: AsyncClient, auth_headers: dict):
+async def test_enroll_listed_and_non_list(client: AsyncClient, auth_headers: dict, monkeypatch):
+    monkeypatch.setattr("app.services.email_otp.send_email", AsyncMock())
+    monkeypatch.setattr("app.services.email_otp.generate_code", lambda: "111111")
+    await client.put(
+        "/api/admin/smtp",
+        headers=auth_headers,
+        json={
+            "enabled": True,
+            "host": "smtp.test.local",
+            "port": 587,
+            "from_addr": "lab@test.local",
+            "password": "x",
+        },
+    )
+
     created_lab = await client.post(
         "/api/labs",
         headers=auth_headers,
@@ -46,9 +77,7 @@ async def test_enroll_listed_and_non_list(client: AsyncClient, auth_headers: dic
         "email": "ada@example.com",
         "phone": "9999999999",
     }
-    created = await client.post("/api/scholars", headers=auth_headers, data=fd)
-    assert created.status_code == 200, created.text
-    body = created.json()
+    body = await _enroll_with_otp(client, auth_headers, fd)
     assert body["full_name"] == "Ada Scholar"
     assert body["lab_name"] == lab["name"]
     assert body["inventory_kind"] == "listed"
@@ -70,9 +99,8 @@ async def test_enroll_listed_and_non_list(client: AsyncClient, auth_headers: dic
         "inventory_label": "Personal MacBook",
         "email": "bob@example.com",
     }
-    created2 = await client.post("/api/scholars", headers=auth_headers, data=fd2)
-    assert created2.status_code == 200, created2.text
-    assert created2.json()["inventory_kind"] == "non_list"
+    created2 = await _enroll_with_otp(client, auth_headers, fd2)
+    assert created2["inventory_kind"] == "non_list"
 
     fd3 = {
         "lab_id": str(lab["id"]),

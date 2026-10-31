@@ -53,6 +53,7 @@ const EMPTY = {
   email: '',
   phone: '',
   notes: '',
+  require_otp: false,
 }
 
 function ScholarPhoto({ id }: { id: string }) {
@@ -109,6 +110,10 @@ export default function Scholars() {
   const [suggestions, setSuggestions] = useState<InvSuggest[]>([])
   const [showSuggest, setShowSuggest] = useState(false)
   const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [otpChallengeId, setOtpChallengeId] = useState('')
+  const [otpEmail, setOtpEmail] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [otpMessage, setOtpMessage] = useState('')
   const photoRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const suggestRef = useRef<HTMLDivElement>(null)
@@ -250,8 +255,20 @@ export default function Scholars() {
       } else {
         fd.append('inventory_kind', 'none')
       }
+      // Inv assign ⇒ OTP always; plain enrol ⇒ optional checkbox
+      const forceOtp = sysYes
+      fd.append('require_otp', forceOtp || form.require_otp ? 'true' : 'false')
       if (photoFile) fd.append('photo', photoFile)
-      const created = await api<Scholar>('/api/scholars', { method: 'POST', body: fd })
+      const created = await api<any>('/api/scholars', { method: 'POST', body: fd })
+      if (created?.pending_otp) {
+        setOtpChallengeId(created.challenge_id)
+        setOtpEmail(created.email || form.email)
+        setOtpCode('')
+        setOtpMessage(created.message || 'OTP sent')
+        setEnrollOpen(false)
+        setNotice(created.message || 'OTP sent — enter code to finish enrolment')
+        return
+      }
       setNotice(`Enrolled ${created.full_name}`)
       setForm({ ...EMPTY })
       setPhotoFile(null)
@@ -262,6 +279,34 @@ export default function Scholars() {
       await loadFacets()
     } catch (e: any) {
       setErr(e?.message || 'Enrol failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitOtp(e: FormEvent) {
+    e.preventDefault()
+    if (!otpChallengeId || !otpCode.trim()) return
+    setBusy(true)
+    setErr('')
+    try {
+      const fd = new FormData()
+      fd.append('challenge_id', otpChallengeId)
+      fd.append('code', otpCode.trim())
+      const r = await api<any>('/api/scholars/verify-otp', { method: 'POST', body: fd })
+      setNotice(`Verified · enrolled ${r.scholar?.full_name || 'scholar'}`)
+      setOtpChallengeId('')
+      setOtpCode('')
+      setOtpEmail('')
+      setOtpMessage('')
+      setForm({ ...EMPTY })
+      setPhotoFile(null)
+      if (photoRef.current) photoRef.current.value = ''
+      setTab('active')
+      await load()
+      await loadFacets()
+    } catch (e: any) {
+      setErr(e?.message || 'OTP verification failed')
     } finally {
       setBusy(false)
     }
@@ -349,18 +394,32 @@ export default function Scholars() {
 
   async function onImport(file: File | null) {
     if (!file || !canEdit) return
+    const wantOtp = confirm(
+      'Require email OTP verification for this import?\n\nOK = send OTP to each email (no auto-enrol until verified)\nCancel = import directly with no emails',
+    )
     setBusy(true)
     setErr('')
     setNotice('')
     try {
       const fd = new FormData()
       fd.append('file', file)
+      fd.append('require_otp', wantOtp ? 'true' : 'false')
       const r = await api('/api/scholars/import', { method: 'POST', body: fd })
       setNotice(
         `Import: ${r.created} created · ${r.updated} updated` +
+          (r.pending_otp ? ` · ${r.pending_otp} OTP pending` : '') +
           (r.errors?.length ? ` · ${r.errors.length} errors` : ''),
       )
       if (r.errors?.length) setErr(r.errors.slice(0, 5).join('; '))
+      if (wantOtp && r.otp_challenges?.length) {
+        const first = r.otp_challenges[0]
+        setOtpChallengeId(first.challenge_id)
+        setOtpEmail(first.email)
+        setOtpMessage(
+          `${r.pending_otp} OTP email(s) sent. Enter OTP for ${first.full_name} (${first.email}). Verify others from their emails one by one if needed.`,
+        )
+        setOtpCode('')
+      }
       setTab('active')
       await load()
       await loadFacets()
@@ -369,6 +428,39 @@ export default function Scholars() {
     } finally {
       setBusy(false)
       if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  async function assignInvWithOtp(s: Scholar) {
+    if (!canEdit) return
+    const kind = prompt('Inventory kind: listed or non_list', s.inventory_kind === 'listed' ? 'listed' : 'non_list')
+    if (!kind || !['listed', 'non_list'].includes(kind)) return
+    let inventory_item_id = ''
+    let inventory_label = ''
+    if (kind === 'listed') {
+      inventory_item_id = prompt('Inventory item UUID (from Inv Management)', s.inventory_item_id || '') || ''
+      if (!inventory_item_id) return
+    } else {
+      inventory_label = prompt('Non-list inventory label / IC', s.inventory_label || '') || ''
+      if (!inventory_label) return
+    }
+    setBusy(true)
+    setErr('')
+    try {
+      const fd = new FormData()
+      fd.append('inventory_kind', kind)
+      fd.append('inventory_item_id', inventory_item_id)
+      fd.append('inventory_label', inventory_label)
+      const r = await api<any>(`/api/scholars/${s.id}/assign-inventory`, { method: 'POST', body: fd })
+      setOtpChallengeId(r.challenge_id)
+      setOtpEmail(r.email)
+      setOtpMessage(r.message || 'OTP sent for inventory assign')
+      setOtpCode('')
+      setNotice(r.message || 'OTP sent')
+    } catch (e: any) {
+      setErr(e?.message || 'Assign OTP failed')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -536,6 +628,21 @@ export default function Scholars() {
               Photo
               <input ref={photoRef} type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} />
             </label>
+            {form.system_required !== 'yes' && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={form.require_otp}
+                  onChange={(e) => setForm({ ...form, require_otp: e.target.checked })}
+                />
+                Require email OTP for this enrolment (optional)
+              </label>
+            )}
+            {form.system_required === 'yes' && (
+              <p className="muted" style={{ gridColumn: '1 / -1', margin: 0 }}>
+                Inventory assign requires email OTP (compulsory). Enter a valid email.
+              </p>
+            )}
           </div>
           {form.system_required === 'yes' && (
             <div className="card" style={{ marginTop: 12, background: 'transparent' }}>
@@ -587,6 +694,37 @@ export default function Scholars() {
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
             <button className="btn" disabled={busy || !labId} type="submit">{busy ? 'Saving…' : 'Save enrolment'}</button>
             <button className="btn secondary" type="button" onClick={() => setEnrollOpen(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {otpChallengeId && canEdit && (
+        <form className="card" onSubmit={submitOtp} style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Verify email OTP</h3>
+          <p className="muted">{otpMessage || `Code sent to ${otpEmail}`}</p>
+          <label>
+            OTP code
+            <input
+              required
+              value={otpCode}
+              onChange={(e) => setOtpCode(e.target.value)}
+              placeholder="6-digit code"
+              autoComplete="one-time-code"
+            />
+          </label>
+          <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+            <button className="btn" disabled={busy} type="submit">{busy ? 'Verifying…' : 'Verify & complete'}</button>
+            <button
+              className="btn secondary"
+              type="button"
+              onClick={() => {
+                setOtpChallengeId('')
+                setOtpCode('')
+                setOtpMessage('')
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </form>
       )}
@@ -704,6 +842,11 @@ export default function Scholars() {
                 )}
                 <td className="row-actions">
                   <button className="btn secondary" type="button" onClick={() => setDetail(s)}>Details</button>
+                  {canEdit && tab === 'active' && (
+                    <button className="btn secondary" type="button" disabled={busy} onClick={() => void assignInvWithOtp(s)}>
+                      Assign inv (OTP)
+                    </button>
+                  )}
                   {canEdit && tab === 'removed' && (
                     <>
                       <button className="btn secondary" type="button" disabled={busy} onClick={() => void runRestore([s.id])}>Restore</button>

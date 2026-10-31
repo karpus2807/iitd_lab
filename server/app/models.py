@@ -547,6 +547,23 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(TZDateTime(), default=utcnow, onupdate=utcnow)
 
 
+class EmailOtpChallenge(Base, TimestampMixin):
+    """Pending email OTP for scholar enrol / import verify / inventory assign."""
+
+    __tablename__ = "email_otp_challenges"
+    __table_args__ = (Index("ix_email_otp_purpose_email", "purpose", "email"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    purpose: Mapped[str] = mapped_column(String(32), index=True)  # scholar_enroll | scholar_import | inv_assign
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(json_column(), default=dict)
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime(), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class InventoryItem(Base, TimestampMixin):
     """Lab asset registry (IC No. based) — separate from machines.inventory_id enroll IDs."""
 
