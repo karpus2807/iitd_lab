@@ -108,11 +108,14 @@ async def search_assignees(db: AsyncSession, q: str, *, limit: int = 20) -> list
     return out[: limit + 5]
 
 
-async def search_assigned(db: AsyncSession, q: str, *, limit: int = 20) -> list[dict]:
-    """Find inventory currently issued to a scholar (for revoke)."""
+async def search_assigned(db: AsyncSession, q: str, *, limit: int = 50) -> list[dict]:
+    """Find inventory currently issued to a scholar (for revoke).
+
+    Empty q returns recent assigned items so the revoke UI is usable without typing.
+    Matching a scholar also returns *all* of that scholar's assigned items (up to limit).
+    """
     needle = (q or "").strip()
     like = f"%{needle}%" if needle else None
-    # Only items still issued to a scholar (not already taken back by lab owner).
     stmt = (
         select(InventoryItem, Scholar, Lab)
         .join(Scholar, InventoryItem.assigned_scholar_id == Scholar.id)
@@ -121,7 +124,7 @@ async def search_assigned(db: AsyncSession, q: str, *, limit: int = 20) -> list[
             InventoryItem.status == "active",
             InventoryItem.assigned_scholar_id.is_not(None),
         )
-        .order_by(InventoryItem.ic_no.asc())
+        .order_by(InventoryItem.assigned_at.desc(), InventoryItem.ic_no.asc())
     )
     if like:
         stmt = stmt.where(
@@ -132,23 +135,49 @@ async def search_assigned(db: AsyncSession, q: str, *, limit: int = 20) -> list[
                 Scholar.scholar_id.ilike(like),
                 Scholar.full_name.ilike(like),
                 Scholar.bio_id.ilike(like),
+                Scholar.email.ilike(like),
+                Lab.name.ilike(like),
             )
         )
     rows = (await db.execute(stmt.limit(limit))).all()
+
+    # If query matches a scholar, also pull every item still assigned to that scholar.
+    if like and rows:
+        scholar_ids = {scholar.id for _, scholar, _ in rows if scholar}
+        if scholar_ids:
+            extra = (
+                await db.execute(
+                    select(InventoryItem, Scholar, Lab)
+                    .join(Scholar, InventoryItem.assigned_scholar_id == Scholar.id)
+                    .outerjoin(Lab, Scholar.lab_id == Lab.id)
+                    .where(
+                        InventoryItem.status == "active",
+                        InventoryItem.assigned_scholar_id.in_(scholar_ids),
+                    )
+                    .order_by(InventoryItem.ic_no.asc())
+                    .limit(limit)
+                )
+            ).all()
+            seen = {item.id for item, _, _ in rows}
+            for row in extra:
+                if row[0].id not in seen:
+                    rows.append(row)
+                    seen.add(row[0].id)
+
     out = []
-    for item, scholar, lab in rows:
+    for item, scholar, lab in rows[:limit]:
         owner_lab = lab or await lab_for_inventory(db, item)
         out.append(
             {
                 "item_id": str(item.id),
                 "ic_no": item.ic_no,
                 "item_name": item.item_name or "",
-                "assigned_to": item.assigned_to or "",
+                "assigned_to": item.assigned_to or (scholar.full_name if scholar else "") or "",
                 "assigned_at": item.assigned_at.isoformat() if getattr(item, "assigned_at", None) else None,
                 "scholar": (
                     {
                         "id": str(scholar.id),
-                        "full_name": scholar.full_name,
+                        "full_name": scholar.full_name or "",
                         "scholar_id": scholar.scholar_id or "",
                         "bio_id": scholar.bio_id or "",
                         "email": scholar.email or "",
@@ -192,20 +221,14 @@ async def apply_assign_to_scholar(
     by: str,
     doc_path: str = "",
 ) -> None:
-    # Detach previous scholar on this item
+    # Detach previous scholar on this item (item moves to the new assignee).
     prev_id = getattr(item, "assigned_scholar_id", None)
     if prev_id and prev_id != scholar.id:
         prev = await db.get(Scholar, prev_id)
         await clear_scholar_inventory_link(db, prev, item)
-    # Detach this scholar from any other item
-    if scholar.inventory_item_id and scholar.inventory_item_id != item.id:
-        other = await db.get(InventoryItem, scholar.inventory_item_id)
-        if other and other.assigned_scholar_id == scholar.id:
-            other.assigned_scholar_id = None
-            if (other.assigned_to or "").strip() == (scholar.full_name or "").strip():
-                other.assigned_to = ""
-            other.assigned_at = None
-            other.assign_verify_method = ""
+        await _refresh_scholar_inventory_pointer(db, prev)
+
+    # Multi-assign allowed: do not unassign other items already held by this scholar.
 
     item.assigned_to = (scholar.full_name or "").strip()
     item.assigned_scholar_id = scholar.id
@@ -224,7 +247,41 @@ async def apply_assign_to_scholar(
     scholar.inventory_item_id = item.id
     scholar.inventory_label = item.ic_no
     scholar.inventory_assigned_at = item.assigned_at
-    scholar.inv_verify_doc_path = doc_path or ""
+    if doc_path:
+        scholar.inv_verify_doc_path = doc_path
+    await _refresh_scholar_inventory_pointer(db, scholar)
+
+
+async def _refresh_scholar_inventory_pointer(db: AsyncSession, scholar: Scholar | None) -> None:
+    """Point scholar.inventory_* at one active issued item (or clear if none)."""
+    if not scholar:
+        return
+    rows = (
+        await db.execute(
+            select(InventoryItem)
+            .where(
+                InventoryItem.assigned_scholar_id == scholar.id,
+                InventoryItem.status == "active",
+            )
+            .order_by(InventoryItem.assigned_at.desc(), InventoryItem.ic_no.asc())
+        )
+    ).scalars().all()
+    if not rows:
+        scholar.inventory_kind = "none"
+        scholar.inventory_item_id = None
+        scholar.inventory_label = ""
+        scholar.inventory_assigned_at = None
+        scholar.system_required = False
+        return
+    primary = rows[0]
+    scholar.system_required = True
+    scholar.inventory_kind = "listed"
+    scholar.inventory_item_id = primary.id
+    if len(rows) == 1:
+        scholar.inventory_label = primary.ic_no
+    else:
+        scholar.inventory_label = f"{primary.ic_no} (+{len(rows) - 1} more)"
+    scholar.inventory_assigned_at = primary.assigned_at
 
 
 async def apply_revoke_to_owner(
@@ -254,24 +311,48 @@ async def apply_revoke_to_owner(
     item.assigned_by = by or ""
     item.assign_verify_method = "owner"
     item.assign_verify_doc_path = ""
+    await _refresh_scholar_inventory_pointer(db, scholar)
 
 
 def save_assign_doc(item_id: UUID, data: bytes, filename: str | None, content_type: str | None) -> str:
     return inv_docs.save_doc(item_id, data, filename, content_type)
 
 
-async def list_issued_assignments(db: AsyncSession, *, limit: int = 500) -> list[dict]:
+async def list_issued_assignments(
+    db: AsyncSession, *, q: str = "", limit: int = 500, offset: int = 0
+) -> tuple[list[dict], int]:
     """Inventory currently issued to a scholar (Assign Inv records)."""
+    needle = (q or "").strip()
+    like = f"%{needle}%" if needle else None
+    base = (
+        select(InventoryItem, Scholar, Lab)
+        .join(Scholar, InventoryItem.assigned_scholar_id == Scholar.id)
+        .outerjoin(Lab, Scholar.lab_id == Lab.id)
+        .where(
+            InventoryItem.status == "active",
+            InventoryItem.assigned_scholar_id.is_not(None),
+        )
+    )
+    if like:
+        base = base.where(
+            or_(
+                InventoryItem.ic_no.ilike(like),
+                InventoryItem.item_name.ilike(like),
+                InventoryItem.assigned_to.ilike(like),
+                Scholar.scholar_id.ilike(like),
+                Scholar.full_name.ilike(like),
+                Scholar.bio_id.ilike(like),
+                Scholar.email.ilike(like),
+                Lab.name.ilike(like),
+            )
+        )
+    count = (
+        await db.execute(select(func.count()).select_from(base.order_by(None).subquery()))
+    ).scalar_one()
     rows = (
         await db.execute(
-            select(InventoryItem, Scholar, Lab)
-            .join(Scholar, InventoryItem.assigned_scholar_id == Scholar.id)
-            .outerjoin(Lab, Scholar.lab_id == Lab.id)
-            .where(
-                InventoryItem.status == "active",
-                InventoryItem.assigned_scholar_id.is_not(None),
-            )
-            .order_by(InventoryItem.assigned_at.desc(), InventoryItem.ic_no.asc())
+            base.order_by(InventoryItem.assigned_at.desc(), InventoryItem.ic_no.asc())
+            .offset(offset)
             .limit(limit)
         )
     ).all()
@@ -307,19 +388,38 @@ async def list_issued_assignments(db: AsyncSession, *, limit: int = 500) -> list
                 ),
             }
         )
-    return out
+    return out, int(count or 0)
 
 
-async def list_revoked_assignments(db: AsyncSession, *, limit: int = 500) -> list[dict]:
+async def list_revoked_assignments(
+    db: AsyncSession, *, q: str = "", limit: int = 500, offset: int = 0
+) -> tuple[list[dict], int]:
     """Inventory taken back by lab owner after revoke (still marked method=owner)."""
+    needle = (q or "").strip()
+    like = f"%{needle}%" if needle else None
+    base = select(InventoryItem).where(
+        InventoryItem.status == "active",
+        InventoryItem.assign_verify_method == "owner",
+    )
+    if like:
+        base = base.where(
+            or_(
+                InventoryItem.ic_no.ilike(like),
+                InventoryItem.item_name.ilike(like),
+                InventoryItem.assigned_to.ilike(like),
+                InventoryItem.revoked_from.ilike(like),
+                InventoryItem.revoked_from_scholar_id.ilike(like),
+                InventoryItem.revoked_from_bio_id.ilike(like),
+                InventoryItem.revoked_from_email.ilike(like),
+                InventoryItem.revoked_lab_name.ilike(like),
+                InventoryItem.assigned_by.ilike(like),
+            )
+        )
+    count = (await db.execute(select(func.count()).select_from(base.order_by(None).subquery()))).scalar_one()
     rows = (
         await db.execute(
-            select(InventoryItem)
-            .where(
-                InventoryItem.status == "active",
-                InventoryItem.assign_verify_method == "owner",
-            )
-            .order_by(InventoryItem.assigned_at.desc(), InventoryItem.ic_no.asc())
+            base.order_by(InventoryItem.assigned_at.desc(), InventoryItem.ic_no.asc())
+            .offset(offset)
             .limit(limit)
         )
     ).scalars().all()
@@ -351,4 +451,4 @@ async def list_revoked_assignments(db: AsyncSession, *, limit: int = 500) -> lis
                 ),
             }
         )
-    return out
+    return out, int(count or 0)

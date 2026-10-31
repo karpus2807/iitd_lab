@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { ago, api, currentUser, downloadFile, getToken } from '../api'
+import PageBar, { PAGE_SIZE } from '../components/PageBar'
 
 type Lab = {
   id: string
@@ -140,6 +141,7 @@ export default function Scholars() {
   const [labId, setLabId] = useState('')
   const [rows, setRows] = useState<Scholar[]>([])
   const [total, setTotal] = useState(0)
+  const [listPage, setListPage] = useState(1)
   const [dash, setDash] = useState<DashSummary | null>(null)
   const [dashBusy, setDashBusy] = useState(false)
   const [q, setQ] = useState('')
@@ -197,7 +199,8 @@ export default function Scholars() {
     try {
       const qs = new URLSearchParams()
       qs.set('status', tab)
-      qs.set('limit', '2000')
+      qs.set('limit', String(PAGE_SIZE))
+      qs.set('offset', String((listPage - 1) * PAGE_SIZE))
       if (labId) qs.set('lab_id', labId)
       if (q.trim()) qs.set('q', q.trim())
       if (filterGroup) qs.set('group_name', filterGroup)
@@ -219,7 +222,11 @@ export default function Scholars() {
       setRows([])
       setTotal(0)
     }
-  }, [tab, labId, q, filterGroup, filterFaculty])
+  }, [tab, labId, q, filterGroup, filterFaculty, listPage])
+
+  useEffect(() => {
+    setListPage(1)
+  }, [q, filterGroup, filterFaculty, labId, tab])
 
   const loadDashboard = useCallback(async () => {
     setDashBusy(true)
@@ -1481,6 +1488,7 @@ export default function Scholars() {
             )}
           </tbody>
         </table>
+        <PageBar page={listPage} total={total} onChange={setListPage} disabled={busy} />
       </div>
       </>
       )}

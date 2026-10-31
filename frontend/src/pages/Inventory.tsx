@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ago, api, currentUser, downloadFile } from '../api'
+import PageBar, { PAGE_SIZE } from '../components/PageBar'
 
 type InvTab = 'dashboard' | 'active' | 'assign' | 'revoke' | 'removed'
 
@@ -155,7 +156,8 @@ export default function Inventory() {
   const [dash, setDash] = useState<DashSummary | null>(null)
   const [invQ, setInvQ] = useState('')
   const [invHits, setInvHits] = useState<Suggest[]>([])
-  const [pickedInv, setPickedInv] = useState<Suggest | null>(null)
+  const [assignCart, setAssignCart] = useState<Suggest[]>([])
+  const [assignConfirm, setAssignConfirm] = useState(false)
   const [assigneeQ, setAssigneeQ] = useState('')
   const [assigneeHits, setAssigneeHits] = useState<AssigneeHit[]>([])
   const [pickedScholar, setPickedScholar] = useState<AssigneeHit | null>(null)
@@ -168,9 +170,16 @@ export default function Inventory() {
   const [otpKind, setOtpKind] = useState<'assign' | 'revoke' | ''>('')
   const [revokeQ, setRevokeQ] = useState('')
   const [revokeHits, setRevokeHits] = useState<AssignedHit[]>([])
-  const [pickedRevoke, setPickedRevoke] = useState<AssignedHit | null>(null)
+  const [revokeSelected, setRevokeSelected] = useState<Record<string, boolean>>({})
   const [assignedRecords, setAssignedRecords] = useState<any[]>([])
   const [revokedRecords, setRevokedRecords] = useState<any[]>([])
+  const [assignRecQ, setAssignRecQ] = useState('')
+  const [revokeRecQ, setRevokeRecQ] = useState('')
+  const [assignRecTotal, setAssignRecTotal] = useState(0)
+  const [revokeRecTotal, setRevokeRecTotal] = useState(0)
+  const [listPage, setListPage] = useState(1)
+  const [assignRecPage, setAssignRecPage] = useState(1)
+  const [revokeRecPage, setRevokeRecPage] = useState(1)
   const suggestRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const assignDocRef = useRef<HTMLInputElement>(null)
@@ -178,21 +187,33 @@ export default function Inventory() {
 
   const loadAssignRecords = useCallback(async () => {
     try {
-      const data = await api<{ items: any[] }>('/api/inventory/assigned-records')
+      const qs = new URLSearchParams()
+      qs.set('limit', String(PAGE_SIZE))
+      qs.set('offset', String((assignRecPage - 1) * PAGE_SIZE))
+      if (assignRecQ.trim()) qs.set('q', assignRecQ.trim())
+      const data = await api<{ items: any[]; total: number }>(`/api/inventory/assigned-records?${qs}`)
       setAssignedRecords(data.items || [])
+      setAssignRecTotal(data.total || 0)
     } catch {
       setAssignedRecords([])
+      setAssignRecTotal(0)
     }
-  }, [])
+  }, [assignRecPage, assignRecQ])
 
   const loadRevokeRecords = useCallback(async () => {
     try {
-      const data = await api<{ items: any[] }>('/api/inventory/revoked-records')
+      const qs = new URLSearchParams()
+      qs.set('limit', String(PAGE_SIZE))
+      qs.set('offset', String((revokeRecPage - 1) * PAGE_SIZE))
+      if (revokeRecQ.trim()) qs.set('q', revokeRecQ.trim())
+      const data = await api<{ items: any[]; total: number }>(`/api/inventory/revoked-records?${qs}`)
       setRevokedRecords(data.items || [])
+      setRevokeRecTotal(data.total || 0)
     } catch {
       setRevokedRecords([])
+      setRevokeRecTotal(0)
     }
-  }, [])
+  }, [revokeRecPage, revokeRecQ])
 
   const filtersActive = !!(filterType || filterLocation || filterInvType || (filterLink && filterLink !== 'any'))
 
@@ -220,7 +241,8 @@ export default function Inventory() {
     try {
       const qs = new URLSearchParams()
       qs.set('status', tab)
-      qs.set('limit', '2000')
+      qs.set('limit', String(PAGE_SIZE))
+      qs.set('offset', String((listPage - 1) * PAGE_SIZE))
       if (q.trim()) qs.set('q', q.trim())
       if (filterType) qs.set('inventory_type', filterType)
       if (filterLocation) qs.set('inventory_location', filterLocation)
@@ -241,7 +263,20 @@ export default function Inventory() {
       setRows([])
       setTotal(0)
     }
-  }, [tab, q, filterType, filterLocation, filterInvType, filterLink, listTabs])
+  }, [tab, q, filterType, filterLocation, filterInvType, filterLink, listTabs, listPage])
+
+  // Search / filters → always show matches from page 1
+  useEffect(() => {
+    setListPage(1)
+  }, [q, filterType, filterLocation, filterInvType, filterLink, tab])
+
+  useEffect(() => {
+    setAssignRecPage(1)
+  }, [assignRecQ])
+
+  useEffect(() => {
+    setRevokeRecPage(1)
+  }, [revokeRecQ])
 
   const loadDashboard = useCallback(async () => {
     setBusy(true)
@@ -272,8 +307,11 @@ export default function Inventory() {
 
   useEffect(() => {
     if (tab === 'assign') void loadAssignRecords()
+  }, [tab, loadAssignRecords])
+
+  useEffect(() => {
     if (tab === 'revoke') void loadRevokeRecords()
-  }, [tab, loadAssignRecords, loadRevokeRecords])
+  }, [tab, loadRevokeRecords])
 
   useEffect(() => {
     const needle = q.trim()
@@ -326,8 +364,19 @@ export default function Inventory() {
     if (tab !== 'revoke') return
     const needle = revokeQ.trim()
     const t = window.setTimeout(() => {
-      api<AssignedHit[]>(`/api/inventory/assigned-search?q=${encodeURIComponent(needle)}&limit=20`)
-        .then((rows) => setRevokeHits(rows || []))
+      api<AssignedHit[]>(`/api/inventory/assigned-search?q=${encodeURIComponent(needle)}&limit=100`)
+        .then((rows) => {
+          setRevokeHits(rows || [])
+          // Keep selection only for hits still visible
+          setRevokeSelected((prev) => {
+            const ids = new Set((rows || []).map((r) => r.item_id))
+            const next: Record<string, boolean> = {}
+            for (const id of Object.keys(prev)) {
+              if (prev[id] && ids.has(id)) next[id] = true
+            }
+            return next
+          })
+        })
         .catch(() => setRevokeHits([]))
     }, 200)
     return () => window.clearTimeout(t)
@@ -574,10 +623,32 @@ export default function Inventory() {
     }
   }
 
+  const revokePicked = useMemo(
+    () => revokeHits.filter((h) => revokeSelected[h.item_id]),
+    [revokeHits, revokeSelected],
+  )
+
+  function addToAssignCart(h: Suggest) {
+    setAssignCart((prev) => (prev.some((x) => x.id === h.id) ? prev : [...prev, h]))
+    setInvQ('')
+    setInvHits([])
+    setAssignConfirm(false)
+  }
+
+  function removeFromAssignCart(id: string) {
+    setAssignCart((prev) => prev.filter((x) => x.id !== id))
+    setAssignConfirm(false)
+  }
+
   async function submitAssign(e: FormEvent) {
     e.preventDefault()
-    if (!canEdit || !pickedInv || !pickedScholar || pickedScholar.type !== 'scholar') {
-      setErr('Pick an inventory IC and a scholar')
+    if (!canEdit || !assignCart.length || !pickedScholar || pickedScholar.type !== 'scholar') {
+      setErr('Add at least one inventory IC and pick a scholar')
+      return
+    }
+    if (!assignConfirm) {
+      setAssignConfirm(true)
+      setNotice(`Confirm: assign ${assignCart.length} item(s) to ${pickedScholar.label}?`)
       return
     }
     if (assignMethod === 'otp' && !pickedScholar.has_email) {
@@ -593,7 +664,7 @@ export default function Inventory() {
     setNotice('')
     try {
       const fd = new FormData()
-      fd.append('item_id', pickedInv.id)
+      fd.append('item_ids', JSON.stringify(assignCart.map((x) => x.id)))
       fd.append('scholar_id', pickedScholar.id)
       fd.append('verify_method', assignMethod)
       if (assignMethod === 'document' && assignDoc) fd.append('document', assignDoc)
@@ -608,14 +679,14 @@ export default function Inventory() {
         return
       }
       setNotice(r.message || 'Assigned')
-      setPickedInv(null)
+      setAssignCart([])
+      setAssignConfirm(false)
       setPickedScholar(null)
       setInvQ('')
       setAssigneeQ('')
       setAssignDoc(null)
       if (assignDocRef.current) assignDocRef.current.value = ''
       await loadAssignRecords()
-      await loadRevokeRecords()
     } catch (e: any) {
       setErr(e?.message || 'Assign failed')
     } finally {
@@ -625,12 +696,18 @@ export default function Inventory() {
 
   async function submitRevoke(e: FormEvent) {
     e.preventDefault()
-    if (!canEdit || !pickedRevoke) {
-      setErr('Select an assigned inventory item')
+    if (!canEdit || !revokePicked.length) {
+      setErr('Select one or more assigned inventory items')
       return
     }
-    if (!pickedRevoke.owner?.email) {
-      setErr('Lab owner email missing — set email on the Lab (incharge) first')
+    const missingOwner = revokePicked.find((h) => !h.owner?.email)
+    if (missingOwner) {
+      setErr(`Lab owner email missing for ${missingOwner.ic_no} — set email on the Lab (incharge) first`)
+      return
+    }
+    const labIds = new Set(revokePicked.map((h) => h.owner?.lab_id).filter(Boolean))
+    if (labIds.size > 1) {
+      setErr('Selected items belong to different labs — revoke one lab at a time')
       return
     }
     setBusy(true)
@@ -638,7 +715,7 @@ export default function Inventory() {
     setNotice('')
     try {
       const fd = new FormData()
-      fd.append('item_id', pickedRevoke.item_id)
+      fd.append('item_ids', JSON.stringify(revokePicked.map((h) => h.item_id)))
       const r = await api<any>('/api/inventory/revoke', { method: 'POST', body: fd })
       setOtpChallengeId(r.challenge_id)
       setOtpEmail(r.email)
@@ -672,12 +749,13 @@ export default function Inventory() {
       setOtpMessage('')
       setOtpKind('')
       if (kind === 'assign') {
-        setPickedInv(null)
+        setAssignCart([])
+        setAssignConfirm(false)
         setPickedScholar(null)
         setInvQ('')
         setAssigneeQ('')
       } else {
-        setPickedRevoke(null)
+        setRevokeSelected({})
         setRevokeQ('')
         setRevokeHits([])
       }
@@ -789,26 +867,46 @@ export default function Inventory() {
       {tab === 'assign' && canEdit && (
         <form className="card" onSubmit={submitAssign} style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Assign inventory</h3>
-          <p className="muted">Search IC, then scholar (or machine to find lab). Verification: OTP (primary) or PDF — one required.</p>
+          <p className="muted">
+            Search and add one or more ICs to the list, pick a scholar, confirm the list, then OTP (primary) or PDF.
+          </p>
           <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <label className="field">
-              Inventory IC / name
-              <input style={{ width: '100%' }} value={invQ} onChange={(e) => { setInvQ(e.target.value); setPickedInv(null) }} placeholder="Type IC No. or item name" />
-              {invHits.length > 0 && !pickedInv && (
+              Search inventory IC / name
+              <input
+                style={{ width: '100%' }}
+                value={invQ}
+                onChange={(e) => { setInvQ(e.target.value); setAssignConfirm(false) }}
+                placeholder="Type IC No. or item name, then select to add"
+              />
+              {invHits.length > 0 && (
                 <div className="card" style={{ marginTop: 4, padding: 0, maxHeight: 180, overflow: 'auto' }}>
                   {invHits.map((h) => (
-                    <button key={h.id} type="button" className="btn secondary" style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }} onClick={() => { setPickedInv(h); setInvQ(`${h.ic_no} — ${h.item_name || 'item'}`); setInvHits([]) }}>
+                    <button
+                      key={h.id}
+                      type="button"
+                      className="btn secondary"
+                      style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }}
+                      onClick={() => addToAssignCart(h)}
+                    >
                       <strong className="mono">{h.ic_no}</strong>
-                      <div className="muted" style={{ fontSize: 12 }}>{h.item_name || '—'}</div>
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        {h.item_name || '—'}
+                        {assignCart.some((x) => x.id === h.id) ? ' · already in list' : ' · click to add'}
+                      </div>
                     </button>
                   ))}
                 </div>
               )}
-              {pickedInv && <p className="muted" style={{ fontSize: 12 }}>Selected · {pickedInv.ic_no}</p>}
             </label>
             <label className="field">
               Scholar ID / name / machine ID
-              <input style={{ width: '100%' }} value={assigneeQ} onChange={(e) => { setAssigneeQ(e.target.value); setPickedScholar(null) }} placeholder="Type student ID, bio-id, name, or machine ID" />
+              <input
+                style={{ width: '100%' }}
+                value={assigneeQ}
+                onChange={(e) => { setAssigneeQ(e.target.value); setPickedScholar(null); setAssignConfirm(false) }}
+                placeholder="Type student ID, bio-id, name, or machine ID"
+              />
               {assigneeHits.length > 0 && !pickedScholar && (
                 <div className="card" style={{ marginTop: 4, padding: 0, maxHeight: 220, overflow: 'auto' }}>
                   {assigneeHits.map((h) => (
@@ -822,6 +920,7 @@ export default function Inventory() {
                           setPickedScholar(h)
                           setAssigneeQ(`${h.label} · ${h.scholar_id || h.bio_id || ''}`)
                           setAssigneeHits([])
+                          setAssignConfirm(false)
                         } else {
                           setAssigneeQ('')
                           setAssigneeHits([])
@@ -847,36 +946,98 @@ export default function Inventory() {
               )}
             </label>
           </div>
+
+          {assignCart.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div className="toolbar" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                <strong>To assign ({assignCart.length})</strong>
+                <button className="btn secondary" type="button" onClick={() => { setAssignCart([]); setAssignConfirm(false) }}>
+                  Clear list
+                </button>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>IC No.</th>
+                    <th>Item</th>
+                    <th>Location</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignCart.map((h) => (
+                    <tr key={h.id}>
+                      <td className="mono">{h.ic_no}</td>
+                      <td>{h.item_name || '—'}</td>
+                      <td className="muted">{h.inventory_location || '—'}</td>
+                      <td>
+                        <button className="btn secondary" type="button" onClick={() => removeFromAssignCart(h.id)}>
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {assignConfirm && assignCart.length > 0 && pickedScholar && (
+            <div className="card" style={{ marginTop: 12, background: 'var(--panel-2, transparent)' }}>
+              <p style={{ margin: 0 }}>
+                Confirm assign <strong>{assignCart.length}</strong> item(s)
+                ({assignCart.map((x) => x.ic_no).join(', ')})
+                → <strong>{pickedScholar.label}</strong>?
+              </p>
+              <p className="muted" style={{ margin: '8px 0 0', fontSize: 13 }}>
+                Click the button again to send OTP / apply PDF verification.
+              </p>
+            </div>
+          )}
+
           <div className="toolbar" style={{ gap: 16, margin: '12px 0' }}>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <input type="radio" checked={assignMethod === 'otp'} onChange={() => setAssignMethod('otp')} />
+              <input type="radio" checked={assignMethod === 'otp'} onChange={() => { setAssignMethod('otp'); setAssignConfirm(false) }} />
               Email OTP (primary)
             </label>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <input type="radio" checked={assignMethod === 'document'} onChange={() => setAssignMethod('document')} />
+              <input type="radio" checked={assignMethod === 'document'} onChange={() => { setAssignMethod('document'); setAssignConfirm(false) }} />
               PDF document
             </label>
           </div>
           {assignMethod === 'document' && (
             <label className="field" style={{ maxWidth: 420 }}>
               Verification PDF
-              <input ref={assignDocRef} type="file" accept="application/pdf,.pdf" onChange={(e) => setAssignDoc(e.target.files?.[0] || null)} />
+              <input ref={assignDocRef} type="file" accept="application/pdf,.pdf" onChange={(e) => { setAssignDoc(e.target.files?.[0] || null); setAssignConfirm(false) }} />
             </label>
           )}
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" disabled={busy} type="submit">{busy ? 'Working…' : 'Assign inventory'}</button>
+            <button className="btn" disabled={busy || !assignCart.length || !pickedScholar} type="submit">
+              {busy ? 'Working…' : assignConfirm ? `Confirm & ${assignMethod === 'otp' ? 'send OTP' : 'assign with PDF'}` : 'Review & continue'}
+            </button>
+            {assignConfirm && (
+              <button className="btn secondary" type="button" onClick={() => setAssignConfirm(false)}>
+                Back
+              </button>
+            )}
           </div>
         </form>
       )}
 
       {tab === 'assign' && (
         <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
-          <div className="section-head" style={{ padding: 16, margin: 0 }}>
+          <div className="section-head" style={{ padding: 16, margin: 0, flexWrap: 'wrap', gap: 8 }}>
             <h3 className="section-title" style={{ margin: 0 }}>Assigned inventory records</h3>
+            <input
+              style={{ flex: '1 1 200px', maxWidth: 320 }}
+              value={assignRecQ}
+              onChange={(e) => setAssignRecQ(e.target.value)}
+              placeholder="Search assigned records…"
+            />
             <button className="btn secondary" type="button" disabled={busy} onClick={() => void loadAssignRecords()}>Refresh</button>
           </div>
           <p className="muted" style={{ padding: '0 16px 12px', margin: 0, fontSize: 13 }}>
-            Currently issued to scholars · {assignedRecords.length} record{assignedRecords.length === 1 ? '' : 's'}
+            Currently issued to scholars · {assignRecTotal} record{assignRecTotal === 1 ? '' : 's'}
           </p>
           <table>
             <thead>
@@ -913,61 +1074,112 @@ export default function Inventory() {
               )}
             </tbody>
           </table>
+          <PageBar page={assignRecPage} total={assignRecTotal} onChange={setAssignRecPage} disabled={busy} />
         </div>
       )}
 
       {tab === 'revoke' && canEdit && (
         <form className="card" onSubmit={submitRevoke} style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Revoke inventory</h3>
-          <p className="muted">Find assigned IC / scholar. OTP goes to lab owner (incharge email from Labs). After verify, inventory transfers to the owner.</p>
+          <p className="muted">
+            Search by IC, scholar name, or ID. Select one or all matching assigned items, then send lab-owner OTP.
+          </p>
           <label className="field" style={{ maxWidth: 480 }}>
             Search assigned IC / scholar
-            <input style={{ width: '100%' }} value={revokeQ} onChange={(e) => { setRevokeQ(e.target.value); setPickedRevoke(null) }} placeholder="IC No., scholar name, or ID" />
+            <input
+              style={{ width: '100%' }}
+              value={revokeQ}
+              onChange={(e) => setRevokeQ(e.target.value)}
+              placeholder="IC No., scholar name, or ID (leave blank for recent)"
+            />
           </label>
-          {revokeHits.length > 0 && !pickedRevoke && (
-            <div className="card" style={{ marginTop: 8, padding: 0, maxHeight: 240, overflow: 'auto' }}>
-              {revokeHits.map((h) => (
-                <button key={h.item_id} type="button" className="btn secondary" style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }} onClick={() => { setPickedRevoke(h); setRevokeHits([]) }}>
-                  <strong className="mono">{h.ic_no}</strong> · {h.item_name || 'item'}
-                  <div className="muted" style={{ fontSize: 12 }}>
-                    Assigned to {h.assigned_to || h.scholar?.full_name || '—'}
-                    {h.owner ? ` · owner ${h.owner.incharge || '?'} (${h.owner.email || 'no email'}) · ${h.owner.lab_name}` : ' · owner unknown'}
-                  </div>
+          {revokeHits.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div className="toolbar" style={{ gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn secondary"
+                  type="button"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {}
+                    for (const h of revokeHits) next[h.item_id] = true
+                    setRevokeSelected(next)
+                  }}
+                >
+                  Select all ({revokeHits.length})
                 </button>
-              ))}
+                <button className="btn secondary" type="button" onClick={() => setRevokeSelected({})}>
+                  Clear selection
+                </button>
+                <span className="muted" style={{ fontSize: 13 }}>{revokePicked.length} selected</span>
+              </div>
+              <div className="card" style={{ padding: 0, maxHeight: 320, overflow: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 36 }}></th>
+                      <th>IC No.</th>
+                      <th>Item</th>
+                      <th>Assigned to</th>
+                      <th>Scholar ID</th>
+                      <th>Lab owner</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {revokeHits.map((h) => (
+                      <tr key={h.item_id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={!!revokeSelected[h.item_id]}
+                            onChange={(e) => setRevokeSelected((prev) => ({ ...prev, [h.item_id]: e.target.checked }))}
+                          />
+                        </td>
+                        <td className="mono">{h.ic_no}</td>
+                        <td>{h.item_name || '—'}</td>
+                        <td>
+                          <strong>{h.assigned_to || h.scholar?.full_name || '—'}</strong>
+                          {h.scholar?.email ? <div className="muted" style={{ fontSize: 12 }}>{h.scholar.email}</div> : null}
+                        </td>
+                        <td className="mono">{h.scholar?.scholar_id || '—'}</td>
+                        <td className="muted" style={{ fontSize: 13 }}>
+                          {h.owner
+                            ? `${h.owner.incharge || '?'} · ${h.owner.email || 'no email'} · ${h.owner.lab_name}`
+                            : 'owner unknown'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
-          {pickedRevoke && (
-            <div style={{ marginTop: 12 }}>
-              <p><strong className="mono">{pickedRevoke.ic_no}</strong> → {pickedRevoke.assigned_to || '—'}</p>
-              {pickedRevoke.scholar && (
-                <p className="muted" style={{ fontSize: 13 }}>
-                  Scholar · {pickedRevoke.scholar.full_name} · ID {pickedRevoke.scholar.scholar_id || '—'}
-                </p>
-              )}
-              {pickedRevoke.owner ? (
-                <p className="muted" style={{ fontSize: 13 }}>
-                  Lab owner · {pickedRevoke.owner.incharge || '—'} · {pickedRevoke.owner.email || 'no email'} · {pickedRevoke.owner.lab_name}
-                </p>
-              ) : (
-                <p className="err">Could not resolve lab owner for this item.</p>
-              )}
-            </div>
+          {!revokeHits.length && (
+            <p className="muted" style={{ marginTop: 12 }}>
+              {revokeQ.trim() ? 'No assigned inventory matches this search.' : 'No assigned inventory found.'}
+            </p>
           )}
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" disabled={busy || !pickedRevoke} type="submit">{busy ? 'Sending…' : 'Send owner OTP'}</button>
+            <button className="btn" disabled={busy || !revokePicked.length} type="submit">
+              {busy ? 'Sending…' : revokePicked.length > 1 ? `Send owner OTP for ${revokePicked.length} items` : 'Send owner OTP'}
+            </button>
           </div>
         </form>
       )}
 
       {tab === 'revoke' && (
         <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
-          <div className="section-head" style={{ padding: 16, margin: 0 }}>
+          <div className="section-head" style={{ padding: 16, margin: 0, flexWrap: 'wrap', gap: 8 }}>
             <h3 className="section-title" style={{ margin: 0 }}>Revoked inventory records</h3>
+            <input
+              style={{ flex: '1 1 200px', maxWidth: 320 }}
+              value={revokeRecQ}
+              onChange={(e) => setRevokeRecQ(e.target.value)}
+              placeholder="Search revoked records…"
+            />
             <button className="btn secondary" type="button" disabled={busy} onClick={() => void loadRevokeRecords()}>Refresh</button>
           </div>
           <p className="muted" style={{ padding: '0 16px 12px', margin: 0, fontSize: 13 }}>
-            Taken back by lab owner · {revokedRecords.length} record{revokedRecords.length === 1 ? '' : 's'}
+            Taken back by lab owner · {revokeRecTotal} record{revokeRecTotal === 1 ? '' : 's'}
           </p>
           <table>
             <thead>
@@ -1004,6 +1216,7 @@ export default function Inventory() {
               )}
             </tbody>
           </table>
+          <PageBar page={revokeRecPage} total={revokeRecTotal} onChange={setRevokeRecPage} disabled={busy} />
         </div>
       )}
 
@@ -1460,6 +1673,7 @@ export default function Inventory() {
             )}
           </tbody>
         </table>
+        <PageBar page={listPage} total={total} onChange={setListPage} disabled={busy} />
       </div>
       </>
       )}

@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ago, api, currentUser } from '../api'
 import { StatusBadge } from '../Layout'
+import PageBar, { PAGE_SIZE } from '../components/PageBar'
 
 export default function Machines() {
   const [rows, setRows] = useState<any[]>([])
   const [labs, setLabs] = useState<any[]>([])
   const [err, setErr] = useState('')
+  const [page, setPage] = useState(1)
   const [params, setParams] = useSearchParams()
   const nav = useNavigate()
   const role = currentUser()?.role
@@ -37,7 +39,15 @@ export default function Machines() {
     loadRows()
   }, [loadRows])
 
+  useEffect(() => {
+    setPage(1)
+  }, [q, lab, status, os, alerts, gpu])
+
   const osOptions = useMemo(() => Array.from(new Set(rows.map((r) => r.os_name).filter(Boolean))), [rows])
+  const pageRows = useMemo(
+    () => rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [rows, page],
+  )
 
   function set(key: string, value: string) {
     const next = new URLSearchParams(params)
@@ -112,7 +122,7 @@ export default function Machines() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((m) => (
+            {pageRows.map((m) => (
               <tr key={m.id} className="clickable" onClick={() => nav(`/machines/${m.id}`)}>
                 <td>
                   <Link to={`/machines/${m.id}`}><strong>{m.inventory_id || m.display_name || m.hostname}</strong></Link>
@@ -145,8 +155,12 @@ export default function Machines() {
                 )}
               </tr>
             ))}
+            {!pageRows.length && (
+              <tr><td colSpan={canManage ? 8 : 7} className="muted" style={{ padding: 16 }}>No matching machines.</td></tr>
+            )}
           </tbody>
         </table>
+        <PageBar page={page} total={rows.length} onChange={setPage} />
       </div>
     </>
   )
