@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ScholarOut(BaseModel):
@@ -39,6 +39,34 @@ class ScholarOut(BaseModel):
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator(
+        "lab_name",
+        "lab_room",
+        "full_name",
+        "scholar_id",
+        "bio_id",
+        "group_name",
+        "faculty",
+        "inventory_kind",
+        "inventory_label",
+        "inventory_item_name",
+        "email",
+        "phone",
+        "status",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def _none_to_empty(cls, v):  # noqa: ANN001
+        return "" if v is None else v
+
+    @field_validator("has_photo", "has_inv_verify_doc", mode="before")
+    @classmethod
+    def _bool_flag(cls, v):  # noqa: ANN001
+        if isinstance(v, bool):
+            return v
+        return False
 
 
 class ScholarIdsBody(BaseModel):

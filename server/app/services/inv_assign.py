@@ -110,20 +110,16 @@ async def search_assignees(db: AsyncSession, q: str, *, limit: int = 20) -> list
 
 async def search_assigned(db: AsyncSession, q: str, *, limit: int = 20) -> list[dict]:
     """Find inventory currently issued to a scholar (for revoke)."""
-    from sqlalchemy import and_
-
     needle = (q or "").strip()
     like = f"%{needle}%" if needle else None
+    # Only items still issued to a scholar (not already taken back by lab owner).
     stmt = (
         select(InventoryItem, Scholar, Lab)
-        .outerjoin(Scholar, InventoryItem.assigned_scholar_id == Scholar.id)
+        .join(Scholar, InventoryItem.assigned_scholar_id == Scholar.id)
         .outerjoin(Lab, Scholar.lab_id == Lab.id)
         .where(
             InventoryItem.status == "active",
-            or_(
-                InventoryItem.assigned_scholar_id.is_not(None),
-                and_(InventoryItem.assigned_to.is_not(None), InventoryItem.assigned_to != ""),
-            ),
+            InventoryItem.assigned_scholar_id.is_not(None),
         )
         .order_by(InventoryItem.ic_no.asc())
     )
@@ -216,16 +212,14 @@ async def apply_assign_to_scholar(
     item.assigned_at = utcnow()
     item.assigned_by = by or ""
     item.assign_verify_method = via
-    if doc_path:
-        item.assign_verify_doc_path = doc_path
+    item.assign_verify_doc_path = doc_path or ""
 
     scholar.system_required = True
     scholar.inventory_kind = "listed"
     scholar.inventory_item_id = item.id
     scholar.inventory_label = item.ic_no
     scholar.inventory_assigned_at = item.assigned_at
-    if doc_path:
-        scholar.inv_verify_doc_path = doc_path
+    scholar.inv_verify_doc_path = doc_path or ""
 
 
 async def apply_revoke_to_owner(

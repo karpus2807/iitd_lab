@@ -789,6 +789,14 @@ export default function Inventory() {
         </>
       )}
 
+      {(tab === 'assign' || tab === 'revoke') && !canEdit && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <p className="muted" style={{ margin: 0 }}>
+            Assign / Revoke requires Operator or Admin. Use Dashboard or Active to view inventory.
+          </p>
+        </div>
+      )}
+
       {tab === 'assign' && canEdit && (
         <form className="card" onSubmit={submitAssign} style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Assign inventory</h3>

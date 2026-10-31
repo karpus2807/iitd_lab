@@ -660,13 +660,7 @@ async def inventory_dashboard(db: DbDep, user: CurrentUser):
         await db.execute(
             select(func.count())
             .select_from(InventoryItem)
-            .where(
-                active,
-                or_(
-                    InventoryItem.assigned_scholar_id.is_not(None),
-                    and_(InventoryItem.assigned_to.is_not(None), InventoryItem.assigned_to != ""),
-                ),
-            )
+            .where(active, InventoryItem.assigned_scholar_id.is_not(None))
         )
     ).scalar_one()
     machines_total = (await db.execute(select(func.count()).select_from(Machine))).scalar_one()
@@ -677,25 +671,21 @@ async def inventory_dashboard(db: DbDep, user: CurrentUser):
             func.lower(InventoryItem.inventory_location) == loc,
             InventoryItem.ic_no.in_(
                 select(Machine.inventory_id).where(
-                    Machine.lab_id == lab.id, Machine.inventory_id.is_not(None)
+                    Machine.lab_id == lab.id,
+                    Machine.inventory_id.is_not(None),
+                    Machine.inventory_id != "",
                 )
             ),
         )
         s_count = (
             await db.execute(select(func.count()).select_from(InventoryItem).where(active, in_lab))
         ).scalar_one()
+        # "Assigned" = issued to a scholar (owner-held after revoke does not count here).
         s_assigned = (
             await db.execute(
                 select(func.count())
                 .select_from(InventoryItem)
-                .where(
-                    active,
-                    in_lab,
-                    or_(
-                        InventoryItem.assigned_scholar_id.is_not(None),
-                        and_(InventoryItem.assigned_to.is_not(None), InventoryItem.assigned_to != ""),
-                    ),
-                )
+                .where(active, in_lab, InventoryItem.assigned_scholar_id.is_not(None))
             )
         ).scalar_one()
         m_count = (
@@ -732,7 +722,11 @@ async def inventory_dashboard_lab(lab_id: UUID, db: DbDep, user: CurrentUser):
     in_lab = or_(
         func.lower(InventoryItem.inventory_location) == loc,
         InventoryItem.ic_no.in_(
-            select(Machine.inventory_id).where(Machine.lab_id == lab.id, Machine.inventory_id.is_not(None))
+            select(Machine.inventory_id).where(
+                Machine.lab_id == lab.id,
+                Machine.inventory_id.is_not(None),
+                Machine.inventory_id != "",
+            )
         ),
     )
     rows = (
@@ -744,6 +738,7 @@ async def inventory_dashboard_lab(lab_id: UUID, db: DbDep, user: CurrentUser):
     ).scalars().all()
     links = await _machines_by_ic(db, [r.ic_no for r in rows])
     items = [_link_out(r, links) for r in rows]
+    issued = sum(1 for r in rows if getattr(r, "assigned_scholar_id", None))
     return {
         "lab": {
             "id": str(lab.id),
@@ -756,8 +751,8 @@ async def inventory_dashboard_lab(lab_id: UUID, db: DbDep, user: CurrentUser):
         "items": [i.model_dump(mode="json") for i in items],
         "counts": {
             "items": len(items),
-            "assigned": sum(1 for i in items if i.assigned),
-            "unassigned": sum(1 for i in items if not i.assigned),
+            "assigned": issued,
+            "unassigned": max(0, len(items) - issued),
         },
     }
 
@@ -927,8 +922,11 @@ async def inventory_revoke_start(
     item = await _get_or_404(db, item_id)
     if item.status != "active":
         raise HTTPException(400, "Cannot revoke a removed inventory item")
-    if not svc.is_assigned_item(item) and not item.assigned_scholar_id:
-        raise HTTPException(400, "Inventory is not currently assigned")
+    if not item.assigned_scholar_id:
+        raise HTTPException(
+            400,
+            "Inventory is not issued to a scholar (already with lab owner, or never assigned)",
+        )
     lab = await inv_assign.lab_for_inventory(db, item)
     if not lab:
         raise HTTPException(400, "Could not resolve lab owner for this inventory item")
