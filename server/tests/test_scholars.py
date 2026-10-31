@@ -268,9 +268,9 @@ async def test_scholars_dashboard_summary_and_lab(client: AsyncClient, auth_head
 
 
 @pytest.mark.asyncio
-async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_headers: dict):
+async def test_bio_id_and_id_unique_per_lab_multi_lab_ok(client: AsyncClient, auth_headers: dict):
     lab_a = (await client.post("/api/labs", headers=auth_headers, json={"name": "VLSI Lab", "room": "1"})).json()
-    lab_b = (await client.post("/api/labs", headers=auth_headers, json={"name": "MTech Lab", "room": "2"})).json()
+    lab_b = (await client.post("/api/labs", headers=auth_headers, json={"name": "Cloud Lab", "room": "2"})).json()
 
     a1 = await client.post(
         "/api/scholars",
@@ -278,7 +278,7 @@ async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_heade
         data={
             "lab_id": str(lab_a["id"]),
             "full_name": "Student A",
-            "scholar_id": "SCH-GLOBAL-1",
+            "scholar_id": "SCH-MULTI-1",
             "bio_id": "1",
             "system_required": "false",
             "inventory_kind": "none",
@@ -295,7 +295,7 @@ async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_heade
         data={
             "lab_id": str(lab_b["id"]),
             "full_name": "Student B",
-            "scholar_id": "SCH-GLOBAL-2",
+            "scholar_id": "SCH-MULTI-2",
             "bio_id": "1",
             "system_required": "false",
             "inventory_kind": "none",
@@ -304,15 +304,31 @@ async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_heade
     )
     assert b1.status_code == 200, b1.text
 
-    # Same school-wide ID rejected
-    clash = await client.post(
+    # Same ID in another lab is allowed (multi-lab membership)
+    same_id_other_lab = await client.post(
         "/api/scholars",
         headers=auth_headers,
         data={
             "lab_id": str(lab_b["id"]),
-            "full_name": "Clash",
-            "scholar_id": "SCH-GLOBAL-1",
+            "full_name": "Student A",
+            "scholar_id": "SCH-MULTI-1",
             "bio_id": "99",
+            "system_required": "false",
+            "inventory_kind": "none",
+            "require_otp": "false",
+        },
+    )
+    assert same_id_other_lab.status_code == 200, same_id_other_lab.text
+
+    # Same ID in same lab rejected
+    clash = await client.post(
+        "/api/scholars",
+        headers=auth_headers,
+        data={
+            "lab_id": str(lab_a["id"]),
+            "full_name": "Clash",
+            "scholar_id": "SCH-MULTI-1",
+            "bio_id": "88",
             "system_required": "false",
             "inventory_kind": "none",
             "require_otp": "false",
@@ -327,7 +343,7 @@ async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_heade
         data={
             "lab_id": str(lab_a["id"]),
             "full_name": "Clash Bio",
-            "scholar_id": "SCH-GLOBAL-3",
+            "scholar_id": "SCH-MULTI-3",
             "bio_id": "1",
             "system_required": "false",
             "inventory_kind": "none",
@@ -335,6 +351,21 @@ async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_heade
         },
     )
     assert clash_bio.status_code == 400
+
+    # Active all-labs list collapses same ID to one row, listing both labs
+    listed = await client.get("/api/scholars?status=active&limit=2000", headers=auth_headers)
+    assert listed.status_code == 200
+    multi = [s for s in listed.json()["items"] if s["scholar_id"] == "SCH-MULTI-1"]
+    assert len(multi) == 1
+    assert "VLSI" in (multi[0].get("lab_names") or "")
+    assert "Cloud" in (multi[0].get("lab_names") or "")
+    assert len(multi[0].get("labs") or []) == 2
+
+    # Per-lab list still shows the membership for that lab only
+    only_a = await client.get(
+        f"/api/scholars?status=active&lab_id={lab_a['id']}", headers=auth_headers
+    )
+    assert sum(1 for s in only_a.json()["items"] if s["scholar_id"] == "SCH-MULTI-1") == 1
 
     approved = await client.post(f"/api/scholars/{a1.json()['id']}/approve", headers=auth_headers)
     assert approved.status_code == 200
@@ -355,6 +386,42 @@ async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_heade
     )
     assert revoke.status_code == 200
     assert revoke.json()["no_dues"] is False
+
+
+@pytest.mark.asyncio
+async def test_import_same_id_creates_second_lab_membership(client: AsyncClient, auth_headers: dict):
+    lab_a = (await client.post("/api/labs", headers=auth_headers, json={"name": "Import VLSI", "room": "1"})).json()
+    lab_b = (await client.post("/api/labs", headers=auth_headers, json={"name": "Import Cloud", "room": "2"})).json()
+    assert lab_a and lab_b
+    csv1 = (
+        "Lab Name,Bio-ID,Name,ID,Group,Faculty,System Required,Inventory IC/Label,Email,Phone,No Dues,Notes\n"
+        "Import VLSI,1,Multi Person,IMP-MULTI,Ph.D.,Fac,No,,,,No,\n"
+    )
+    r1 = await client.post(
+        "/api/scholars/import",
+        headers=auth_headers,
+        files={"file": ("a.csv", csv1.encode(), "text/csv")},
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["created"] == 1
+
+    csv2 = (
+        "Lab Name,Bio-ID,Name,ID,Group,Faculty,System Required,Inventory IC/Label,Email,Phone,No Dues,Notes\n"
+        "Import Cloud,7,Multi Person,IMP-MULTI,Ph.D.,Fac,No,,,,No,\n"
+    )
+    r2 = await client.post(
+        "/api/scholars/import",
+        headers=auth_headers,
+        files={"file": ("b.csv", csv2.encode(), "text/csv")},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["created"] == 1
+    assert r2.json()["updated"] == 0
+
+    all_rows = await client.get("/api/scholars?status=active&limit=2000", headers=auth_headers)
+    collapsed = [s for s in all_rows.json()["items"] if s["scholar_id"] == "IMP-MULTI"]
+    assert len(collapsed) == 1
+    assert len(collapsed[0]["labs"]) == 2
 
 
 @pytest.mark.asyncio

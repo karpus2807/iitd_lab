@@ -14,6 +14,8 @@ type Scholar = {
   lab_id: string
   lab_name: string
   lab_room: string
+  labs?: { id: string; name: string; room?: string }[]
+  lab_names?: string
   full_name: string
   scholar_id: string
   bio_id: string
@@ -1431,7 +1433,11 @@ export default function Scholars() {
               <div><div className="muted" style={{ fontSize: 12 }}>Name</div><strong>{detail.full_name}</strong></div>
               <div><div className="muted" style={{ fontSize: 12 }}>ID</div><span className="mono">{detail.scholar_id || '—'}</span></div>
               <div><div className="muted" style={{ fontSize: 12 }}>Bio-ID</div><span className="mono">{detail.bio_id || '—'}</span></div>
-              <div><div className="muted" style={{ fontSize: 12 }}>Lab</div>{detail.lab_name}{detail.lab_room ? ` · Room ${detail.lab_room}` : ''}</div>
+              <div>
+                <div className="muted" style={{ fontSize: 12 }}>Lab</div>
+                {detail.lab_names || detail.lab_name || '—'}
+                {!detail.lab_names && detail.lab_room ? ` · Room ${detail.lab_room}` : ''}
+              </div>
               <div><div className="muted" style={{ fontSize: 12 }}>Group</div>{detail.group_name || '—'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Faculty</div>{detail.faculty || '—'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Approved</div>{detail.approved ? 'Yes (green)' : 'Pending'}</div>
@@ -1520,8 +1526,12 @@ export default function Scholars() {
                 <td className="mono">{s.scholar_id || '—'}</td>
                 <td className="mono">{s.bio_id || '—'}</td>
                 <td>
-                  {s.lab_name}
-                  {s.lab_room ? <div className="muted" style={{ fontSize: 12 }}>Room {s.lab_room}</div> : null}
+                  {s.lab_names || s.lab_name || '—'}
+                  {!s.lab_names && s.lab_room ? (
+                    <div className="muted" style={{ fontSize: 12 }}>Room {s.lab_room}</div>
+                  ) : s.labs && s.labs.length > 1 ? (
+                    <div className="muted" style={{ fontSize: 12 }}>{s.labs.length} labs</div>
+                  ) : null}
                 </td>
                 <td>{s.group_name || '—'}</td>
                 <td>{s.faculty || '—'}</td>

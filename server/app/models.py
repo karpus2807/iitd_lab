@@ -628,7 +628,7 @@ class Scholar(Base, TimestampMixin):
         Uuid(as_uuid=True), ForeignKey("labs.id", ondelete="CASCADE"), index=True
     )
     full_name: Mapped[str] = mapped_column(String(255), default="")
-    scholar_id: Mapped[str] = mapped_column(String(120), default="")  # school-wide unique ID
+    scholar_id: Mapped[str] = mapped_column(String(120), default="")  # unique per lab; same ID OK across labs
     bio_id: Mapped[str] = mapped_column(String(64), default="")  # unique per lab only
     group_name: Mapped[str] = mapped_column(String(120), default="", index=True)  # M.Tech / Ph.D. / …
     faculty: Mapped[str] = mapped_column(String(255), default="", index=True)

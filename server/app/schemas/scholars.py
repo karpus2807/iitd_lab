@@ -6,11 +6,21 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
+class ScholarLabRef(BaseModel):
+    id: UUID
+    name: str = ""
+    room: str = ""
+
+
 class ScholarOut(BaseModel):
     id: UUID
     lab_id: UUID
     lab_name: str = ""
     lab_room: str = ""
+    # When Active list is "all labs", same school ID may appear in several labs —
+    # we return one row and list every membership here.
+    labs: list[ScholarLabRef] = Field(default_factory=list)
+    lab_names: str = ""
     full_name: str = ""
     scholar_id: str = ""
     bio_id: str = ""
@@ -43,6 +53,7 @@ class ScholarOut(BaseModel):
     @field_validator(
         "lab_name",
         "lab_room",
+        "lab_names",
         "full_name",
         "scholar_id",
         "bio_id",

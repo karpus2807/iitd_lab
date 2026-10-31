@@ -26,14 +26,29 @@ def _truthy(value: str | bool | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
-def _out(row: Scholar, lab: Lab | None = None, inv: InventoryItem | None = None) -> ScholarOut:
+def _out(
+    row: Scholar,
+    lab: Lab | None = None,
+    inv: InventoryItem | None = None,
+    *,
+    memberships: list[Lab] | None = None,
+) -> ScholarOut:
     lab_obj = lab or getattr(row, "lab", None)
     inv_obj = inv or getattr(row, "inventory_item", None)
+    labs = memberships if memberships is not None else ([lab_obj] if lab_obj else [])
+    lab_refs = [
+        {"id": L.id, "name": L.name or "", "room": getattr(L, "room", None) or ""}
+        for L in labs
+        if L is not None
+    ]
+    names = " · ".join(r["name"] for r in lab_refs if r["name"])
     return ScholarOut(
         id=row.id,
         lab_id=row.lab_id,
         lab_name=(lab_obj.name if lab_obj else "") or "",
         lab_room=(getattr(lab_obj, "room", None) or "") if lab_obj else "",
+        labs=lab_refs,
+        lab_names=names or ((lab_obj.name if lab_obj else "") or ""),
         full_name=row.full_name or "",
         scholar_id=row.scholar_id or "",
         bio_id=getattr(row, "bio_id", None) or "",
@@ -63,11 +78,15 @@ def _out(row: Scholar, lab: Lab | None = None, inv: InventoryItem | None = None)
     )
 
 
-async def _assert_unique_scholar_id(db, scholar_id: str, *, exclude_id: UUID | None = None) -> None:
+async def _assert_unique_scholar_id(
+    db, lab_id: UUID, scholar_id: str, *, exclude_id: UUID | None = None
+) -> None:
+    """Same ID may exist in multiple labs; within one lab it must be unique."""
     sid = (scholar_id or "").strip()
     if not sid:
         return
     stmt = select(Scholar).where(
+        Scholar.lab_id == lab_id,
         func.lower(Scholar.scholar_id) == sid.lower(),
         Scholar.status.in_(["active", "pending"]),
     )
@@ -75,7 +94,7 @@ async def _assert_unique_scholar_id(db, scholar_id: str, *, exclude_id: UUID | N
         stmt = stmt.where(Scholar.id != exclude_id)
     clash = (await db.execute(stmt)).scalar_one_or_none()
     if clash:
-        raise HTTPException(400, f"ID '{sid}' is already used school-wide (must be unique)")
+        raise HTTPException(400, f"ID '{sid}' is already used in this lab")
 
 
 async def _assert_unique_bio_id(
@@ -496,9 +515,11 @@ async def import_scholars(
 
             existing = None
             if sid:
+                # Match only within this lab — same ID in another lab is a separate membership.
                 existing = (
                     await db.execute(
                         select(Scholar).where(
+                            Scholar.lab_id == lab.id,
                             func.lower(Scholar.scholar_id) == sid.lower(),
                             Scholar.status.in_(["active", "pending"]),
                         )
@@ -507,7 +528,6 @@ async def import_scholars(
 
             if existing:
                 await _assert_unique_bio_id(db, lab.id, bio, exclude_id=existing.id)
-                existing.lab_id = lab.id
                 existing.full_name = parsed["full_name"]
                 existing.bio_id = bio
                 existing.group_name = parsed.get("group_name") or ""
@@ -534,11 +554,11 @@ async def import_scholars(
                     {
                         **base,
                         "result": "updated",
-                        "message": f"Matched existing ID '{sid}' — row overwritten",
+                        "message": f"Matched existing ID '{sid}' in lab '{lab.name}' — updated",
                     }
                 )
             else:
-                await _assert_unique_scholar_id(db, sid)
+                await _assert_unique_scholar_id(db, lab.id, sid)
                 await _assert_unique_bio_id(db, lab.id, bio)
                 row = Scholar(
                     lab_id=lab.id,
@@ -566,7 +586,13 @@ async def import_scholars(
                 )
                 db.add(row)
                 created += 1
-                detail_rows.append({**base, "result": "created", "message": "New scholar created"})
+                detail_rows.append(
+                    {
+                        **base,
+                        "result": "created",
+                        "message": f"New membership in lab '{lab.name}'",
+                    }
+                )
         except HTTPException as exc:
             msg = str(exc.detail)
             errors.append(f"{parsed.get('full_name')}: {msg}")
@@ -862,13 +888,56 @@ async def list_scholars(
                 Scholar.inventory_label.ilike(like),
             )
         )
-    total = (await db.execute(count_stmt)).scalar_one()
-    rows = (
-        await db.execute(
-            stmt.order_by(Lab.name.asc(), Scholar.full_name.asc()).offset(offset).limit(limit)
-        )
+    # Single-lab view: normal pagination. All-labs Active: one row per scholar ID
+    # (multi-lab memberships collapsed), blank IDs stay separate rows.
+    if lab_id:
+        total = (await db.execute(count_stmt)).scalar_one()
+        rows = (
+            await db.execute(
+                stmt.order_by(Lab.name.asc(), Scholar.full_name.asc()).offset(offset).limit(limit)
+            )
+        ).all()
+        return ScholarListOut(items=[_out(s, lab, inv) for s, lab, inv in rows], total=total)
+
+    all_rows = (
+        await db.execute(stmt.order_by(Scholar.full_name.asc(), Lab.name.asc()))
     ).all()
-    return ScholarListOut(items=[_out(s, lab, inv) for s, lab, inv in rows], total=total)
+    groups: dict[str, list[tuple[Scholar, Lab, InventoryItem | None]]] = {}
+    blanks: list[tuple[Scholar, Lab, InventoryItem | None]] = []
+    for s, lab, inv in all_rows:
+        sid = (s.scholar_id or "").strip().lower()
+        if not sid:
+            blanks.append((s, lab, inv))
+            continue
+        groups.setdefault(sid, []).append((s, lab, inv))
+
+    collapsed: list[ScholarOut] = []
+    for _sid, members in groups.items():
+        # Prefer approved active-looking row, then newest update.
+        members_sorted = sorted(
+            members,
+            key=lambda t: (
+                0 if (getattr(t[0], "approved", False) and not getattr(t[0], "no_dues", False)) else 1,
+                -(t[0].updated_at.timestamp() if t[0].updated_at else 0),
+            ),
+        )
+        primary_s, primary_lab, primary_inv = members_sorted[0]
+        labs = []
+        seen_lab: set[UUID] = set()
+        for ms, mlab, _inv in sorted(members, key=lambda t: (t[1].name or "").lower()):
+            if mlab.id in seen_lab:
+                continue
+            seen_lab.add(mlab.id)
+            labs.append(mlab)
+        collapsed.append(_out(primary_s, primary_lab, primary_inv, memberships=labs))
+
+    for s, lab, inv in blanks:
+        collapsed.append(_out(s, lab, inv))
+
+    collapsed.sort(key=lambda x: ((x.full_name or "").lower(), (x.scholar_id or "").lower()))
+    total = len(collapsed)
+    page = collapsed[offset : offset + limit]
+    return ScholarListOut(items=page, total=total)
 
 
 async def _finalize_enroll_payload(db, payload: dict, *, photo_path: str = "") -> Scholar:
@@ -877,9 +946,8 @@ async def _finalize_enroll_payload(db, payload: dict, *, photo_path: str = "") -
     inv_id = UUID(inv_raw) if inv_raw else None
     sid = str(payload.get("scholar_id") or "").strip()
     bio = str(payload.get("bio_id") or "").strip()
-    # Portal enrol creates a new row — school-wide ID must not already exist.
-    # Use Edit / Import to update an existing scholar.
-    await _assert_unique_scholar_id(db, sid)
+    # Portal enrol: ID unique within this lab only (same person may enrol in other labs).
+    await _assert_unique_scholar_id(db, lab.id, sid)
     await _assert_unique_bio_id(db, lab.id, bio)
     row = Scholar(
         lab_id=lab.id,
@@ -1375,14 +1443,19 @@ async def update_scholar(
     else:
         lab = await db.get(Lab, row.lab_id)
 
+    # Re-validate ID/bio against (possibly new) lab.
+    check_sid = str(data["scholar_id"]).strip() if "scholar_id" in data and data["scholar_id"] is not None else (row.scholar_id or "")
     if "scholar_id" in data and data["scholar_id"] is not None:
-        new_sid = str(data["scholar_id"]).strip()
-        await _assert_unique_scholar_id(db, new_sid, exclude_id=row.id)
-        row.scholar_id = new_sid
+        row.scholar_id = check_sid
+    await _assert_unique_scholar_id(db, row.lab_id, check_sid, exclude_id=row.id)
+
     if "bio_id" in data and data["bio_id"] is not None:
         new_bio = str(data["bio_id"]).strip()
         await _assert_unique_bio_id(db, row.lab_id, new_bio, exclude_id=row.id)
         row.bio_id = new_bio
+    elif "lab_id" in data and data["lab_id"]:
+        # Moved labs — bio must still be unique in the destination lab.
+        await _assert_unique_bio_id(db, row.lab_id, row.bio_id or "", exclude_id=row.id)
 
     for key in ("full_name", "group_name", "faculty", "email", "phone", "notes"):
         if key in data and data[key] is not None:
