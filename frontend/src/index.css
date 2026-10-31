@@ -170,10 +170,19 @@ select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
 .login-card h2 { margin-top: 0; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; min-width: 0; }
 .field label { color: var(--muted); font-size: 13px; }
-.field input,
+.field input:not([type="checkbox"]):not([type="radio"]),
 .field select,
 .field textarea { width: 100%; box-sizing: border-box; }
 .field input[type="file"] { padding: 8px; overflow: hidden; }
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.check-row input { width: auto; flex: 0 0 auto; margin: 0; }
 .err { color: var(--crit); font-size: 13px; margin: 8px 0; }
 .split { display: grid; grid-template-columns: 1.3fr 0.7fr; gap: 16px; }
 .muted { color: var(--muted); }

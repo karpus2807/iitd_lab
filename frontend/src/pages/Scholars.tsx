@@ -643,7 +643,7 @@ export default function Scholars() {
           </div>
 
           {form.system_required !== 'yes' ? (
-            <label className="field" style={{ marginTop: 16, marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <label className="check-row">
               <input
                 type="checkbox"
                 checked={form.require_otp}
