@@ -70,12 +70,15 @@ def _add_wheels(tar: tarfile.TarFile, wheels_dir: Path) -> int:
 
 @router.get("/agent-pack.tgz")
 async def agent_pack():
+    from app.services.agent_pack import agent_pack_version
+
     agent = repo_dir() / "agent"
     req = agent / "requirements.txt"
     src = agent / "labwatch_agent"
     wheels = agent / "wheels"
     if not src.is_dir() or not req.is_file():
         return PlainTextResponse("agent pack missing on server\n", status_code=404)
+    pack_ver = agent_pack_version()
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(src, arcname="labwatch_agent")
@@ -94,5 +97,8 @@ async def agent_pack():
     return Response(
         content=buf.getvalue(),
         media_type="application/gzip",
-        headers={"Content-Disposition": "attachment; filename=agent-pack.tgz"},
+        headers={
+            "Content-Disposition": "attachment; filename=agent-pack.tgz",
+            "X-LabWatch-Agent-Version": pack_ver,
+        },
     )

@@ -12,21 +12,12 @@ from app.enums import AgentStatus
 from app.models import Agent, Lab, Machine, NotificationChannelConfig, RefreshToken, RegistrationToken, User, utcnow
 from app.schemas.api import RegistrationTokenCreate, UserCreate, UserOut, UserUpdate
 from app.security import hash_password, hash_token, new_secret
+from app.services.agent_pack import agent_pack_version, version_tuple as _version_tuple
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # Agents below this version ignore heartbeat commands[] — one manual reinstall first.
 REMOTE_UPDATE_MIN = (1, 1, 40)
-
-
-def _version_tuple(value: str) -> tuple[int, int, int]:
-    parts: list[int] = []
-    for piece in (value or "").strip().lstrip("v").split("."):
-        digits = "".join(c for c in piece if c.isdigit())
-        parts.append(int(digits) if digits else 0)
-    while len(parts) < 3:
-        parts.append(0)
-    return parts[0], parts[1], parts[2]
 
 
 _UPDATE_ACTIVE = frozenset({"queued", "sent", "running", "downloading", "applying"})
@@ -252,8 +243,9 @@ async def revoke_token(token_id: UUID, db: DbDep, admin: AdminUser, request: Req
 
 @router.get("/agents")
 async def list_agents(db: DbDep, admin: AdminUser):
-    current = server_version
-    current_t = _version_tuple(current)
+    # Compare to shipped agent pack — not LabWatch UI/API VERSION.
+    pack = agent_pack_version()
+    pack_t = _version_tuple(pack)
     rows = (await db.execute(select(Agent, Machine).join(Machine, Agent.machine_id == Machine.id))).all()
     # Drop timed-out in-flight updates so a leftover fleet queue does not look live.
     _expire_stale_updates([a for a, _m in rows])
@@ -262,8 +254,11 @@ async def list_agents(db: DbDep, admin: AdminUser):
     for a, m in rows:
         ver = a.agent_version or ""
         ver_t = _version_tuple(ver) if ver else (0, 0, 0)
-        update_available = bool(ver) and ver_t < current_t
-        up_to_date = bool(ver) and ver_t >= current_t
+        update_available = bool(ver) and ver_t < pack_t
+        up_to_date = bool(ver) and ver_t >= pack_t
+        display_status = a.update_status or ""
+        if up_to_date and display_status.lower() == "ok":
+            display_status = ""
         agents.append(
             {
                 "id": str(a.id),
@@ -276,17 +271,19 @@ async def list_agents(db: DbDep, admin: AdminUser):
                 "version": ver,
                 "last_heartbeat_at": a.last_heartbeat_at,
                 "approved": m.approved,
-                "update_status": a.update_status or "",
-                "update_message": a.update_message or "",
+                "update_status": display_status,
+                "update_message": (a.update_message or "") if display_status else "",
                 "update_target_version": a.update_target_version or "",
                 "update_requested_at": a.update_requested_at,
-                "update_progress": _update_progress(a.update_status or ""),
+                "update_progress": _update_progress(display_status),
                 "update_active": (a.update_status or "").lower() in _UPDATE_ACTIVE,
                 "update_failed": (a.update_status or "").lower() in {"error", "cancelled"},
                 "remote_update_capable": _remote_update_capable(ver),
                 "update_available": update_available,
                 "up_to_date": up_to_date,
-                "current_version": current,
+                "current_version": pack,
+                "agent_pack_version": pack,
+                "server_version": server_version,
             }
         )
     active = [x for x in agents if x["update_active"]]
@@ -317,7 +314,7 @@ async def list_agents(db: DbDep, admin: AdminUser):
             "total": max(len(tracked), job_total),
             "target_version": next(
                 (x.get("update_target_version") for x in active + failed + finished_ok if x.get("update_target_version")),
-                current,
+                pack,
             ),
             "message": (
                 f"{len(active)} updating · {len(failed)} failed"
@@ -343,11 +340,17 @@ async def list_agents(db: DbDep, admin: AdminUser):
             "failed": 0,
             "done": 0,
             "total": 0,
-            "target_version": current,
+            "target_version": pack,
             "message": "",
             "errors": [],
         }
-    return {"current_version": current, "agents": agents, "update_job": update_job}
+    return {
+        "current_version": pack,
+        "agent_pack_version": pack,
+        "server_version": server_version,
+        "agents": agents,
+        "update_job": update_job,
+    }
 
 
 # Queued/sent updates older than this are marked error so a prior batch
@@ -385,8 +388,7 @@ def _expire_stale_updates(agents: list[Agent]) -> None:
 async def queue_agent_updates(body: AgentUpdateBody, db: DbDep, admin: AdminUser, request: Request):
     """Queue updates for the given agent IDs only (never auto-selects the fleet).
 
-    Target is always the server's current agent pack version in one jump — not
-    a stepwise climb through intermediate releases.
+    Target is the current agent pack version (labwatch_agent.__version__), one jump.
     """
     if not body.agent_ids:
         raise HTTPException(400, "Select at least one agent")
@@ -398,7 +400,8 @@ async def queue_agent_updates(body: AgentUpdateBody, db: DbDep, admin: AdminUser
             continue
         seen.add(agent_id)
         ids.append(agent_id)
-    target = server_version
+    target = agent_pack_version()
+    target_t = _version_tuple(target)
     queued: list[str] = []
     skipped: list[dict] = []
     for agent_id in ids:
@@ -409,10 +412,17 @@ async def queue_agent_updates(body: AgentUpdateBody, db: DbDep, admin: AdminUser
         if agent.status == AgentStatus.REVOKED.value:
             skipped.append({"id": str(agent_id), "reason": "revoked"})
             continue
+        if agent.agent_version and _version_tuple(agent.agent_version) >= target_t:
+            skipped.append({"id": str(agent.id), "reason": "already_current", "version": agent.agent_version})
+            continue
         _queue_agent_update(agent, target)
         queued.append(str(agent.id))
     if not queued:
-        raise HTTPException(400, "No agents queued for update")
+        raise HTTPException(
+            400,
+            "No agents queued — selected hosts are already on the current agent pack "
+            f"({target}) or were skipped.",
+        )
     await write_audit(
         db,
         "agent.update_queue",
@@ -431,7 +441,9 @@ async def queue_one_agent_update(agent_id: UUID, db: DbDep, admin: AdminUser, re
         raise HTTPException(404, "Agent not found")
     if agent.status == AgentStatus.REVOKED.value:
         raise HTTPException(400, "Agent is revoked")
-    target = server_version
+    target = agent_pack_version()
+    if agent.agent_version and _version_tuple(agent.agent_version) >= _version_tuple(target):
+        raise HTTPException(400, f"Agent already on pack {agent.agent_version} (current {target})")
     _queue_agent_update(agent, target)
     await write_audit(
         db,

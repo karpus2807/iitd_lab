@@ -45,17 +45,18 @@ async def _register_agent(
 
 async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_headers: dict):
     agents0 = await client.get("/api/admin/agents", headers=auth_headers)
-    current = agents0.json()["current_version"]
-    enrolled = await _register_agent(client, auth_headers, "upd-a", agent_version=current)
+    pack = agents0.json()["agent_pack_version"] or agents0.json()["current_version"]
+    # Register as older pack so an update is actually needed.
+    enrolled = await _register_agent(client, auth_headers, "upd-a", agent_version="1.1.46")
     agents = await client.get("/api/admin/agents", headers=auth_headers)
     assert agents.status_code == 200
     payload = agents.json()
-    assert payload["current_version"] == current
+    assert payload["agent_pack_version"] == pack or payload["current_version"] == pack
     row = next(a for a in payload["agents"] if a["agent_id"] == enrolled["agent_id"])
     assert row["inventory_id"] == "INV/upd-a"
     assert row["remote_update_capable"] is True
-    assert row["up_to_date"] is True
-    assert row["update_available"] is False
+    assert row["up_to_date"] is False
+    assert row["update_available"] is True
     assert row["current_version"] == payload["current_version"]
 
     q = await client.post(
@@ -65,7 +66,7 @@ async def test_queue_update_delivered_on_heartbeat(client: AsyncClient, auth_hea
     )
     assert q.status_code == 200, q.text
     assert q.json()["queued"] == [row["id"]]
-    assert q.json()["target_version"]
+    assert q.json()["target_version"] == pack
 
     hb = await client.post(
         "/api/agents/heartbeat",
@@ -123,8 +124,8 @@ async def test_update_requires_selection(client: AsyncClient, auth_headers: dict
 
 
 async def test_update_selected_only(client: AsyncClient, auth_headers: dict):
-    a = await _register_agent(client, auth_headers, "upd-b1")
-    b = await _register_agent(client, auth_headers, "upd-b2")
+    a = await _register_agent(client, auth_headers, "upd-b1", agent_version="1.1.46")
+    b = await _register_agent(client, auth_headers, "upd-b2", agent_version="1.1.46")
     agents = (await client.get("/api/admin/agents", headers=auth_headers)).json()["agents"]
     id_a = next(x["id"] for x in agents if x["agent_id"] == a["agent_id"])
     id_b = next(x["id"] for x in agents if x["agent_id"] == b["agent_id"])

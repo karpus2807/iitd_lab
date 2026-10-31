@@ -457,7 +457,8 @@ function Tokens() {
 
 function Agents() {
   const [rows, setRows] = useState<any[]>([])
-  const [currentVersion, setCurrentVersion] = useState('')
+  const [agentPackVersion, setAgentPackVersion] = useState('')
+  const [serverVersion, setServerVersion] = useState('')
   const [secret, setSecret] = useState('')
   const [q, setQ] = useState('')
   const [selected, setSelected] = useState<Record<string, boolean>>({})
@@ -469,7 +470,13 @@ function Agents() {
   function load() {
     return api('/api/admin/agents').then((data) => {
       const list = Array.isArray(data) ? data : (data.agents || [])
-      setCurrentVersion(Array.isArray(data) ? '' : (data.current_version || ''))
+      if (!Array.isArray(data)) {
+        setAgentPackVersion(data.agent_pack_version || data.current_version || '')
+        setServerVersion(data.server_version || '')
+      } else {
+        setAgentPackVersion('')
+        setServerVersion('')
+      }
       setRows(list)
       setSelected((prev) => {
         const next: Record<string, boolean> = {}
@@ -538,8 +545,8 @@ function Agents() {
       ok: ok.length,
       total: tracked.length,
       label: one
-        ? `Update ${one.hostname || one.agent_id}${currentVersion ? ` → ${currentVersion}` : ''}`
-        : `Update ${tracked.length} agents${currentVersion ? ` → ${currentVersion}` : ''}`,
+        ? `Update ${one.hostname || one.agent_id}${agentPackVersion ? ` → ${agentPackVersion}` : ''}`
+        : `Update ${tracked.length} agents${agentPackVersion ? ` → ${agentPackVersion}` : ''}`,
       message: stillActive
         ? one
           ? `Updating ${one.hostname || one.agent_id}…`
@@ -554,7 +561,7 @@ function Agents() {
       log: [...(sessionLog ? [sessionLog] : []), ...lines].join('\n'),
       errors: failed.map((a) => `${a.hostname}: ${a.update_message || a.update_status || 'error'}`),
     }
-  }, [tracked, currentVersion, sessionLog, trackIds.length])
+  }, [tracked, agentPackVersion, sessionLog, trackIds.length])
 
   const pollUpdates = Boolean(batchProgress?.active)
 
@@ -653,7 +660,9 @@ function Agents() {
           Update selected{selectedIds.length ? ` (${selectedIds.length})` : ''}
         </button>
         <span className="muted" style={{ fontSize: 13 }}>
-          Pack {currentVersion || '…'} · row “Update agent” = that host only · jump to latest (not stepwise) · needs agent ≥1.1.40
+          Agent pack {agentPackVersion || '…'}
+          {serverVersion ? ` · server app ${serverVersion}` : ''}
+          {' · '}row “Update agent” = that host only · needs agent ≥1.1.40
         </span>
       </div>
       {notice && (
@@ -724,8 +733,8 @@ function Agents() {
               <th>Status</th>
               <th>
                 Update
-                {currentVersion ? (
-                  <div className="muted" style={{ fontWeight: 400, fontSize: 12 }}>current {currentVersion}</div>
+                {agentPackVersion ? (
+                  <div className="muted" style={{ fontWeight: 400, fontSize: 12 }}>pack {agentPackVersion}</div>
                 ) : null}
               </th>
               <th>Seen</th>
@@ -763,7 +772,7 @@ function Agents() {
                       data-state={a.update_available ? 'behind' : a.up_to_date ? 'current' : 'unknown'}
                       title={
                         a.update_available
-                          ? `Update available → ${currentVersion || a.current_version || '?'}`
+                          ? `Update available → agent pack ${agentPackVersion || a.agent_pack_version || a.current_version || '?'}`
                           : a.up_to_date
                             ? `Up to date (${a.version})`
                             : 'Version unknown'
@@ -809,7 +818,7 @@ function Agents() {
                     <button
                       className="btn secondary"
                       disabled={busy || active}
-                      title={active ? 'Update already in progress for this agent' : `Update only ${a.hostname || a.agent_id} to ${currentVersion || 'latest'}`}
+                      title={active ? 'Update already in progress for this agent' : `Update only ${a.hostname || a.agent_id} to pack ${agentPackVersion || 'latest'}`}
                       onClick={() => void queueUpdate([a.id])}
                     >
                       Update agent

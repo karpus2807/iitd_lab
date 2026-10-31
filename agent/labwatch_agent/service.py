@@ -129,6 +129,21 @@ def _handle_commands(client: AgentClient, commands: list) -> bool:
         pack_path = str(cmd.get("pack_path") or "/agent-pack.tgz")
         logger.info("Self-update command received id=%s target=%s", cmd_id, target or "?")
         try:
+            # Already on/above target → ack ok without download/restart (saves bandwidth).
+            if target:
+                def _vt(v: str) -> tuple[int, int, int]:
+                    parts: list[int] = []
+                    for piece in (v or "").strip().lstrip("v").split("."):
+                        digits = "".join(c for c in piece if c.isdigit())
+                        parts.append(int(digits) if digits else 0)
+                    while len(parts) < 3:
+                        parts.append(0)
+                    return parts[0], parts[1], parts[2]
+
+                if _vt(__version__) >= _vt(target):
+                    client.ack_command(cmd_id, "ok", f"already at {__version__}", __version__)
+                    logger.info("Self-update skipped — already at %s (target %s)", __version__, target)
+                    continue
             try:
                 client.ack_command(cmd_id, "downloading", f"downloading pack ({target or pack_path})", __version__)
             except Exception:
