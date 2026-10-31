@@ -20,17 +20,39 @@ async def test_smtp_get_put(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         json={
             "enabled": False,
-            "host": "smtp.test.local",
-            "port": 587,
+            "host": "smtp.iitd.ac.in",
+            "port": 25,
             "username": "labwatch",
             "password": "secret",
-            "from_addr": "labwatch@test.local",
+            "from_addr": "labwatch@cse.iitd.ac.in",
             "starttls": True,
+            "use_ssl": False,
         },
     )
     assert saved.status_code == 200, saved.text
-    assert saved.json()["host"] == "smtp.test.local"
+    assert saved.json()["host"] == "smtp.iitd.ac.in"
+    assert saved.json()["port"] == 25
+    assert saved.json()["starttls"] is True
+    assert saved.json()["use_ssl"] is False
     assert saved.json()["password_set"] is True
+
+    ssl465 = await client.put(
+        "/api/admin/smtp",
+        headers=auth_headers,
+        json={
+            "enabled": True,
+            "host": "smtp.iitd.ac.in",
+            "port": 465,
+            "username": "labwatch",
+            "from_addr": "labwatch@cse.iitd.ac.in",
+            "starttls": True,
+            "use_ssl": True,
+        },
+    )
+    assert ssl465.status_code == 200, ssl465.text
+    assert ssl465.json()["port"] == 465
+    assert ssl465.json()["use_ssl"] is True
+    assert ssl465.json()["starttls"] is False
 
 
 @pytest.mark.asyncio

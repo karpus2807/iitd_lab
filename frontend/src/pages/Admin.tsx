@@ -40,11 +40,13 @@ function MailSmtp() {
   const [form, setForm] = useState({
     enabled: false,
     host: '',
-    port: 587,
+    port: 25,
     username: '',
     password: '',
     from_addr: '',
     starttls: true,
+    use_ssl: false,
+    validate_certs: true,
     password_set: false,
   })
   const [testTo, setTestTo] = useState('')
@@ -57,17 +59,39 @@ function MailSmtp() {
     setForm({
       enabled: !!data.enabled,
       host: data.host || '',
-      port: Number(data.port || 587),
+      port: Number(data.port || 25),
       username: data.username || '',
       password: '',
       from_addr: data.from_addr || '',
       starttls: data.starttls !== false,
+      use_ssl: !!data.use_ssl,
+      validate_certs: data.validate_certs !== false,
       password_set: !!data.password_set,
     })
   }
   useEffect(() => {
     load().catch((e) => setErr(e.message))
   }, [])
+
+  function applyIitdPreset(mode: 'starttls25' | 'ssl465') {
+    if (mode === 'ssl465') {
+      setForm((f) => ({
+        ...f,
+        host: f.host || 'smtp.iitd.ac.in',
+        port: 465,
+        starttls: false,
+        use_ssl: true,
+      }))
+    } else {
+      setForm((f) => ({
+        ...f,
+        host: f.host || 'smtp.iitd.ac.in',
+        port: 25,
+        starttls: true,
+        use_ssl: false,
+      }))
+    }
+  }
 
   async function save(e: FormEvent) {
     e.preventDefault()
@@ -78,14 +102,25 @@ function MailSmtp() {
       const body: any = {
         enabled: form.enabled,
         host: form.host.trim(),
-        port: Number(form.port) || 587,
+        port: Number(form.port) || 25,
         username: form.username.trim(),
         from_addr: form.from_addr.trim(),
         starttls: form.starttls,
+        use_ssl: form.use_ssl,
+        validate_certs: form.validate_certs,
       }
       if (form.password.trim()) body.password = form.password
       const data = await api<any>('/api/admin/smtp', { method: 'PUT', body: JSON.stringify(body) })
-      setForm((f) => ({ ...f, password: '', password_set: !!data.password_set, enabled: !!data.enabled }))
+      setForm((f) => ({
+        ...f,
+        password: '',
+        password_set: !!data.password_set,
+        enabled: !!data.enabled,
+        starttls: data.starttls !== false,
+        use_ssl: !!data.use_ssl,
+        validate_certs: data.validate_certs !== false,
+        port: Number(data.port || f.port),
+      }))
       setMsg('SMTP settings saved')
     } catch (e: any) {
       setErr(e.message)
@@ -112,8 +147,17 @@ function MailSmtp() {
     <div className="card">
       <h3 style={{ marginTop: 0 }}>SMTP mail server</h3>
       <p className="muted">
-        Configure once here. Enrolment / inventory-assign OTPs use this SMTP. No automatic mails on import unless you opt in.
+        IITD CSC: <span className="mono">smtp.iitd.ac.in</span> — STARTTLS on port <strong>25</strong>, or SSL/TLS on{' '}
+        <strong>465</strong>. Username = Kerberos login id (not full email). Auth required for outbound.
       </p>
+      <div className="toolbar" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <button className="btn secondary" type="button" onClick={() => applyIitdPreset('starttls25')}>
+          IITD preset: 25 + STARTTLS
+        </button>
+        <button className="btn secondary" type="button" onClick={() => applyIitdPreset('ssl465')}>
+          IITD preset: 465 + SSL
+        </button>
+      </div>
       {err && <p className="err">{err}</p>}
       {msg && <p className="muted">{msg}</p>}
       <form onSubmit={save} className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
@@ -123,15 +167,15 @@ function MailSmtp() {
         </label>
         <label>
           Host
-          <input required={form.enabled} value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="smtp.example.com" />
+          <input required={form.enabled} value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="smtp.iitd.ac.in" />
         </label>
         <label>
           Port
           <input type="number" value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
         </label>
         <label>
-          Username
-          <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+          Username (Kerberos id)
+          <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="yourloginid" />
         </label>
         <label>
           Password {form.password_set ? <span className="muted">(saved — leave blank to keep)</span> : null}
@@ -139,11 +183,34 @@ function MailSmtp() {
         </label>
         <label>
           From address
-          <input value={form.from_addr} onChange={(e) => setForm({ ...form, from_addr: e.target.value })} placeholder="labwatch@example.com" />
+          <input value={form.from_addr} onChange={(e) => setForm({ ...form, from_addr: e.target.value })} placeholder="you@cse.iitd.ac.in" />
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={form.starttls} onChange={(e) => setForm({ ...form, starttls: e.target.checked })} />
-          STARTTLS
+          <input
+            type="checkbox"
+            checked={form.starttls && !form.use_ssl}
+            onChange={(e) => setForm({ ...form, starttls: e.target.checked, use_ssl: e.target.checked ? false : form.use_ssl })}
+          />
+          STARTTLS (port 25)
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={form.use_ssl || form.port === 465}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                use_ssl: e.target.checked,
+                starttls: e.target.checked ? false : form.starttls,
+                port: e.target.checked ? 465 : form.port === 465 ? 25 : form.port,
+              })
+            }
+          />
+          SSL/TLS (port 465)
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={form.validate_certs} onChange={(e) => setForm({ ...form, validate_certs: e.target.checked })} />
+          Verify TLS certificates
         </label>
         <div className="toolbar" style={{ gridColumn: '1 / -1', gap: 8 }}>
           <button className="btn" disabled={busy} type="submit">{busy ? 'Saving…' : 'Save SMTP'}</button>

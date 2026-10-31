@@ -447,6 +447,8 @@ class SmtpBody(BaseModel):
     password: str | None = None
     from_addr: str = ""
     starttls: bool = True
+    use_ssl: bool = False
+    validate_certs: bool = True
 
 
 class SmtpTestBody(BaseModel):
