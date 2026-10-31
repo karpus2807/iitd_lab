@@ -113,11 +113,19 @@ async def send_email(db: AsyncSession, *, to: str, subject: str, body: str) -> N
 
     import aiosmtplib
     from email.message import EmailMessage
+    from email.utils import formatdate, make_msgid, parseaddr
+
+    from_addr = str(cfg.get("from_addr") or user).strip()
+    _, from_email = parseaddr(from_addr)
+    domain = (from_email.split("@", 1)[1] if "@" in (from_email or "") else "") or "localhost"
 
     msg = EmailMessage()
-    msg["From"] = cfg.get("from_addr") or user
+    msg["From"] = from_addr
     msg["To"] = to_addr
     msg["Subject"] = subject
+    # IITD amavis rejects mail missing Date (554 BAD HEADER)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=domain)
     msg.set_content(body)
 
     port = int(cfg.get("port") or 587)
