@@ -168,8 +168,12 @@ select.lab-assign { min-width: 160px; max-width: 240px; padding: 6px 10px; }
 .login-wrap { min-height: 100%; display: grid; place-items: center; padding: 24px; }
 .login-card { width: min(420px, 100%); }
 .login-card h2 { margin-top: 0; }
-.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; min-width: 0; }
 .field label { color: var(--muted); font-size: 13px; }
+.field input,
+.field select,
+.field textarea { width: 100%; box-sizing: border-box; }
+.field input[type="file"] { padding: 8px; overflow: hidden; }
 .err { color: var(--crit); font-size: 13px; margin: 8px 0; }
 .split { display: grid; grid-template-columns: 1.3fr 0.7fr; gap: 16px; }
 .muted { color: var(--muted); }

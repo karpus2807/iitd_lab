@@ -602,73 +602,87 @@ export default function Scholars() {
         <form className="card" onSubmit={submitEnroll} style={{ marginBottom: 16 }}>
           <h3 style={{ marginTop: 0 }}>Enrol into {selectedLab ? labLabel(selectedLab) : 'lab'}</h3>
           {!labId && <p className="err">Select a lab above first.</p>}
-          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-            <label>Name *<input required value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></label>
-            <label>ID<input value={form.scholar_id} onChange={(e) => setForm({ ...form, scholar_id: e.target.value })} /></label>
-            <label>
-              Group
-              <input list="scholar-groups" value={form.group_name} onChange={(e) => setForm({ ...form, group_name: e.target.value })} />
+          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16, alignItems: 'start' }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-name">Name *</label>
+              <input id="enrol-name" required style={{ width: '100%' }} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-id">ID</label>
+              <input id="enrol-id" style={{ width: '100%' }} value={form.scholar_id} onChange={(e) => setForm({ ...form, scholar_id: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-group">Group</label>
+              <input id="enrol-group" list="scholar-groups" style={{ width: '100%' }} value={form.group_name} onChange={(e) => setForm({ ...form, group_name: e.target.value })} />
               <datalist id="scholar-groups">{groups.map((g) => <option key={g} value={g} />)}</datalist>
-            </label>
-            <label>
-              Faculty
-              <input list="scholar-faculties" value={form.faculty} onChange={(e) => setForm({ ...form, faculty: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-faculty">Faculty</label>
+              <input id="enrol-faculty" list="scholar-faculties" style={{ width: '100%' }} value={form.faculty} onChange={(e) => setForm({ ...form, faculty: e.target.value })} />
               <datalist id="scholar-faculties">{faculties.map((f) => <option key={f} value={f} />)}</datalist>
-            </label>
-            <label>
-              System required
-              <select value={form.system_required} onChange={(e) => setForm({ ...form, system_required: e.target.value, inventory_item_id: '', inventory_label: '', inv_search: '' })}>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-sys">System required</label>
+              <select id="enrol-sys" style={{ width: '100%' }} value={form.system_required} onChange={(e) => setForm({ ...form, system_required: e.target.value, inventory_item_id: '', inventory_label: '', inv_search: '' })}>
                 <option value="no">No</option>
                 <option value="yes">Yes</option>
               </select>
-            </label>
-            <label>Email<input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></label>
-            <label>Contact number<input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></label>
-            <label>
-              Photo
-              <input ref={photoRef} type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} />
-            </label>
-            {form.system_required !== 'yes' && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={form.require_otp}
-                  onChange={(e) => setForm({ ...form, require_otp: e.target.checked })}
-                />
-                Require email OTP for this enrolment (optional)
-              </label>
-            )}
-            {form.system_required === 'yes' && (
-              <p className="muted" style={{ gridColumn: '1 / -1', margin: 0 }}>
-                Inventory assign requires email OTP (compulsory). Enter a valid email.
-              </p>
-            )}
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-email">Email</label>
+              <input id="enrol-email" type="email" style={{ width: '100%' }} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-phone">Contact number</label>
+              <input id="enrol-phone" style={{ width: '100%' }} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0, minWidth: 0 }}>
+              <label htmlFor="enrol-photo">Photo</label>
+              <input id="enrol-photo" ref={photoRef} type="file" accept="image/*" style={{ width: '100%', maxWidth: '100%' }} onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} />
+            </div>
           </div>
+
+          {form.system_required !== 'yes' ? (
+            <label className="field" style={{ marginTop: 16, marginBottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <input
+                type="checkbox"
+                checked={form.require_otp}
+                onChange={(e) => setForm({ ...form, require_otp: e.target.checked })}
+              />
+              <span>Require email OTP for this enrolment (optional)</span>
+            </label>
+          ) : (
+            <p className="muted" style={{ margin: '16px 0 0' }}>
+              Inventory assign requires email OTP (compulsory). Enter a valid email above.
+            </p>
+          )}
+
           {form.system_required === 'yes' && (
-            <div className="card" style={{ marginTop: 12, background: 'transparent' }}>
-              <div className="toolbar" style={{ gap: 8, marginBottom: 8 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <div className="toolbar" style={{ gap: 16, marginBottom: 12 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                   <input type="radio" checked={form.inventory_mode === 'listed'} onChange={() => setForm({ ...form, inventory_mode: 'listed', inventory_item_id: '', inventory_label: '' })} />
                   From Inv list
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                   <input type="radio" checked={form.inventory_mode === 'non_list'} onChange={() => setForm({ ...form, inventory_mode: 'non_list', inventory_item_id: '', inventory_label: form.inv_search })} />
                   Non-list
                 </label>
               </div>
-              <div ref={suggestRef} style={{ position: 'relative' }}>
-                <label>
+              <div ref={suggestRef} className="field" style={{ marginBottom: 0, position: 'relative', maxWidth: 480 }}>
+                <label htmlFor="enrol-inv">
                   {form.inventory_mode === 'listed' ? 'Search inventory' : 'Non-list inventory label'}
-                  <input
-                    style={{ width: '100%' }}
-                    value={form.inventory_mode === 'listed' ? form.inv_search : form.inventory_label}
-                    onChange={(e) => {
-                      if (form.inventory_mode === 'listed') setForm({ ...form, inv_search: e.target.value, inventory_item_id: '', inventory_label: '' })
-                      else setForm({ ...form, inventory_label: e.target.value, inv_search: e.target.value })
-                    }}
-                    onFocus={() => form.inventory_mode === 'listed' && suggestions.length && setShowSuggest(true)}
-                  />
                 </label>
+                <input
+                  id="enrol-inv"
+                  style={{ width: '100%' }}
+                  value={form.inventory_mode === 'listed' ? form.inv_search : form.inventory_label}
+                  onChange={(e) => {
+                    if (form.inventory_mode === 'listed') setForm({ ...form, inv_search: e.target.value, inventory_item_id: '', inventory_label: '' })
+                    else setForm({ ...form, inventory_label: e.target.value, inv_search: e.target.value })
+                  }}
+                  onFocus={() => form.inventory_mode === 'listed' && suggestions.length && setShowSuggest(true)}
+                />
                 {form.inventory_mode === 'listed' && showSuggest && suggestions.length > 0 && (
                   <div className="card" style={{ position: 'absolute', zIndex: 20, left: 0, right: 0, top: '100%', marginTop: 4, maxHeight: 240, overflow: 'auto', padding: 0 }}>
                     {suggestions.map((s) => (
@@ -691,7 +705,8 @@ export default function Scholars() {
               </div>
             </div>
           )}
-          <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+
+          <div className="toolbar" style={{ marginTop: 16, marginBottom: 0, gap: 8 }}>
             <button className="btn" disabled={busy || !labId} type="submit">{busy ? 'Saving…' : 'Save enrolment'}</button>
             <button className="btn secondary" type="button" onClick={() => setEnrollOpen(false)}>Cancel</button>
           </div>
