@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_, select
 
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
-from app.models import InventoryItem, Lab, Scholar, utcnow
+from app.models import InventoryItem, Lab, Machine, Scholar, utcnow
 from app.schemas.scholars import ScholarIdsBody, ScholarListOut, ScholarOut, ScholarRemoveBody
 from app.services import email_otp
 from app.services import inv_verify_docs as inv_docs
@@ -36,13 +36,19 @@ def _out(row: Scholar, lab: Lab | None = None, inv: InventoryItem | None = None)
         lab_room=(getattr(lab_obj, "room", None) or "") if lab_obj else "",
         full_name=row.full_name or "",
         scholar_id=row.scholar_id or "",
+        bio_id=getattr(row, "bio_id", None) or "",
         group_name=row.group_name or "",
         faculty=row.faculty or "",
         system_required=bool(row.system_required),
+        approved=bool(getattr(row, "approved", False)),
+        approved_at=getattr(row, "approved_at", None),
+        no_dues=bool(getattr(row, "no_dues", False)),
+        no_dues_at=getattr(row, "no_dues_at", None),
         inventory_kind=row.inventory_kind or "none",
         inventory_item_id=row.inventory_item_id,
         inventory_label=row.inventory_label or "",
         inventory_item_name=(inv_obj.item_name if inv_obj else "") or "",
+        inventory_assigned_at=getattr(row, "inventory_assigned_at", None),
         email=row.email or "",
         phone=row.phone or "",
         has_photo=bool(row.photo_path),
@@ -55,6 +61,39 @@ def _out(row: Scholar, lab: Lab | None = None, inv: InventoryItem | None = None)
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+async def _assert_unique_scholar_id(db, scholar_id: str, *, exclude_id: UUID | None = None) -> None:
+    sid = (scholar_id or "").strip()
+    if not sid:
+        return
+    stmt = select(Scholar).where(
+        func.lower(Scholar.scholar_id) == sid.lower(),
+        Scholar.status.in_(["active", "pending"]),
+    )
+    if exclude_id:
+        stmt = stmt.where(Scholar.id != exclude_id)
+    clash = (await db.execute(stmt)).scalar_one_or_none()
+    if clash:
+        raise HTTPException(400, f"ID '{sid}' is already used school-wide (must be unique)")
+
+
+async def _assert_unique_bio_id(
+    db, lab_id: UUID, bio_id: str, *, exclude_id: UUID | None = None
+) -> None:
+    bid = (bio_id or "").strip()
+    if not bid:
+        return
+    stmt = select(Scholar).where(
+        Scholar.lab_id == lab_id,
+        func.lower(Scholar.bio_id) == bid.lower(),
+        Scholar.status.in_(["active", "pending"]),
+    )
+    if exclude_id:
+        stmt = stmt.where(Scholar.id != exclude_id)
+    clash = (await db.execute(stmt)).scalar_one_or_none()
+    if clash:
+        raise HTTPException(400, f"Bio-ID '{bid}' is already used in this lab")
 
 
 async def _get_or_404(db, scholar_id: UUID) -> Scholar:
@@ -97,6 +136,7 @@ async def _apply_inventory_link(
         row.inventory_kind = "none"
         row.inventory_item_id = None
         row.inventory_label = ""
+        row.inventory_assigned_at = None
         return
 
     row.system_required = True
@@ -109,6 +149,7 @@ async def _apply_inventory_link(
         row.inventory_kind = "listed"
         row.inventory_item_id = item.id
         row.inventory_label = item.ic_no
+        row.inventory_assigned_at = utcnow()
         item.assigned_to = (row.full_name or "").strip()
     elif kind == "non_list":
         label = (inventory_label or "").strip()
@@ -117,6 +158,7 @@ async def _apply_inventory_link(
         row.inventory_kind = "non_list"
         row.inventory_item_id = None
         row.inventory_label = label
+        row.inventory_assigned_at = utcnow()
     else:
         raise HTTPException(400, "When system is required, choose listed inventory or non-list")
 
@@ -162,6 +204,169 @@ async def scholar_facets(
     return {
         "groups": sorted(groups, key=str.lower),
         "faculties": faculties,
+    }
+
+
+@router.get("/dashboard")
+async def scholars_dashboard(db: DbDep, user: CurrentUser):
+    """Per-lab scholar counts + inventory/machine summary (fleet view)."""
+    labs = (
+        await db.execute(
+            select(Lab).where(func.lower(Lab.name) != "unassigned").order_by(Lab.name.asc())
+        )
+    ).scalars().all()
+
+    active = Scholar.status == "active"
+    total = (await db.execute(select(func.count()).select_from(Scholar).where(active))).scalar_one()
+    approved = (
+        await db.execute(
+            select(func.count()).select_from(Scholar).where(active, Scholar.approved.is_(True), Scholar.no_dues.is_(False))
+        )
+    ).scalar_one()
+    pending = (
+        await db.execute(
+            select(func.count())
+            .select_from(Scholar)
+            .where(active, Scholar.approved.is_(False), Scholar.no_dues.is_(False))
+        )
+    ).scalar_one()
+    no_dues = (
+        await db.execute(select(func.count()).select_from(Scholar).where(active, Scholar.no_dues.is_(True)))
+    ).scalar_one()
+    with_inv = (
+        await db.execute(
+            select(func.count())
+            .select_from(Scholar)
+            .where(active, Scholar.inventory_kind.in_(["listed", "non_list"]))
+        )
+    ).scalar_one()
+    machines_total = (await db.execute(select(func.count()).select_from(Machine))).scalar_one()
+
+    lab_rows = []
+    for lab in labs:
+        base = [active, Scholar.lab_id == lab.id]
+        s_count = (
+            await db.execute(select(func.count()).select_from(Scholar).where(*base))
+        ).scalar_one()
+        s_approved = (
+            await db.execute(
+                select(func.count())
+                .select_from(Scholar)
+                .where(*base, Scholar.approved.is_(True), Scholar.no_dues.is_(False))
+            )
+        ).scalar_one()
+        s_pending = (
+            await db.execute(
+                select(func.count())
+                .select_from(Scholar)
+                .where(*base, Scholar.approved.is_(False), Scholar.no_dues.is_(False))
+            )
+        ).scalar_one()
+        s_no_dues = (
+            await db.execute(
+                select(func.count()).select_from(Scholar).where(*base, Scholar.no_dues.is_(True))
+            )
+        ).scalar_one()
+        s_inv = (
+            await db.execute(
+                select(func.count())
+                .select_from(Scholar)
+                .where(*base, Scholar.inventory_kind.in_(["listed", "non_list"]))
+            )
+        ).scalar_one()
+        m_count = (
+            await db.execute(select(func.count()).select_from(Machine).where(Machine.lab_id == lab.id))
+        ).scalar_one()
+        lab_rows.append(
+            {
+                "id": str(lab.id),
+                "name": lab.name,
+                "room": lab.room or "",
+                "building": getattr(lab, "building", None) or "",
+                "scholars": s_count,
+                "approved": s_approved,
+                "pending": s_pending,
+                "no_dues": s_no_dues,
+                "with_inventory": s_inv,
+                "machines": m_count,
+            }
+        )
+
+    return {
+        "scholars": total,
+        "approved": approved,
+        "pending": pending,
+        "no_dues": no_dues,
+        "with_inventory": with_inv,
+        "machines": machines_total,
+        "labs": lab_rows,
+    }
+
+
+@router.get("/dashboard/{lab_id}")
+async def scholars_dashboard_lab(lab_id: UUID, db: DbDep, user: CurrentUser):
+    """Scholars in one lab with assigned inventory details and dates."""
+    lab = await db.get(Lab, lab_id)
+    if not lab:
+        raise HTTPException(404, "Lab not found")
+    rows = (
+        await db.execute(
+            select(Scholar, InventoryItem)
+            .outerjoin(InventoryItem, Scholar.inventory_item_id == InventoryItem.id)
+            .where(Scholar.lab_id == lab.id, Scholar.status == "active")
+            .order_by(Scholar.full_name.asc())
+        )
+    ).all()
+    machines = (
+        await db.execute(select(func.count()).select_from(Machine).where(Machine.lab_id == lab.id))
+    ).scalar_one()
+    items = []
+    for row, inv in rows:
+        out = _out(row, lab, inv)
+        items.append(
+            {
+                **out.model_dump(mode="json"),
+                "inventory": (
+                    {
+                        "id": str(inv.id),
+                        "ic_no": inv.ic_no,
+                        "item_name": inv.item_name or "",
+                        "inventory_type": inv.inventory_type or "",
+                        "inventory_location": inv.inventory_location or "",
+                        "assigned_to": inv.assigned_to or "",
+                    }
+                    if inv
+                    else (
+                        {
+                            "id": None,
+                            "ic_no": row.inventory_label or "",
+                            "item_name": "",
+                            "inventory_type": "non_list",
+                            "inventory_location": "",
+                            "assigned_to": row.full_name or "",
+                        }
+                        if (row.inventory_kind or "") == "non_list"
+                        else None
+                    )
+                ),
+            }
+        )
+    return {
+        "lab": {
+            "id": str(lab.id),
+            "name": lab.name,
+            "room": lab.room or "",
+            "building": getattr(lab, "building", None) or "",
+        },
+        "machines": machines,
+        "scholars": items,
+        "counts": {
+            "scholars": len(items),
+            "approved": sum(1 for s in items if s.get("approved") and not s.get("no_dues")),
+            "pending": sum(1 for s in items if not s.get("approved") and not s.get("no_dues")),
+            "no_dues": sum(1 for s in items if s.get("no_dues")),
+            "with_inventory": sum(1 for s in items if s.get("inventory_kind") in {"listed", "non_list"}),
+        },
     }
 
 
@@ -213,9 +418,8 @@ async def import_scholars(
     user: OperatorUser,
     request: Request,
     file: UploadFile = File(...),
-    require_otp: str = Form("false"),
 ):
-    """Import scholars. OTP/email is OFF by default; set require_otp=true to email-verify each row."""
+    """Import scholars from Excel/CSV. No OTP — OTP is only for manual portal enrolment."""
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "Empty file")
@@ -226,15 +430,12 @@ async def import_scholars(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Could not parse file: {exc}") from exc
 
-    want_otp = _truthy(require_otp)
     labs = (await db.execute(select(Lab))).scalars().all()
     lab_by_name = {(l.name or "").strip().lower(): l for l in labs if (l.name or "").strip()}
 
     created = 0
     updated = 0
-    pending_otp = 0
     errors: list[str] = []
-    otp_challenges: list[dict] = []
     for parsed in parsed_rows:
         lab_key = parsed["lab_name"].lower()
         lab = lab_by_name.get(lab_key)
@@ -246,66 +447,37 @@ async def import_scholars(
                 db, parsed.get("inventory_label") or "", bool(parsed.get("system_required"))
             )
             email = (parsed.get("email") or "").strip()
-            # Import never auto-emails unless admin opted into OTP verification.
-            if want_otp:
-                if not email:
-                    errors.append(f"{parsed['full_name']}: email required when import OTP is enabled")
-                    continue
-                payload = {
-                    "lab_id": str(lab.id),
-                    "full_name": parsed["full_name"],
-                    "scholar_id": (parsed.get("scholar_id") or "").strip(),
-                    "group_name": parsed.get("group_name") or "",
-                    "faculty": parsed.get("faculty") or "",
-                    "email": email,
-                    "phone": parsed.get("phone") or "",
-                    "notes": parsed.get("notes") or "",
-                    "system_required": bool(parsed.get("system_required")),
-                    "inventory_kind": kind,
-                    "inventory_item_id": str(inv_id) if inv_id else "",
-                    "inventory_label": inv_label,
-                }
-                await email_otp.expire_open_for_email(db, email_otp.PURPOSE_IMPORT, email)
-                challenge, code = await email_otp.create_challenge(
-                    db,
-                    purpose=email_otp.PURPOSE_IMPORT,
-                    email=email,
-                    payload=payload,
-                    created_by=user.username,
-                )
-                try:
-                    await email_otp.send_otp_mail(
-                        db, to=email, code=code, context=f"scholar import · {parsed['full_name']}"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{parsed['full_name']}: OTP email failed: {exc}")
-                    continue
-                pending_otp += 1
-                otp_challenges.append(
-                    {"challenge_id": str(challenge.id), "email": email, "full_name": parsed["full_name"]}
-                )
-                continue
+            sid = (parsed.get("scholar_id") or "").strip()
+            bio = (parsed.get("bio_id") or "").strip()
+            no_dues = bool(parsed.get("no_dues"))
 
             existing = None
-            sid = (parsed.get("scholar_id") or "").strip()
             if sid:
                 existing = (
                     await db.execute(
                         select(Scholar).where(
-                            Scholar.lab_id == lab.id,
                             func.lower(Scholar.scholar_id) == sid.lower(),
                             Scholar.status.in_(["active", "pending"]),
                         )
                     )
                 ).scalar_one_or_none()
+
             if existing:
+                await _assert_unique_bio_id(db, lab.id, bio, exclude_id=existing.id)
+                existing.lab_id = lab.id
                 existing.full_name = parsed["full_name"]
+                existing.bio_id = bio
                 existing.group_name = parsed.get("group_name") or ""
                 existing.faculty = parsed.get("faculty") or ""
                 existing.email = email
                 existing.phone = parsed.get("phone") or ""
                 existing.notes = parsed.get("notes") or ""
                 existing.status = "active"
+                existing.approved = True
+                if not existing.approved_at:
+                    existing.approved_at = utcnow()
+                existing.no_dues = no_dues
+                existing.no_dues_at = utcnow() if no_dues else None
                 await _apply_inventory_link(
                     db,
                     existing,
@@ -316,16 +488,23 @@ async def import_scholars(
                 )
                 updated += 1
             else:
+                await _assert_unique_scholar_id(db, sid)
+                await _assert_unique_bio_id(db, lab.id, bio)
                 row = Scholar(
                     lab_id=lab.id,
                     full_name=parsed["full_name"],
                     scholar_id=sid,
+                    bio_id=bio,
                     group_name=parsed.get("group_name") or "",
                     faculty=parsed.get("faculty") or "",
                     email=email,
                     phone=parsed.get("phone") or "",
                     notes=parsed.get("notes") or "",
                     status="active",
+                    approved=True,
+                    approved_at=utcnow(),
+                    no_dues=no_dues,
+                    no_dues_at=utcnow() if no_dues else None,
                 )
                 await _apply_inventory_link(
                     db,
@@ -337,6 +516,8 @@ async def import_scholars(
                 )
                 db.add(row)
                 created += 1
+        except HTTPException as exc:
+            errors.append(f"{parsed.get('full_name')}: {exc.detail}")
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{parsed.get('full_name')}: {exc}")
 
@@ -348,8 +529,6 @@ async def import_scholars(
             "filename": file.filename,
             "created": created,
             "updated": updated,
-            "pending_otp": pending_otp,
-            "require_otp": want_otp,
             "errors": errors[:20],
         },
         request=request,
@@ -359,11 +538,8 @@ async def import_scholars(
         "ok": True,
         "created": created,
         "updated": updated,
-        "pending_otp": pending_otp,
-        "otp_challenges": otp_challenges[:50],
         "errors": errors,
         "total_rows": len(parsed_rows),
-        "require_otp": want_otp,
     }
 
 
@@ -511,6 +687,7 @@ async def list_scholars(
         filt = or_(
             Scholar.full_name.ilike(like),
             Scholar.scholar_id.ilike(like),
+            Scholar.bio_id.ilike(like),
             Scholar.group_name.ilike(like),
             Scholar.faculty.ilike(like),
             Scholar.email.ilike(like),
@@ -523,6 +700,7 @@ async def list_scholars(
             or_(
                 Scholar.full_name.ilike(like),
                 Scholar.scholar_id.ilike(like),
+                Scholar.bio_id.ilike(like),
                 Scholar.group_name.ilike(like),
                 Scholar.faculty.ilike(like),
                 Scholar.email.ilike(like),
@@ -544,41 +722,27 @@ async def _finalize_enroll_payload(db, payload: dict, *, photo_path: str = "") -
     inv_raw = str(payload.get("inventory_item_id") or "").strip()
     inv_id = UUID(inv_raw) if inv_raw else None
     sid = str(payload.get("scholar_id") or "").strip()
-    row = None
-    if sid:
-        row = (
-            await db.execute(
-                select(Scholar).where(
-                    Scholar.lab_id == lab.id,
-                    func.lower(Scholar.scholar_id) == sid.lower(),
-                    Scholar.status.in_(["active", "pending"]),
-                )
-            )
-        ).scalar_one_or_none()
-    if row:
-        row.full_name = str(payload.get("full_name") or "").strip()
-        row.group_name = str(payload.get("group_name") or "").strip()
-        row.faculty = str(payload.get("faculty") or "").strip()
-        row.email = str(payload.get("email") or "").strip()
-        row.phone = str(payload.get("phone") or "").strip()
-        row.notes = str(payload.get("notes") or "").strip()
-        row.status = "active"
-        if photo_path or payload.get("photo_path"):
-            row.photo_path = photo_path or str(payload.get("photo_path") or "")
-    else:
-        row = Scholar(
-            lab_id=lab.id,
-            full_name=str(payload.get("full_name") or "").strip(),
-            scholar_id=sid,
-            group_name=str(payload.get("group_name") or "").strip(),
-            faculty=str(payload.get("faculty") or "").strip(),
-            email=str(payload.get("email") or "").strip(),
-            phone=str(payload.get("phone") or "").strip(),
-            notes=str(payload.get("notes") or "").strip(),
-            status="active",
-            photo_path=photo_path or str(payload.get("photo_path") or ""),
-        )
-        db.add(row)
+    bio = str(payload.get("bio_id") or "").strip()
+    # Portal enrol creates a new row — school-wide ID must not already exist.
+    # Use Edit / Import to update an existing scholar.
+    await _assert_unique_scholar_id(db, sid)
+    await _assert_unique_bio_id(db, lab.id, bio)
+    row = Scholar(
+        lab_id=lab.id,
+        full_name=str(payload.get("full_name") or "").strip(),
+        scholar_id=sid,
+        bio_id=bio,
+        group_name=str(payload.get("group_name") or "").strip(),
+        faculty=str(payload.get("faculty") or "").strip(),
+        email=str(payload.get("email") or "").strip(),
+        phone=str(payload.get("phone") or "").strip(),
+        notes=str(payload.get("notes") or "").strip(),
+        status="active",
+        approved=False,
+        no_dues=False,
+        photo_path=photo_path or str(payload.get("photo_path") or ""),
+    )
+    db.add(row)
     await _apply_inventory_link(
         db,
         row,
@@ -599,6 +763,7 @@ async def enroll_scholar(
     lab_id: UUID = Form(...),
     full_name: str = Form(...),
     scholar_id: str = Form(""),
+    bio_id: str = Form(""),
     group_name: str = Form(""),
     faculty: str = Form(""),
     system_required: str = Form("false"),
@@ -613,11 +778,12 @@ async def enroll_scholar(
     photo: UploadFile | None = File(None),
     document: UploadFile | None = File(None),
 ):
-    """Enrol a scholar.
+    """Enrol a scholar via the portal (manual).
 
     - Plain enrol: OTP optional (require_otp).
     - Inventory assign: verification required — primary OTP, or secondary PDF document.
-    - No automatic mail except when an OTP challenge is created.
+    - Import path has no OTP; only this portal enrolment uses OTP/PDF verify.
+    - New portal enrolments start unapproved until Approve is clicked.
     """
     lab = await _lab_or_404(db, lab_id)
     name = (full_name or "").strip()
@@ -653,6 +819,7 @@ async def enroll_scholar(
         "lab_id": str(lab.id),
         "full_name": name,
         "scholar_id": (scholar_id or "").strip(),
+        "bio_id": (bio_id or "").strip(),
         "group_name": (group_name or "").strip(),
         "faculty": (faculty or "").strip(),
         "email": email_norm,
@@ -974,6 +1141,57 @@ async def scholar_inv_verify_doc(scholar_id: UUID, db: DbDep, user: CurrentUser)
     )
 
 
+@router.post("/{scholar_id}/approve", response_model=ScholarOut)
+async def approve_scholar(scholar_id: UUID, db: DbDep, user: OperatorUser, request: Request):
+    """Mark scholar active in lab (green)."""
+    row = await _get_or_404(db, scholar_id)
+    if row.status == "removed":
+        raise HTTPException(400, "Cannot approve a removed scholar — restore first")
+    row.approved = True
+    row.approved_at = utcnow()
+    await write_audit(
+        db,
+        "scholar.approve",
+        user=user,
+        details={"id": str(row.id), "name": row.full_name},
+        request=request,
+    )
+    await db.commit()
+    await db.refresh(row)
+    lab = await db.get(Lab, row.lab_id)
+    inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
+    return _out(row, lab, inv)
+
+
+@router.post("/{scholar_id}/no-dues", response_model=ScholarOut)
+async def set_scholar_no_dues(
+    scholar_id: UUID,
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    no_dues: str = Form("true"),
+):
+    """Mark no-dues signed (red) or revoke no-dues (clear red)."""
+    row = await _get_or_404(db, scholar_id)
+    if row.status == "removed":
+        raise HTTPException(400, "Cannot change no-dues on a removed scholar")
+    flag = _truthy(no_dues)
+    row.no_dues = flag
+    row.no_dues_at = utcnow() if flag else None
+    await write_audit(
+        db,
+        "scholar.no_dues" if flag else "scholar.no_dues_revoked",
+        user=user,
+        details={"id": str(row.id), "no_dues": flag},
+        request=request,
+    )
+    await db.commit()
+    await db.refresh(row)
+    lab = await db.get(Lab, row.lab_id)
+    inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
+    return _out(row, lab, inv)
+
+
 @router.get("/{scholar_id}", response_model=ScholarOut)
 async def get_scholar(scholar_id: UUID, db: DbDep, user: CurrentUser):
     row = await _get_or_404(db, scholar_id)
@@ -1003,7 +1221,16 @@ async def update_scholar(
     else:
         lab = await db.get(Lab, row.lab_id)
 
-    for key in ("full_name", "scholar_id", "group_name", "faculty", "email", "phone", "notes"):
+    if "scholar_id" in data and data["scholar_id"] is not None:
+        new_sid = str(data["scholar_id"]).strip()
+        await _assert_unique_scholar_id(db, new_sid, exclude_id=row.id)
+        row.scholar_id = new_sid
+    if "bio_id" in data and data["bio_id"] is not None:
+        new_bio = str(data["bio_id"]).strip()
+        await _assert_unique_bio_id(db, row.lab_id, new_bio, exclude_id=row.id)
+        row.bio_id = new_bio
+
+    for key in ("full_name", "group_name", "faculty", "email", "phone", "notes"):
         if key in data and data[key] is not None:
             setattr(row, key, str(data[key]).strip())
 

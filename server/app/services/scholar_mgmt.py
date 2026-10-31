@@ -11,6 +11,7 @@ from openpyxl import Workbook, load_workbook
 
 EXCEL_HEADERS = [
     "Lab Name",
+    "Bio-ID",
     "Name",
     "ID",
     "Group",
@@ -19,11 +20,13 @@ EXCEL_HEADERS = [
     "Inventory IC/Label",
     "Email",
     "Phone",
+    "No Dues",
     "Notes",
 ]
 
 TEMPLATE_EXAMPLE_ROW = [
     "ARCHITECTURE LAB",
+    "1",
     "Ada Example",
     "2026CSZ0001",
     "Ph.D.",
@@ -32,12 +35,16 @@ TEMPLATE_EXAMPLE_ROW = [
     "IRD/3371/2026/1",
     "ada.example@iitd.ac.in",
     "9876543210",
+    "No",
     "sample row — delete before real import",
 ]
 
 FIELD_BY_NORM = {
     "lab name": "lab_name",
     "lab": "lab_name",
+    "bio-id": "bio_id",
+    "bio id": "bio_id",
+    "bioid": "bio_id",
     "name": "full_name",
     "full name": "full_name",
     "id": "scholar_id",
@@ -60,6 +67,9 @@ FIELD_BY_NORM = {
     "phone": "phone",
     "contact": "phone",
     "contact number": "phone",
+    "no dues": "no_dues",
+    "nodues": "no_dues",
+    "no-dues": "no_dues",
     "notes": "notes",
     "remark": "notes",
     "remarks": "notes",
@@ -90,6 +100,7 @@ def parse_yes_no(value: Any) -> bool:
 def row_dict_from_cells(mapping: dict[int, str], cells: list[Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "lab_name": "",
+        "bio_id": "",
         "full_name": "",
         "scholar_id": "",
         "group_name": "",
@@ -98,18 +109,20 @@ def row_dict_from_cells(mapping: dict[int, str], cells: list[Any]) -> dict[str, 
         "inventory_label": "",
         "email": "",
         "phone": "",
+        "no_dues": False,
         "notes": "",
     }
     for idx, field in mapping.items():
         if idx >= len(cells):
             continue
         raw = cells[idx]
-        if field == "system_required":
+        if field in {"system_required", "no_dues"}:
             out[field] = parse_yes_no(raw)
         else:
             out[field] = str(raw or "").strip()
     out["full_name"] = str(out.get("full_name") or "").strip()
     out["lab_name"] = str(out.get("lab_name") or "").strip()
+    out["bio_id"] = str(out.get("bio_id") or "").strip()
     return out
 
 
@@ -126,6 +139,7 @@ def is_example_row(parsed: dict[str, Any]) -> bool:
 def scholar_to_excel_row(item: Any, lab_name: str = "") -> list[Any]:
     return [
         lab_name or getattr(item, "lab_name", "") or "",
+        getattr(item, "bio_id", "") or "",
         getattr(item, "full_name", "") or "",
         getattr(item, "scholar_id", "") or "",
         getattr(item, "group_name", "") or "",
@@ -134,6 +148,7 @@ def scholar_to_excel_row(item: Any, lab_name: str = "") -> list[Any]:
         getattr(item, "inventory_label", "") or "",
         getattr(item, "email", "") or "",
         getattr(item, "phone", "") or "",
+        "Yes" if getattr(item, "no_dues", False) else "No",
         getattr(item, "notes", "") or "",
     ]
 
@@ -199,8 +214,8 @@ def _parse_xlsx(data: bytes) -> list[dict[str, Any]]:
         wb.close()
         raise ValueError("Import file must include 'Lab Name' and 'Name' columns")
     out: list[dict[str, Any]] = []
-    for row in rows_iter:
-        parsed = row_dict_from_cells(mapping, list(row))
+    for cells in rows_iter:
+        parsed = row_dict_from_cells(mapping, list(cells or []))
         if not parsed["full_name"] or is_example_row(parsed):
             continue
         out.append(parsed)
@@ -219,8 +234,8 @@ def _parse_csv(data: bytes) -> list[dict[str, Any]]:
     if "full_name" not in mapping.values() or "lab_name" not in mapping.values():
         raise ValueError("Import file must include 'Lab Name' and 'Name' columns")
     out: list[dict[str, Any]] = []
-    for row in reader:
-        parsed = row_dict_from_cells(mapping, list(row))
+    for cells in reader:
+        parsed = row_dict_from_cells(mapping, list(cells or []))
         if not parsed["full_name"] or is_example_row(parsed):
             continue
         out.append(parsed)

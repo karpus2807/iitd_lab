@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { ago, api, currentUser, downloadFile, getToken } from '../api'
 
 type Lab = {
@@ -16,13 +16,19 @@ type Scholar = {
   lab_room: string
   full_name: string
   scholar_id: string
+  bio_id: string
   group_name: string
   faculty: string
   system_required: boolean
+  approved: boolean
+  approved_at?: string | null
+  no_dues: boolean
+  no_dues_at?: string | null
   inventory_kind: string
   inventory_item_id: string | null
   inventory_label: string
   inventory_item_name: string
+  inventory_assigned_at?: string | null
   email: string
   phone: string
   has_photo: boolean
@@ -32,6 +38,53 @@ type Scholar = {
   removed_at?: string | null
   removed_by?: string | null
   removal_remark?: string | null
+}
+
+type DashLab = {
+  id: string
+  name: string
+  room?: string
+  building?: string
+  scholars: number
+  approved: number
+  pending: number
+  no_dues: number
+  with_inventory: number
+  machines: number
+}
+
+type DashSummary = {
+  scholars: number
+  approved: number
+  pending: number
+  no_dues: number
+  with_inventory: number
+  machines: number
+  labs: DashLab[]
+}
+
+type DashScholar = Scholar & {
+  inventory?: {
+    id: string | null
+    ic_no: string
+    item_name: string
+    inventory_type: string
+    inventory_location: string
+    assigned_to: string
+  } | null
+}
+
+type DashLabDetail = {
+  lab: { id: string; name: string; room?: string; building?: string }
+  machines: number
+  scholars: DashScholar[]
+  counts: {
+    scholars: number
+    approved: number
+    pending: number
+    no_dues: number
+    with_inventory: number
+  }
 }
 
 type InvSuggest = {
@@ -44,6 +97,7 @@ type InvSuggest = {
 const EMPTY = {
   full_name: '',
   scholar_id: '',
+  bio_id: '',
   group_name: 'M.Tech',
   faculty: '',
   system_required: 'no',
@@ -56,6 +110,13 @@ const EMPTY = {
   notes: '',
   require_otp: false,
   verify_method: 'otp' as 'otp' | 'document',
+}
+
+function rowTone(s: Scholar): CSSProperties | undefined {
+  if (s.status === 'removed') return undefined
+  if (s.no_dues) return { background: 'rgba(220, 38, 38, 0.12)' }
+  if (s.approved) return { background: 'rgba(22, 163, 74, 0.12)' }
+  return undefined
 }
 
 function ScholarPhoto({ id }: { id: string }) {
@@ -90,11 +151,14 @@ function ScholarPhoto({ id }: { id: string }) {
 export default function Scholars() {
   const role = currentUser()?.role
   const canEdit = role === 'ADMIN' || role === 'OPERATOR'
-  const [tab, setTab] = useState<'active' | 'removed'>('active')
+  const [tab, setTab] = useState<'dashboard' | 'active' | 'removed'>('dashboard')
   const [labs, setLabs] = useState<Lab[]>([])
   const [labId, setLabId] = useState('')
   const [rows, setRows] = useState<Scholar[]>([])
   const [total, setTotal] = useState(0)
+  const [dash, setDash] = useState<DashSummary | null>(null)
+  const [dashLab, setDashLab] = useState<DashLabDetail | null>(null)
+  const [dashBusy, setDashBusy] = useState(false)
   const [q, setQ] = useState('')
   const [filterGroup, setFilterGroup] = useState('')
   const [filterFaculty, setFilterFaculty] = useState('')
@@ -117,17 +181,9 @@ export default function Scholars() {
   const [otpEmail, setOtpEmail] = useState('')
   const [otpCode, setOtpCode] = useState('')
   const [otpMessage, setOtpMessage] = useState('')
-  const [assignFor, setAssignFor] = useState<Scholar | null>(null)
-  const [assignKind, setAssignKind] = useState<'listed' | 'non_list'>('listed')
-  const [assignItemId, setAssignItemId] = useState('')
-  const [assignLabel, setAssignLabel] = useState('')
-  const [assignSearch, setAssignSearch] = useState('')
-  const [assignSuggest, setAssignSuggest] = useState<InvSuggest[]>([])
-  const [assignMethod, setAssignMethod] = useState<'otp' | 'document'>('otp')
-  const [assignDoc, setAssignDoc] = useState<File | null>(null)
+  const [editFor, setEditFor] = useState<Scholar | null>(null)
   const photoRef = useRef<HTMLInputElement>(null)
   const enrolDocRef = useRef<HTMLInputElement>(null)
-  const assignDocRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const suggestRef = useRef<HTMLDivElement>(null)
 
@@ -143,6 +199,7 @@ export default function Scholars() {
   }, [])
 
   const loadFacets = useCallback(async () => {
+    if (tab === 'dashboard') return
     const qs = new URLSearchParams()
     qs.set('status', tab)
     if (labId) qs.set('lab_id', labId)
@@ -152,6 +209,7 @@ export default function Scholars() {
   }, [labId, tab])
 
   const load = useCallback(async () => {
+    if (tab === 'dashboard') return
     setErr('')
     try {
       const qs = new URLSearchParams()
@@ -180,6 +238,34 @@ export default function Scholars() {
     }
   }, [tab, labId, q, filterGroup, filterFaculty])
 
+  const loadDashboard = useCallback(async () => {
+    setDashBusy(true)
+    setErr('')
+    try {
+      const data = await api<DashSummary>('/api/scholars/dashboard')
+      setDash(data)
+    } catch (e: any) {
+      setErr(e?.message || 'Could not load scholar dashboard')
+      setDash(null)
+    } finally {
+      setDashBusy(false)
+    }
+  }, [])
+
+  async function openDashLab(id: string) {
+    setDashBusy(true)
+    setErr('')
+    try {
+      const data = await api<DashLabDetail>(`/api/scholars/dashboard/${id}`)
+      setDashLab(data)
+    } catch (e: any) {
+      setErr(e?.message || 'Could not load lab scholars')
+      setDashLab(null)
+    } finally {
+      setDashBusy(false)
+    }
+  }
+
   useEffect(() => {
     void loadLabs().catch((e) => setErr(e.message))
   }, [loadLabs])
@@ -189,6 +275,12 @@ export default function Scholars() {
   useEffect(() => {
     void load()
   }, [load])
+  useEffect(() => {
+    if (tab === 'dashboard') {
+      setDashLab(null)
+      void loadDashboard()
+    }
+  }, [tab, loadDashboard])
 
   useEffect(() => {
     if (form.system_required !== 'yes' || form.inventory_mode !== 'listed') {
@@ -210,24 +302,6 @@ export default function Scholars() {
     }, 200)
     return () => window.clearTimeout(t)
   }, [form.inv_search, form.system_required, form.inventory_mode])
-
-  useEffect(() => {
-    if (!assignFor || assignKind !== 'listed') {
-      setAssignSuggest([])
-      return
-    }
-    const needle = assignSearch.trim()
-    if (needle.length < 1) {
-      setAssignSuggest([])
-      return
-    }
-    const t = window.setTimeout(() => {
-      api<InvSuggest[]>(`/api/inventory/suggest?q=${encodeURIComponent(needle)}&limit=15`)
-        .then((rows) => setAssignSuggest(rows || []))
-        .catch(() => setAssignSuggest([]))
-    }, 200)
-    return () => window.clearTimeout(t)
-  }, [assignFor, assignKind, assignSearch])
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -264,6 +338,7 @@ export default function Scholars() {
       fd.append('lab_id', labId)
       fd.append('full_name', form.full_name.trim())
       fd.append('scholar_id', form.scholar_id.trim())
+      fd.append('bio_id', form.bio_id.trim())
       fd.append('group_name', form.group_name.trim())
       fd.append('faculty', form.faculty.trim())
       fd.append('email', form.email.trim())
@@ -435,32 +510,18 @@ export default function Scholars() {
 
   async function onImport(file: File | null) {
     if (!file || !canEdit) return
-    const wantOtp = confirm(
-      'Require email OTP verification for this import?\n\nOK = send OTP to each email (no auto-enrol until verified)\nCancel = import directly with no emails',
-    )
     setBusy(true)
     setErr('')
     setNotice('')
     try {
       const fd = new FormData()
       fd.append('file', file)
-      fd.append('require_otp', wantOtp ? 'true' : 'false')
       const r = await api('/api/scholars/import', { method: 'POST', body: fd })
       setNotice(
         `Import: ${r.created} created · ${r.updated} updated` +
-          (r.pending_otp ? ` · ${r.pending_otp} OTP pending` : '') +
           (r.errors?.length ? ` · ${r.errors.length} errors` : ''),
       )
       if (r.errors?.length) setErr(r.errors.slice(0, 5).join('; '))
-      if (wantOtp && r.otp_challenges?.length) {
-        const first = r.otp_challenges[0]
-        setOtpChallengeId(first.challenge_id)
-        setOtpEmail(first.email)
-        setOtpMessage(
-          `${r.pending_otp} OTP email(s) sent. Enter OTP for ${first.full_name} (${first.email}). Verify others from their emails one by one if needed.`,
-        )
-        setOtpCode('')
-      }
       setTab('active')
       await load()
       await loadFacets()
@@ -472,66 +533,109 @@ export default function Scholars() {
     }
   }
 
-  function openAssign(s: Scholar) {
+  function openEdit(s: Scholar) {
     if (!canEdit) return
-    setAssignFor(s)
-    setAssignKind(s.inventory_kind === 'non_list' ? 'non_list' : 'listed')
-    setAssignItemId(s.inventory_item_id || '')
-    setAssignLabel(s.inventory_label || '')
-    setAssignSearch(s.inventory_kind === 'listed' ? (s.inventory_label || '') : '')
-    setAssignSuggest([])
-    setAssignMethod('otp')
-    setAssignDoc(null)
-    if (assignDocRef.current) assignDocRef.current.value = ''
+    setEditFor(s)
+    setLabId(s.lab_id)
+    setForm({
+      ...EMPTY,
+      full_name: s.full_name || '',
+      scholar_id: s.scholar_id || '',
+      bio_id: s.bio_id || '',
+      group_name: s.group_name || 'M.Tech',
+      faculty: s.faculty || '',
+      system_required: s.system_required ? 'yes' : 'no',
+      inventory_mode: s.inventory_kind === 'non_list' ? 'non_list' : 'listed',
+      inventory_item_id: s.inventory_item_id || '',
+      inventory_label: s.inventory_label || '',
+      inv_search: s.inventory_kind === 'listed' ? (s.inventory_label || '') : (s.inventory_label || ''),
+      email: s.email || '',
+      phone: s.phone || '',
+      notes: s.notes || '',
+    })
+    setEnrollOpen(false)
     setErr('')
     setNotice('')
   }
 
-  async function submitAssign(e: FormEvent) {
+  async function submitEdit(e: FormEvent) {
     e.preventDefault()
-    if (!assignFor || !canEdit) return
-    if (assignKind === 'listed' && !assignItemId) {
-      setErr('Choose an inventory item from search results')
-      return
+    if (!editFor || !canEdit) return
+    setBusy(true)
+    setErr('')
+    try {
+      const sysYes = form.system_required === 'yes'
+      const payload: Record<string, unknown> = {
+        lab_id: labId || editFor.lab_id,
+        full_name: form.full_name.trim(),
+        scholar_id: form.scholar_id.trim(),
+        bio_id: form.bio_id.trim(),
+        group_name: form.group_name.trim(),
+        faculty: form.faculty.trim(),
+        email: form.email.trim(),
+        phone: form.phone.trim(),
+        notes: form.notes.trim(),
+        system_required: sysYes,
+        inventory_kind: sysYes ? (form.inventory_mode === 'listed' ? 'listed' : 'non_list') : 'none',
+        inventory_item_id: sysYes && form.inventory_mode === 'listed' ? form.inventory_item_id || null : null,
+        inventory_label: sysYes
+          ? (form.inventory_mode === 'listed' ? form.inventory_label : (form.inventory_label.trim() || form.inv_search.trim()))
+          : '',
+      }
+      const fd = new FormData()
+      fd.append('payload', JSON.stringify(payload))
+      if (photoFile) fd.append('photo', photoFile)
+      const updated = await api<Scholar>(`/api/scholars/${editFor.id}`, { method: 'PATCH', body: fd })
+      setNotice(`Updated ${updated.full_name}`)
+      setEditFor(null)
+      setForm({ ...EMPTY })
+      setPhotoFile(null)
+      if (photoRef.current) photoRef.current.value = ''
+      await load()
+      await loadFacets()
+    } catch (e: any) {
+      setErr(e?.message || 'Update failed')
+    } finally {
+      setBusy(false)
     }
-    if (assignKind === 'non_list' && !assignLabel.trim()) {
-      setErr('Type a non-list inventory label / IC No.')
-      return
+  }
+
+  async function approveScholar(s: Scholar) {
+    if (!canEdit) return
+    setBusy(true)
+    setErr('')
+    try {
+      await api(`/api/scholars/${s.id}/approve`, { method: 'POST' })
+      setNotice(`Approved ${s.full_name} · active in lab`)
+      await load()
+    } catch (e: any) {
+      setErr(e?.message || 'Approve failed')
+    } finally {
+      setBusy(false)
     }
-    if (assignMethod === 'document' && !assignDoc) {
-      setErr('Upload a PDF verification document')
-      return
-    }
+  }
+
+  async function setNoDues(s: Scholar, flag: boolean) {
+    if (!canEdit) return
     setBusy(true)
     setErr('')
     try {
       const fd = new FormData()
-      fd.append('inventory_kind', assignKind)
-      fd.append('inventory_item_id', assignKind === 'listed' ? assignItemId : '')
-      fd.append('inventory_label', assignKind === 'non_list' ? assignLabel.trim() : assignLabel)
-      fd.append('verify_method', assignMethod)
-      if (assignMethod === 'document' && assignDoc) fd.append('document', assignDoc)
-      const r = await api<any>(`/api/scholars/${assignFor.id}/assign-inventory`, { method: 'POST', body: fd })
-      if (r?.pending_otp) {
-        setOtpChallengeId(r.challenge_id)
-        setOtpEmail(r.email)
-        setOtpMessage(r.message || 'OTP sent for inventory assign')
-        setOtpCode('')
-        setNotice(r.message || 'OTP sent')
-        setAssignFor(null)
-        return
-      }
-      setNotice(r.message || `Inventory assigned for ${r.scholar?.full_name || assignFor.full_name}`)
-      setAssignFor(null)
-      setAssignDoc(null)
-      if (assignDocRef.current) assignDocRef.current.value = ''
+      fd.append('no_dues', flag ? 'true' : 'false')
+      await api(`/api/scholars/${s.id}/no-dues`, { method: 'POST', body: fd })
+      setNotice(flag ? `No dues marked for ${s.full_name}` : `No dues revoked for ${s.full_name}`)
       await load()
-      await loadFacets()
     } catch (e: any) {
-      setErr(e?.message || 'Inventory assign failed')
+      setErr(e?.message || 'No-dues update failed')
     } finally {
       setBusy(false)
     }
+  }
+
+  function openRemoveOne(s: Scholar) {
+    setSelected({ [s.id]: true })
+    setRemoveRemark('')
+    setRemoveOpen(true)
   }
 
   function exportUrl() {
@@ -547,21 +651,185 @@ export default function Scholars() {
         <div>
           <h2>Scholars</h2>
           <p>
-            Enrol M.Tech / Ph.D. / Postdoc / staff · {total} {tab}
-            {canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}
+            {tab === 'dashboard'
+              ? 'Lab-wise scholar counts, inventory assignments, and drill-down'
+              : `Enrol M.Tech / Ph.D. / Postdoc / staff · ${total} ${tab}${canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}`}
           </p>
         </div>
       </div>
 
       <div className="tabs" style={{ marginBottom: 12 }}>
-        <button className={tab === 'active' ? 'active' : ''} onClick={() => { setTab('active'); setSelected({}); setDetail(null) }}>
+        <button
+          className={tab === 'dashboard' ? 'active' : ''}
+          onClick={() => { setTab('dashboard'); setSelected({}); setDetail(null); setEnrollOpen(false); setEditFor(null); setRemoveOpen(false) }}
+        >
+          Dashboard
+        </button>
+        <button className={tab === 'active' ? 'active' : ''} onClick={() => { setTab('active'); setSelected({}); setDetail(null); setDashLab(null) }}>
           Active
         </button>
-        <button className={tab === 'removed' ? 'active' : ''} onClick={() => { setTab('removed'); setSelected({}); setDetail(null) }}>
+        <button className={tab === 'removed' ? 'active' : ''} onClick={() => { setTab('removed'); setSelected({}); setDetail(null); setDashLab(null) }}>
           Removed
         </button>
       </div>
 
+      {err && <p className="err">{err}</p>}
+      {notice && tab !== 'dashboard' && <p className="muted">{notice}</p>}
+
+      {tab === 'dashboard' && (
+        <>
+          {!dash && dashBusy && <p className="muted">Loading scholar dashboard…</p>}
+          {dash && (
+            <>
+              <div className="grid stats">
+                <div className="card stat"><div className="label">Scholars</div><div className="value">{dash.scholars}</div></div>
+                <div className="card stat online"><div className="label">Approved</div><div className="value">{dash.approved}</div></div>
+                <div className="card stat"><div className="label">Pending</div><div className="value">{dash.pending}</div></div>
+                <div className="card stat offline"><div className="label">No dues</div><div className="value">{dash.no_dues}</div></div>
+                <div className="card stat"><div className="label">With inventory</div><div className="value">{dash.with_inventory}</div></div>
+                <div className="card stat"><div className="label">Lab machines</div><div className="value">{dash.machines}</div></div>
+              </div>
+              <div className="split" style={{ marginTop: 16 }}>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Labs</h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Lab</th>
+                        <th>Scholars</th>
+                        <th>Approved</th>
+                        <th>Pending</th>
+                        <th>No dues</th>
+                        <th>Inv assigned</th>
+                        <th>Machines</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dash.labs.map((l) => (
+                        <tr
+                          key={l.id}
+                          className="clickable"
+                          style={dashLab?.lab.id === l.id ? { outline: '1px solid var(--accent, #3b82f6)' } : undefined}
+                          onClick={() => void openDashLab(l.id)}
+                        >
+                          <td>
+                            <strong>{l.name}</strong>
+                            {(l.room || l.building) ? (
+                              <div className="muted" style={{ fontSize: 12 }}>
+                                {[l.building, l.room ? `Room ${l.room}` : ''].filter(Boolean).join(' · ')}
+                              </div>
+                            ) : null}
+                          </td>
+                          <td className="mono">{l.scholars}</td>
+                          <td className="mono">{l.approved}</td>
+                          <td className="mono">{l.pending}</td>
+                          <td className="mono">{l.no_dues}</td>
+                          <td className="mono">{l.with_inventory}</td>
+                          <td className="mono">{l.machines}</td>
+                        </tr>
+                      ))}
+                      {!dash.labs.length && (
+                        <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>No labs yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <div className="section-head" style={{ padding: 16, margin: 0 }}>
+                    <h3 className="section-title" style={{ margin: 0 }}>
+                      {dashLab ? `${dashLab.lab.name} · scholars` : 'Lab detail'}
+                    </h3>
+                    {dashLab && (
+                      <button className="btn secondary" type="button" onClick={() => setDashLab(null)}>Close</button>
+                    )}
+                  </div>
+                  {!dashLab && !dashBusy && (
+                    <p className="muted" style={{ padding: 16, margin: 0 }}>Click a lab to see scholars and assigned inventory.</p>
+                  )}
+                  {dashBusy && !dashLab && <p className="muted" style={{ padding: 16 }}>Loading…</p>}
+                  {dashLab && (
+                    <>
+                      <div className="toolbar" style={{ padding: '0 16px 12px', gap: 12, flexWrap: 'wrap' }}>
+                        <span className="muted">{dashLab.counts.scholars} scholars</span>
+                        <span className="muted">{dashLab.counts.approved} approved</span>
+                        <span className="muted">{dashLab.counts.with_inventory} with inv</span>
+                        <span className="muted">{dashLab.machines} machines in lab</span>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          onClick={() => {
+                            setLabId(dashLab.lab.id)
+                            setTab('active')
+                            setDashLab(null)
+                          }}
+                        >
+                          Open in Active
+                        </button>
+                      </div>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>ID</th>
+                            <th>Bio-ID</th>
+                            <th>Group</th>
+                            <th>Status</th>
+                            <th>Inventory</th>
+                            <th>Assigned</th>
+                            <th>Faculty</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dashLab.scholars.map((s) => (
+                            <tr key={s.id} style={rowTone(s)}>
+                              <td><strong>{s.full_name}</strong></td>
+                              <td className="mono">{s.scholar_id || '—'}</td>
+                              <td className="mono">{s.bio_id || '—'}</td>
+                              <td>{s.group_name || '—'}</td>
+                              <td>
+                                {s.no_dues ? (
+                                  <span className="badge CRITICAL">no dues</span>
+                                ) : s.approved ? (
+                                  <span className="badge ONLINE">active</span>
+                                ) : (
+                                  <span className="badge INFO">pending</span>
+                                )}
+                              </td>
+                              <td>
+                                {!s.inventory ? (
+                                  <span className="muted">—</span>
+                                ) : (
+                                  <>
+                                    <span className="mono">{s.inventory.ic_no || s.inventory_label || '—'}</span>
+                                    {s.inventory.item_name ? (
+                                      <div className="muted" style={{ fontSize: 12 }}>{s.inventory.item_name}</div>
+                                    ) : s.inventory_kind === 'non_list' ? (
+                                      <div className="muted" style={{ fontSize: 12 }}>non-list</div>
+                                    ) : null}
+                                  </>
+                                )}
+                              </td>
+                              <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                                {s.inventory_assigned_at ? ago(s.inventory_assigned_at) : '—'}
+                              </td>
+                              <td>{s.faculty || '—'}</td>
+                            </tr>
+                          ))}
+                          {!dashLab.scholars.length && (
+                            <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No active scholars in this lab.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab !== 'dashboard' && (
       <div className="card toolbar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
           <span className="muted" style={{ fontSize: 12 }}>Lab</span>
@@ -665,8 +933,6 @@ export default function Scholars() {
           {selectedLab.room ? ` · Room ${selectedLab.room}` : ''}
         </p>
       )}
-      {err && <p className="err">{err}</p>}
-      {notice && <p className="muted">{notice}</p>}
 
       {enrollOpen && canEdit && (
         <form className="card" onSubmit={submitEnroll} style={{ marginBottom: 16 }}>
@@ -678,8 +944,12 @@ export default function Scholars() {
               <input id="enrol-name" required style={{ width: '100%' }} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
             </div>
             <div className="field" style={{ marginBottom: 0 }}>
-              <label htmlFor="enrol-id">ID</label>
+              <label htmlFor="enrol-id">ID (school-wide unique)</label>
               <input id="enrol-id" style={{ width: '100%' }} value={form.scholar_id} onChange={(e) => setForm({ ...form, scholar_id: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label htmlFor="enrol-bio">Bio-ID (unique in this lab)</label>
+              <input id="enrol-bio" style={{ width: '100%' }} value={form.bio_id} onChange={(e) => setForm({ ...form, bio_id: e.target.value })} />
             </div>
             <div className="field" style={{ marginBottom: 0 }}>
               <label htmlFor="enrol-group">Group</label>
@@ -817,87 +1087,78 @@ export default function Scholars() {
         </form>
       )}
 
-      {assignFor && canEdit && (
-        <form className="card" onSubmit={submitAssign} style={{ marginBottom: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Assign inventory · {assignFor.full_name}</h3>
-          <p className="muted">Primary: email OTP. Secondary: upload a PDF proof (no OTP).</p>
-          <div className="toolbar" style={{ gap: 16, marginBottom: 12 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <input type="radio" checked={assignKind === 'listed'} onChange={() => { setAssignKind('listed'); setAssignItemId(''); setAssignLabel(''); setAssignSearch('') }} />
-              From Inv list
-            </label>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <input type="radio" checked={assignKind === 'non_list'} onChange={() => { setAssignKind('non_list'); setAssignItemId(''); setAssignSuggest([]) }} />
-              Non-list
-            </label>
-          </div>
-          {assignKind === 'listed' ? (
-            <div className="field" style={{ maxWidth: 480, position: 'relative' }}>
-              <label>Search inventory</label>
-              <input
-                style={{ width: '100%' }}
-                value={assignSearch}
-                onChange={(e) => { setAssignSearch(e.target.value); setAssignItemId(''); setAssignLabel('') }}
-                placeholder="IC No. / name"
-              />
-              {assignSuggest.length > 0 && (
-                <div className="card" style={{ position: 'absolute', zIndex: 20, left: 0, right: 0, top: '100%', marginTop: 4, maxHeight: 220, overflow: 'auto', padding: 0 }}>
-                  {assignSuggest.map((s) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      className="btn secondary"
-                      style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0, border: 'none', borderBottom: '1px solid var(--line)' }}
-                      onClick={() => {
-                        setAssignItemId(s.id)
-                        setAssignLabel(s.ic_no)
-                        setAssignSearch(`${s.ic_no} — ${s.item_name || 'item'}`)
-                        setAssignSuggest([])
-                      }}
-                    >
-                      <strong className="mono">{s.ic_no}</strong>
-                      <div className="muted" style={{ fontSize: 12 }}>{s.item_name || '—'}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {assignItemId ? <p className="muted" style={{ fontSize: 12 }}>Selected · {assignLabel}</p> : null}
+      {editFor && canEdit && (
+        <form className="card" onSubmit={submitEdit} style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Edit · {editFor.full_name}</h3>
+          <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16, alignItems: 'start' }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Lab</label>
+              <select style={{ width: '100%' }} value={labId} onChange={(e) => setLabId(e.target.value)}>
+                {labs.map((l) => (
+                  <option key={l.id} value={l.id}>{labLabel(l)}</option>
+                ))}
+              </select>
             </div>
-          ) : (
-            <label className="field" style={{ maxWidth: 480 }}>
-              Non-list label / IC
-              <input style={{ width: '100%' }} value={assignLabel} onChange={(e) => setAssignLabel(e.target.value)} />
-            </label>
-          )}
-          <div className="toolbar" style={{ gap: 16, margin: '12px 0' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <input type="radio" checked={assignMethod === 'otp'} onChange={() => setAssignMethod('otp')} />
-              Email OTP (primary)
-            </label>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <input type="radio" checked={assignMethod === 'document'} onChange={() => setAssignMethod('document')} />
-              PDF document
-            </label>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Name *</label>
+              <input required style={{ width: '100%' }} value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>ID (school-wide unique)</label>
+              <input style={{ width: '100%' }} value={form.scholar_id} onChange={(e) => setForm({ ...form, scholar_id: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Bio-ID (unique in lab)</label>
+              <input style={{ width: '100%' }} value={form.bio_id} onChange={(e) => setForm({ ...form, bio_id: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Group</label>
+              <input style={{ width: '100%' }} value={form.group_name} onChange={(e) => setForm({ ...form, group_name: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Faculty</label>
+              <input style={{ width: '100%' }} value={form.faculty} onChange={(e) => setForm({ ...form, faculty: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Email</label>
+              <input type="email" style={{ width: '100%' }} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Phone</label>
+              <input style={{ width: '100%' }} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>System required</label>
+              <select style={{ width: '100%' }} value={form.system_required} onChange={(e) => setForm({ ...form, system_required: e.target.value })}>
+                <option value="no">No</option>
+                <option value="yes">Yes</option>
+              </select>
+            </div>
+            {form.system_required === 'yes' && (
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>{form.inventory_mode === 'listed' ? 'Inventory IC' : 'Non-list label'}</label>
+                <input
+                  style={{ width: '100%' }}
+                  value={form.inventory_mode === 'listed' ? form.inv_search : form.inventory_label}
+                  onChange={(e) => {
+                    if (form.inventory_mode === 'listed') setForm({ ...form, inv_search: e.target.value, inventory_label: e.target.value })
+                    else setForm({ ...form, inventory_label: e.target.value })
+                  }}
+                />
+              </div>
+            )}
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Notes</label>
+              <input style={{ width: '100%' }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Photo</label>
+              <input ref={photoRef} type="file" accept="image/*" style={{ width: '100%' }} onChange={(e) => setPhotoFile(e.target.files?.[0] || null)} />
+            </div>
           </div>
-          {assignMethod === 'otp' ? (
-            <p className="muted" style={{ fontSize: 13 }}>
-              OTP goes to {assignFor.email || '— (add email on scholar first, or use PDF verify)'}
-            </p>
-          ) : (
-            <label className="field" style={{ maxWidth: 420 }}>
-              Verification PDF
-              <input
-                ref={assignDocRef}
-                type="file"
-                accept="application/pdf,.pdf"
-                style={{ width: '100%' }}
-                onChange={(e) => setAssignDoc(e.target.files?.[0] || null)}
-              />
-            </label>
-          )}
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" disabled={busy} type="submit">{busy ? 'Saving…' : 'Assign inventory'}</button>
-            <button className="btn secondary" type="button" onClick={() => setAssignFor(null)}>Cancel</button>
+            <button className="btn" disabled={busy} type="submit">{busy ? 'Saving…' : 'Save changes'}</button>
+            <button className="btn secondary" type="button" onClick={() => { setEditFor(null); setForm({ ...EMPTY }) }}>Cancel</button>
           </div>
         </form>
       )}
@@ -959,9 +1220,12 @@ export default function Scholars() {
             <div className="grid" style={{ flex: 1, gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
               <div><div className="muted" style={{ fontSize: 12 }}>Name</div><strong>{detail.full_name}</strong></div>
               <div><div className="muted" style={{ fontSize: 12 }}>ID</div><span className="mono">{detail.scholar_id || '—'}</span></div>
+              <div><div className="muted" style={{ fontSize: 12 }}>Bio-ID</div><span className="mono">{detail.bio_id || '—'}</span></div>
               <div><div className="muted" style={{ fontSize: 12 }}>Lab</div>{detail.lab_name}{detail.lab_room ? ` · Room ${detail.lab_room}` : ''}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Group</div>{detail.group_name || '—'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Faculty</div>{detail.faculty || '—'}</div>
+              <div><div className="muted" style={{ fontSize: 12 }}>Approved</div>{detail.approved ? 'Yes (green)' : 'Pending'}</div>
+              <div><div className="muted" style={{ fontSize: 12 }}>No dues</div>{detail.no_dues ? 'Yes (red)' : 'No'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>System</div>{detail.system_required ? 'Yes' : 'No'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Inventory</div>{detail.inventory_kind === 'none' ? '—' : `${detail.inventory_kind}: ${detail.inventory_label}`}</div>
               <div>
@@ -1010,10 +1274,12 @@ export default function Scholars() {
               <th></th>
               <th>Name</th>
               <th>ID</th>
+              <th>Bio-ID</th>
               <th>Lab</th>
               <th>Group</th>
               <th>Faculty</th>
-              <th>System</th>
+              <th>Status</th>
+              <th>No dues</th>
               <th>Inventory</th>
               {tab === 'removed' ? <th>Removal remark</th> : <th>Email</th>}
               <th></th>
@@ -1021,7 +1287,7 @@ export default function Scholars() {
           </thead>
           <tbody>
             {rows.map((s) => (
-              <tr key={s.id}>
+              <tr key={s.id} style={rowTone(s)}>
                 {canEdit && (
                   <td>
                     <input
@@ -1042,13 +1308,23 @@ export default function Scholars() {
                 <td style={{ width: 52 }}>{s.has_photo ? <ScholarPhoto id={s.id} /> : <span className="muted">—</span>}</td>
                 <td><strong>{s.full_name}</strong></td>
                 <td className="mono">{s.scholar_id || '—'}</td>
+                <td className="mono">{s.bio_id || '—'}</td>
                 <td>
                   {s.lab_name}
                   {s.lab_room ? <div className="muted" style={{ fontSize: 12 }}>Room {s.lab_room}</div> : null}
                 </td>
                 <td>{s.group_name || '—'}</td>
                 <td>{s.faculty || '—'}</td>
-                <td>{s.system_required ? 'Yes' : 'No'}</td>
+                <td>
+                  {s.no_dues ? (
+                    <span className="badge CRITICAL">left / no dues</span>
+                  ) : s.approved ? (
+                    <span className="badge ONLINE">active</span>
+                  ) : (
+                    <span className="badge INFO">pending</span>
+                  )}
+                </td>
+                <td>{s.no_dues ? 'Yes' : 'No'}</td>
                 <td>
                   {s.inventory_kind === 'none' && <span className="muted">—</span>}
                   {s.inventory_kind === 'listed' && <span className="mono">{s.inventory_label}</span>}
@@ -1067,9 +1343,28 @@ export default function Scholars() {
                 <td className="row-actions">
                   <button className="btn secondary" type="button" onClick={() => setDetail(s)}>Details</button>
                   {canEdit && tab === 'active' && (
-                    <button className="btn secondary" type="button" disabled={busy} onClick={() => openAssign(s)}>
-                      Assign inv
-                    </button>
+                    <>
+                      {!s.approved && !s.no_dues && (
+                        <button className="btn" type="button" disabled={busy} onClick={() => void approveScholar(s)}>
+                          Approve
+                        </button>
+                      )}
+                      <button className="btn secondary" type="button" disabled={busy} onClick={() => openEdit(s)}>
+                        Edit
+                      </button>
+                      {!s.no_dues ? (
+                        <button className="btn secondary" type="button" disabled={busy} onClick={() => void setNoDues(s, true)}>
+                          No dues
+                        </button>
+                      ) : (
+                        <button className="btn secondary" type="button" disabled={busy} onClick={() => void setNoDues(s, false)}>
+                          Revoke no dues
+                        </button>
+                      )}
+                      <button className="btn danger" type="button" disabled={busy} onClick={() => openRemoveOne(s)}>
+                        Remove
+                      </button>
+                    </>
                   )}
                   {canEdit && tab === 'removed' && (
                     <>
@@ -1082,7 +1377,7 @@ export default function Scholars() {
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={11} className="muted" style={{ padding: 16 }}>
+                <td colSpan={13} className="muted" style={{ padding: 16 }}>
                   {tab === 'removed'
                     ? 'No removed scholars. Soft-removed enrolments appear here for restore or permanent delete.'
                     : 'No scholars yet. Download template (has example row), fill real data, Import — or Enrol one by one.'}
@@ -1092,6 +1387,7 @@ export default function Scholars() {
           </tbody>
         </table>
       </div>
+      )}
     </>
   )
 }

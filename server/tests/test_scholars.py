@@ -147,6 +147,7 @@ async def test_scholar_template_import_remove_restore_purge(client: AsyncClient,
     ws.append(
         [
             "Import Lab",
+            "7",
             "Real Scholar",
             "IMP-1",
             "M.Tech",
@@ -155,6 +156,7 @@ async def test_scholar_template_import_remove_restore_purge(client: AsyncClient,
             "",
             "real@example.com",
             "111",
+            "No",
             "real row",
         ]
     )
@@ -179,6 +181,9 @@ async def test_scholar_template_import_remove_restore_purge(client: AsyncClient,
         headers=auth_headers,
     )
     item = next(x for x in listed.json()["items"] if x["full_name"] == "Real Scholar")
+    assert item["bio_id"] == "7"
+    assert item["approved"] is True
+    assert item["no_dues"] is False
 
     rem = await client.post(
         "/api/scholars/remove",
@@ -214,6 +219,142 @@ async def test_scholar_template_import_remove_restore_purge(client: AsyncClient,
     assert purged.json()["deleted"] == 1
     gone = await client.get(f"/api/scholars/{item['id']}", headers=auth_headers)
     assert gone.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_scholars_dashboard_summary_and_lab(client: AsyncClient, auth_headers: dict):
+    lab = (
+        await client.post(
+            "/api/labs",
+            headers=auth_headers,
+            json={"name": "Dash Lab", "room": "9"},
+        )
+    ).json()
+    created = await client.post(
+        "/api/scholars",
+        headers=auth_headers,
+        data={
+            "lab_id": str(lab["id"]),
+            "full_name": "Dash Student",
+            "scholar_id": "DASH-1",
+            "bio_id": "42",
+            "system_required": "true",
+            "inventory_kind": "non_list",
+            "inventory_label": "Personal PC",
+            "verify_method": "document",
+            "require_otp": "false",
+        },
+        files={"document": ("proof.pdf", b"%PDF-1.4\nx\n%%EOF\n", "application/pdf")},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json().get("inventory_assigned_at") or created.json().get("inventory_kind") == "non_list"
+
+    summary = await client.get("/api/scholars/dashboard", headers=auth_headers)
+    assert summary.status_code == 200, summary.text
+    body = summary.json()
+    assert body["scholars"] >= 1
+    lab_row = next(x for x in body["labs"] if x["id"] == lab["id"])
+    assert lab_row["scholars"] >= 1
+    assert lab_row["with_inventory"] >= 1
+
+    detail = await client.get(f"/api/scholars/dashboard/{lab['id']}", headers=auth_headers)
+    assert detail.status_code == 200, detail.text
+    d = detail.json()
+    assert d["lab"]["name"] == "Dash Lab"
+    assert any(s["full_name"] == "Dash Student" for s in d["scholars"])
+    student = next(s for s in d["scholars"] if s["full_name"] == "Dash Student")
+    assert student["inventory"]["ic_no"] == "Personal PC"
+    assert student["inventory_assigned_at"]
+
+
+@pytest.mark.asyncio
+async def test_bio_id_per_lab_and_id_school_wide(client: AsyncClient, auth_headers: dict):
+    lab_a = (await client.post("/api/labs", headers=auth_headers, json={"name": "VLSI Lab", "room": "1"})).json()
+    lab_b = (await client.post("/api/labs", headers=auth_headers, json={"name": "MTech Lab", "room": "2"})).json()
+
+    a1 = await client.post(
+        "/api/scholars",
+        headers=auth_headers,
+        data={
+            "lab_id": str(lab_a["id"]),
+            "full_name": "Student A",
+            "scholar_id": "SCH-GLOBAL-1",
+            "bio_id": "1",
+            "system_required": "false",
+            "inventory_kind": "none",
+            "require_otp": "false",
+        },
+    )
+    assert a1.status_code == 200, a1.text
+    assert a1.json()["approved"] is False
+
+    # Same bio-id allowed in another lab
+    b1 = await client.post(
+        "/api/scholars",
+        headers=auth_headers,
+        data={
+            "lab_id": str(lab_b["id"]),
+            "full_name": "Student B",
+            "scholar_id": "SCH-GLOBAL-2",
+            "bio_id": "1",
+            "system_required": "false",
+            "inventory_kind": "none",
+            "require_otp": "false",
+        },
+    )
+    assert b1.status_code == 200, b1.text
+
+    # Same school-wide ID rejected
+    clash = await client.post(
+        "/api/scholars",
+        headers=auth_headers,
+        data={
+            "lab_id": str(lab_b["id"]),
+            "full_name": "Clash",
+            "scholar_id": "SCH-GLOBAL-1",
+            "bio_id": "99",
+            "system_required": "false",
+            "inventory_kind": "none",
+            "require_otp": "false",
+        },
+    )
+    assert clash.status_code == 400
+
+    # Same bio-id in same lab rejected
+    clash_bio = await client.post(
+        "/api/scholars",
+        headers=auth_headers,
+        data={
+            "lab_id": str(lab_a["id"]),
+            "full_name": "Clash Bio",
+            "scholar_id": "SCH-GLOBAL-3",
+            "bio_id": "1",
+            "system_required": "false",
+            "inventory_kind": "none",
+            "require_otp": "false",
+        },
+    )
+    assert clash_bio.status_code == 400
+
+    approved = await client.post(f"/api/scholars/{a1.json()['id']}/approve", headers=auth_headers)
+    assert approved.status_code == 200
+    assert approved.json()["approved"] is True
+
+    dues = await client.post(
+        f"/api/scholars/{a1.json()['id']}/no-dues",
+        headers=auth_headers,
+        data={"no_dues": "true"},
+    )
+    assert dues.status_code == 200
+    assert dues.json()["no_dues"] is True
+
+    revoke = await client.post(
+        f"/api/scholars/{a1.json()['id']}/no-dues",
+        headers=auth_headers,
+        data={"no_dues": "false"},
+    )
+    assert revoke.status_code == 200
+    assert revoke.json()["no_dues"] is False
 
 
 @pytest.mark.asyncio

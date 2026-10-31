@@ -595,6 +595,7 @@ class Scholar(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_scholars_lab_status", "lab_id", "status"),
         Index("ix_scholars_scholar_id", "scholar_id"),
+        Index("ix_scholars_lab_bio", "lab_id", "bio_id"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -602,16 +603,22 @@ class Scholar(Base, TimestampMixin):
         Uuid(as_uuid=True), ForeignKey("labs.id", ondelete="CASCADE"), index=True
     )
     full_name: Mapped[str] = mapped_column(String(255), default="")
-    scholar_id: Mapped[str] = mapped_column(String(120), default="")  # entry / roll / employee id
+    scholar_id: Mapped[str] = mapped_column(String(120), default="")  # school-wide unique ID
+    bio_id: Mapped[str] = mapped_column(String(64), default="")  # unique per lab only
     group_name: Mapped[str] = mapped_column(String(120), default="", index=True)  # M.Tech / Ph.D. / …
     faculty: Mapped[str] = mapped_column(String(255), default="", index=True)
     system_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)  # green — active in lab
+    approved_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    no_dues: Mapped[bool] = mapped_column(Boolean, default=False)  # red — no-dues signed / left
+    no_dues_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     # none | listed | non_list
     inventory_kind: Mapped[str] = mapped_column(String(16), default="none")
     inventory_item_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("inventory_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
     inventory_label: Mapped[str] = mapped_column(String(255), default="")  # IC / free text for non-list
+    inventory_assigned_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     email: Mapped[str] = mapped_column(String(255), default="")
     phone: Mapped[str] = mapped_column(String(64), default="")
     photo_path: Mapped[str] = mapped_column(String(512), default="")  # relative under data/scholar-photos
