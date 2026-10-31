@@ -830,6 +830,7 @@ export default function Scholars() {
       )}
 
       {tab !== 'dashboard' && (
+      <>
       <div className="card toolbar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
           <span className="muted" style={{ fontSize: 12 }}>Lab</span>
@@ -1387,6 +1388,7 @@ export default function Scholars() {
           </tbody>
         </table>
       </div>
+      </>
       )}
     </>
   )

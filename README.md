@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.68](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.68)
+**Latest release:** [v1.1.69](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.69)
 
 ## Agent install (lab PC)
 
@@ -130,12 +130,12 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.68
+git checkout -f v1.1.69
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
 
-Hard-refresh the browser. Recreate **api** for installer/agent pack; **web** for UI.
+Hard-refresh the browser (Ctrl+Shift+R). Recreate **api** for installer/agent pack; **web** serves `docker/web-static` (UI rebuild is in the release tag).
 
 `LABWATCH_PUBLIC_URL` in `.env` must be `http://hobbit2.cse.iitd.ac.in:8080`.
 

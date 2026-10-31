@@ -1,3 +1,3 @@
 """labwatch-agent — lightweight lab hardware monitoring client."""
 
-__version__ = "1.1.68"
+__version__ = "1.1.69"
