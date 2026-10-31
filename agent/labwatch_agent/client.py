@@ -83,8 +83,10 @@ class AgentClient:
         return r.json()
 
     def download_pack(self, pack_path: str = "/agent-pack.tgz") -> bytes:
+        """Fetch agent-pack.tgz (wheels + code). Long timeout — campus links are slow."""
         path = pack_path if pack_path.startswith("/") else f"/{pack_path}"
-        r = self._request("GET", path)
+        # Pack can be tens of MB; default client timeout (20s) is too short on Windows/WAN.
+        r = self._request("GET", path, timeout=httpx.Timeout(600.0, connect=30.0))
         r.raise_for_status()
         return r.content
 

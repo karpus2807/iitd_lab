@@ -3,7 +3,13 @@ from unittest.mock import patch
 
 import pytest
 
-from labwatch_agent.self_update import BACKUP_NAME, _read_version, apply_pack, install_prefix
+from labwatch_agent.self_update import (
+    BACKUP_NAME,
+    NEXT_NAME,
+    _read_version,
+    apply_pack,
+    install_prefix,
+)
 
 
 def test_read_version_from_init(tmp_path: Path):
@@ -72,3 +78,55 @@ def test_apply_pack_rolls_back_when_pip_fails(tmp_path: Path, monkeypatch):
 
     assert (pkg / "keep_me.txt").read_text(encoding="utf-8") == "old"
     assert "1.0.0" in (pkg / "__init__.py").read_text(encoding="utf-8")
+
+
+def test_apply_pack_windows_stages_next_without_touching_live(tmp_path: Path, monkeypatch):
+    """Windows must not overwrite labwatch_agent while the agent process is running."""
+    import io
+    import tarfile
+
+    prefix = tmp_path / "Program Files" / "LabWatch Agent"
+    pkg = prefix / "labwatch_agent"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text('__version__ = "1.0.0"\n', encoding="utf-8")
+    (pkg / "keep_me.txt").write_text("live", encoding="utf-8")
+    venv_py = prefix / "venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_bytes(b"MZ")
+
+    monkeypatch.setattr("labwatch_agent.self_update.install_prefix", lambda: prefix)
+    monkeypatch.setattr("labwatch_agent.self_update._is_windows", lambda: True)
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        def add(name: str, data: bytes):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        add("labwatch_agent/__init__.py", b'__version__ = "1.1.66"\n')
+        add("labwatch_agent/new_file.txt", b"staged")
+        add("requirements.txt", b"unused==0\n")
+        add("wheels/dummy.whl", b"PK\x03\x04")
+    pack = buf.getvalue()
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    with patch("labwatch_agent.self_update.subprocess.run", side_effect=fake_run):
+        ver = apply_pack(pack, target_version="1.1.66")
+
+    assert ver == "1.1.66"
+    # Live tree untouched (avoids WinError 5/32 on locked .py files).
+    assert (pkg / "keep_me.txt").read_text(encoding="utf-8") == "live"
+    assert "1.0.0" in (pkg / "__init__.py").read_text(encoding="utf-8")
+    staged = prefix / NEXT_NAME
+    assert staged.is_dir()
+    assert "1.1.66" in (staged / "__init__.py").read_text(encoding="utf-8")
+    assert (staged / "new_file.txt").read_text(encoding="utf-8") == "staged"
+    assert (prefix / BACKUP_NAME).is_dir()

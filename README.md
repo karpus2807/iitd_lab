@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.65](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.65)
+**Latest release:** [v1.1.66](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.66)
 
 ## Agent install (lab PC)
 
@@ -130,7 +130,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.65
+git checkout -f v1.1.66
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
