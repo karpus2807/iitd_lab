@@ -444,14 +444,15 @@ function Agents() {
   const selectedIds = filtered.filter((a) => selected[a.id]).map((a) => a.id)
   const allFilteredSelected = filtered.length > 0 && filtered.every((a) => selected[a.id])
 
+  // Only show progress for THIS click's queue — never expand to the whole fleet.
   const tracked = useMemo(() => {
-    if (!trackIds.length) return rows.filter((a) => a.update_active || a.update_failed)
+    if (!trackIds.length) return []
     const set = new Set(trackIds)
     return rows.filter((a) => set.has(a.id))
   }, [rows, trackIds])
 
   const batchProgress = useMemo(() => {
-    if (!tracked.length) return null
+    if (!trackIds.length || !tracked.length) return null
     const active = tracked.filter((a) => a.update_active)
     const failed = tracked.filter((a) => a.update_failed || (a.update_status || '').toLowerCase() === 'error')
     const ok = tracked.filter((a) => (a.update_status || '').toLowerCase() === 'ok')
@@ -494,7 +495,7 @@ function Agents() {
     }
   }, [tracked, currentVersion, updateJob, sessionLog])
 
-  const pollUpdates = Boolean(batchProgress?.active) || Boolean(updateJob?.active)
+  const pollUpdates = Boolean(batchProgress?.active)
 
   useEffect(() => {
     if (!pollUpdates) return
@@ -515,32 +516,42 @@ function Agents() {
     })
   }
 
-  async function queueUpdate(ids: string[]) {
-    if (!ids.length) {
+  async function queueUpdate(ids: string[], opts?: { confirmMulti?: boolean }) {
+    const unique = Array.from(new Set(ids.filter(Boolean)))
+    if (!unique.length) {
       setNotice('Select at least one agent first.')
       return
+    }
+    if (opts?.confirmMulti && unique.length > 1) {
+      if (!confirm(`Queue update to latest pack for ${unique.length} selected agents only?\n\nOther agents will not be updated.`)) {
+        return
+      }
     }
     setBusy(true)
     setNotice('')
     try {
+      // Always send explicit IDs — never imply "all agents".
       const r = await api('/api/admin/agents/update', {
         method: 'POST',
-        body: JSON.stringify({ agent_ids: ids }),
+        body: JSON.stringify({ agent_ids: unique }),
       })
-      const queued = r.queued || []
+      const queued = (r.queued || []) as string[]
       const n = queued.length
       const skipped = r.skipped || []
       setTrackIds(queued)
       setSessionLog(
         [
-          `Queued ${n} agent${n === 1 ? '' : 's'} → ${r.target_version}`,
+          `Queued ${n} agent${n === 1 ? '' : 's'} → ${r.target_version} (latest pack, one jump)`,
+          `IDs: ${queued.join(', ')}`,
           skipped.length ? `Skipped: ${skipped.map((s: any) => `${s.id} (${s.reason})`).join(', ')}` : '',
         ]
           .filter(Boolean)
           .join('\n'),
       )
       setNotice(
-        `Queued update to ${r.target_version} for ${n} agent${n === 1 ? '' : 's'}. Progress below updates on each heartbeat.`,
+        n === 1
+          ? `Queued update to ${r.target_version} for 1 agent only. Others untouched.`
+          : `Queued update to ${r.target_version} for ${n} selected agents only. Others untouched.`,
       )
       await load()
     } catch (e: any) {
@@ -564,13 +575,13 @@ function Agents() {
         <button
           className="btn"
           disabled={busy || selectedIds.length === 0}
-          onClick={() => queueUpdate(selectedIds)}
-          title={selectedIds.length ? `Update ${selectedIds.length} selected` : 'Select agents first'}
+          onClick={() => void queueUpdate(selectedIds, { confirmMulti: true })}
+          title={selectedIds.length ? `Update ${selectedIds.length} selected only` : 'Select agents with checkboxes first'}
         >
-          Update all agents{selectedIds.length ? ` (${selectedIds.length})` : ''}
+          Update selected{selectedIds.length ? ` (${selectedIds.length})` : ''}
         </button>
         <span className="muted" style={{ fontSize: 13 }}>
-          Current pack {currentVersion || '…'} · remote update needs agent ≥1.1.40 (one manual reinstall for older hosts).
+          Pack {currentVersion || '…'} · row “Update agent” = that host only · jump to latest (not stepwise) · needs agent ≥1.1.40
         </span>
       </div>
       {notice && (
@@ -708,7 +719,14 @@ function Agents() {
                   </td>
                   <td>{ago(a.last_heartbeat_at)}</td>
                   <td className="row-actions">
-                    <button className="btn secondary" disabled={busy} onClick={() => queueUpdate([a.id])}>Update agent</button>
+                    <button
+                      className="btn secondary"
+                      disabled={busy || active}
+                      title={active ? 'Update already in progress for this agent' : `Update only ${a.hostname || a.agent_id} to ${currentVersion || 'latest'}`}
+                      onClick={() => void queueUpdate([a.id])}
+                    >
+                      Update agent
+                    </button>
                     <button className="btn secondary" onClick={async () => { await api(`/api/admin/agents/${a.id}/approve`, { method: 'POST' }); load() }}>Approve</button>
                     <button className="btn secondary" onClick={async () => { const r = await api(`/api/admin/agents/${a.id}/rotate`, { method: 'POST' }); setSecret(r.agent_secret) }}>Rotate</button>
                     <button className="btn danger" onClick={async () => { await api(`/api/admin/agents/${a.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>

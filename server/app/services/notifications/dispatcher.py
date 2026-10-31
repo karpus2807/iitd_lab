@@ -45,35 +45,38 @@ class DashboardBackend(NotificationBackend):
 
 
 class EmailBackend(NotificationBackend):
+    """Alert emails via Admin → Mail (smtp_config), not a separate env-only path.
+
+    Kept as a NotificationChannel so Admin can toggle EMAIL independently; the
+    original env SMTP fields remain as fallback inside smtp_config.get_smtp_config.
+    """
+
     channel = NotificationChannel.EMAIL.value
 
     async def send(self, db: AsyncSession, title: str, body: str, payload: dict[str, Any]) -> None:
-        from app.config import get_settings
-
-        settings = get_settings()
-        if not settings.smtp_enabled or not settings.smtp_host:
-            logger.info("Email notifications disabled; skipping")
+        cfg = (
+            await db.execute(
+                select(NotificationChannelConfig).where(NotificationChannelConfig.channel == self.channel)
+            )
+        ).scalar_one_or_none()
+        if cfg is not None and not cfg.enabled:
             return
         try:
-            import aiosmtplib
-            from email.message import EmailMessage
+            from app.services.smtp_config import get_smtp_config, send_email
 
-            users = (await db.execute(select(User).where(User.is_active.is_(True), User.role.in_(["ADMIN", "OPERATOR"])))).scalars().all()
-            if not users:
+            smtp = await get_smtp_config(db)
+            if not smtp.get("enabled") or not smtp.get("host"):
+                logger.info("Email notifications skipped — SMTP not enabled (Admin → Mail)")
                 return
-            msg = EmailMessage()
-            msg["From"] = settings.smtp_from
-            msg["To"] = ", ".join(u.email for u in users)
-            msg["Subject"] = f"[LabWatch] {title}"
-            msg.set_content(body)
-            await aiosmtplib.send(
-                msg,
-                hostname=settings.smtp_host,
-                port=settings.smtp_port,
-                username=settings.smtp_username or None,
-                password=settings.smtp_password or None,
-                start_tls=settings.smtp_starttls,
-            )
+            users = (
+                await db.execute(select(User).where(User.is_active.is_(True), User.role.in_(["ADMIN", "OPERATOR"])))
+            ).scalars().all()
+            recipients = [u.email for u in users if (u.email or "").strip()]
+            if not recipients:
+                return
+            subject = f"[LabWatch] {title}"
+            for to in recipients:
+                await send_email(db, to=to, subject=subject, body=body)
         except Exception:
             logger.exception("Email notification failed")
 

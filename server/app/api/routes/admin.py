@@ -208,6 +208,9 @@ async def list_agents(db: DbDep, admin: AdminUser):
     current = server_version
     current_t = _version_tuple(current)
     rows = (await db.execute(select(Agent, Machine).join(Machine, Agent.machine_id == Machine.id))).all()
+    # Drop timed-out in-flight updates so a leftover fleet queue does not look live.
+    _expire_stale_updates([a for a, _m in rows])
+    await db.commit()
     agents = []
     for a, m in rows:
         ver = a.agent_version or ""
@@ -300,6 +303,11 @@ async def list_agents(db: DbDep, admin: AdminUser):
     return {"current_version": current, "agents": agents, "update_job": update_job}
 
 
+# Queued/sent updates older than this are marked error so a prior batch
+# cannot look like a new "update all" run.
+_UPDATE_STALE_AFTER = timedelta(minutes=45)
+
+
 def _queue_agent_update(agent: Agent, target_version: str) -> None:
     agent.update_status = "queued"
     agent.update_requested_at = utcnow()
@@ -308,14 +316,45 @@ def _queue_agent_update(agent: Agent, target_version: str) -> None:
     agent.update_target_version = target_version
 
 
+def _expire_stale_updates(agents: list[Agent]) -> None:
+    now = utcnow()
+    for agent in agents:
+        st = (agent.update_status or "").lower()
+        if st not in _UPDATE_ACTIVE:
+            continue
+        started = agent.update_requested_at
+        if not started:
+            continue
+        try:
+            age = now - started
+        except TypeError:
+            age = now.replace(tzinfo=None) - started.replace(tzinfo=None)
+        if age > _UPDATE_STALE_AFTER:
+            agent.update_status = "error"
+            agent.update_message = "update timed out (stale) — re-queue this agent only"
+
+
 @router.post("/agents/update")
 async def queue_agent_updates(body: AgentUpdateBody, db: DbDep, admin: AdminUser, request: Request):
+    """Queue updates for the given agent IDs only (never auto-selects the fleet).
+
+    Target is always the server's current agent pack version in one jump — not
+    a stepwise climb through intermediate releases.
+    """
     if not body.agent_ids:
         raise HTTPException(400, "Select at least one agent")
+    # De-dupe while preserving order
+    seen: set[UUID] = set()
+    ids: list[UUID] = []
+    for agent_id in body.agent_ids:
+        if agent_id in seen:
+            continue
+        seen.add(agent_id)
+        ids.append(agent_id)
     target = server_version
     queued: list[str] = []
     skipped: list[dict] = []
-    for agent_id in body.agent_ids:
+    for agent_id in ids:
         agent = await db.get(Agent, agent_id)
         if not agent:
             skipped.append({"id": str(agent_id), "reason": "not_found"})
@@ -331,11 +370,11 @@ async def queue_agent_updates(body: AgentUpdateBody, db: DbDep, admin: AdminUser
         db,
         "agent.update_queue",
         user=admin,
-        details={"queued": queued, "skipped": skipped, "target_version": target},
+        details={"queued": queued, "skipped": skipped, "target_version": target, "count": len(queued)},
         request=request,
     )
     await db.commit()
-    return {"ok": True, "queued": queued, "skipped": skipped, "target_version": target}
+    return {"ok": True, "queued": queued, "skipped": skipped, "target_version": target, "count": len(queued)}
 
 
 @router.post("/agents/{agent_id}/update")
