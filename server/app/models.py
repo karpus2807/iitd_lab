@@ -615,6 +615,8 @@ class Scholar(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), default="")
     phone: Mapped[str] = mapped_column(String(64), default="")
     photo_path: Mapped[str] = mapped_column(String(512), default="")  # relative under data/scholar-photos
+    # PDF proof when inventory was assigned via document verify (not OTP)
+    inv_verify_doc_path: Mapped[str] = mapped_column(String(512), default="")
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
     notes: Mapped[str] = mapped_column(Text, default="")
     removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)

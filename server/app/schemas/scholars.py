@@ -23,6 +23,7 @@ class ScholarOut(BaseModel):
     email: str = ""
     phone: str = ""
     has_photo: bool = False
+    has_inv_verify_doc: bool = False
     status: str = "active"
     notes: str = ""
     removed_at: datetime | None = None

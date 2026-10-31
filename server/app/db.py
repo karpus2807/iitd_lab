@@ -101,6 +101,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_agent_update_columns)
         await conn.run_sync(ensure_inventory_assigned_column)
         await conn.run_sync(ensure_scholar_removal_columns)
+        await conn.run_sync(ensure_scholar_inv_verify_doc_column)
         await conn.run_sync(ensure_registration_token_last_used)
 
 
@@ -328,6 +329,20 @@ def ensure_scholar_removal_columns(sync_conn) -> None:
     for name, sql_type in types.items():
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE scholars ADD COLUMN {name} {sql_type}"))
+
+
+def ensure_scholar_inv_verify_doc_column(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "scholars" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("scholars")}
+    if "inv_verify_doc_path" in existing:
+        return
+    sync_conn.execute(
+        text("ALTER TABLE scholars ADD COLUMN inv_verify_doc_path VARCHAR(512) DEFAULT ''")
+    )
 
 
 def ensure_registration_token_last_used(sync_conn) -> None:

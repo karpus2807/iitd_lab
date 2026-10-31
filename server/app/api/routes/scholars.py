@@ -11,6 +11,7 @@ from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
 from app.models import InventoryItem, Lab, Scholar, utcnow
 from app.schemas.scholars import ScholarIdsBody, ScholarListOut, ScholarOut, ScholarRemoveBody
 from app.services import email_otp
+from app.services import inv_verify_docs as inv_docs
 from app.services import scholar_mgmt as xls
 from app.services import scholar_photos as photos
 
@@ -45,6 +46,7 @@ def _out(row: Scholar, lab: Lab | None = None, inv: InventoryItem | None = None)
         email=row.email or "",
         phone=row.phone or "",
         has_photo=bool(row.photo_path),
+        has_inv_verify_doc=bool(getattr(row, "inv_verify_doc_path", None) or ""),
         status=row.status or "active",
         notes=row.notes or "",
         removed_at=row.removed_at,
@@ -443,6 +445,8 @@ async def purge_scholars(body: ScholarIdsBody, db: DbDep, user: OperatorUser, re
             continue
         if row.photo_path:
             photos.delete_photo(row.photo_path)
+        if getattr(row, "inv_verify_doc_path", None):
+            inv_docs.delete_doc(row.inv_verify_doc_path)
         await db.delete(row)
         deleted += 1
     await write_audit(
@@ -462,6 +466,8 @@ async def empty_removed_scholars(db: DbDep, user: OperatorUser, request: Request
     for row in rows:
         if row.photo_path:
             photos.delete_photo(row.photo_path)
+        if getattr(row, "inv_verify_doc_path", None):
+            inv_docs.delete_doc(row.inv_verify_doc_path)
         await db.delete(row)
     deleted = len(rows)
     await write_audit(db, "scholar.empty_removed", user=user, details={"deleted": deleted}, request=request)
@@ -603,12 +609,14 @@ async def enroll_scholar(
     phone: str = Form(""),
     notes: str = Form(""),
     require_otp: str = Form("false"),
+    verify_method: str = Form("otp"),
     photo: UploadFile | None = File(None),
+    document: UploadFile | None = File(None),
 ):
     """Enrol a scholar.
 
-    - Registration OTP is optional (require_otp), unless inventory is being assigned
-      (inv assign OTP is always compulsory).
+    - Plain enrol: OTP optional (require_otp).
+    - Inventory assign: verification required — primary OTP, or secondary PDF document.
     - No automatic mail except when an OTP challenge is created.
     """
     lab = await _lab_or_404(db, lab_id)
@@ -626,9 +634,19 @@ async def enroll_scholar(
     if sys_req and kind not in {"listed", "non_list"}:
         raise HTTPException(400, "System required needs listed or non-list inventory")
 
-    # Inventory assign ⇒ OTP compulsory. Plain enrol ⇒ OTP optional (admin choice).
     assigning_inv = bool(sys_req and kind in {"listed", "non_list"})
-    want_otp = assigning_inv or _truthy(require_otp)
+    method = (verify_method or "otp").strip().lower()
+    if method not in {"otp", "document"}:
+        raise HTTPException(400, "verify_method must be otp or document")
+    if assigning_inv and method == "document":
+        want_otp = False
+        want_doc = True
+    elif assigning_inv:
+        want_otp = True
+        want_doc = False
+    else:
+        want_otp = _truthy(require_otp)
+        want_doc = False
     email_norm = (email or "").strip()
 
     payload = {
@@ -646,20 +664,20 @@ async def enroll_scholar(
         "inventory_label": (inventory_label or "").strip(),
     }
 
+    if assigning_inv:
+        if kind == "listed":
+            if not inv_id:
+                raise HTTPException(400, "Select an inventory item from the list")
+            item = await db.get(InventoryItem, inv_id)
+            if not item or item.status != "active":
+                raise HTTPException(400, "Inventory item not found or removed")
+            payload["inventory_label"] = item.ic_no
+        elif kind == "non_list" and not (inventory_label or "").strip():
+            raise HTTPException(400, "Type a non-list inventory label / IC No.")
+
     if want_otp:
         if not email_norm:
             raise HTTPException(400, "Email is required for OTP verification")
-        # Validate inventory up-front before sending OTP (no DB mutation yet)
-        if assigning_inv:
-            if kind == "listed":
-                if not inv_id:
-                    raise HTTPException(400, "Select an inventory item from the list")
-                item = await db.get(InventoryItem, inv_id)
-                if not item or item.status != "active":
-                    raise HTTPException(400, "Inventory item not found or removed")
-                payload["inventory_label"] = item.ic_no
-            elif kind == "non_list" and not (inventory_label or "").strip():
-                raise HTTPException(400, "Type a non-list inventory label / IC No.")
 
         await email_otp.expire_open_for_email(db, email_otp.PURPOSE_ENROLL, email_norm)
         challenge, code = await email_otp.create_challenge(
@@ -701,8 +719,14 @@ async def enroll_scholar(
             "email": email_norm,
             "purpose": email_otp.PURPOSE_ENROLL,
             "assigning_inventory": assigning_inv,
+            "verify_method": "otp",
             "message": f"OTP sent to {email_norm}. Enrolment completes after verification.",
         }
+
+    if want_doc:
+        if not document or not document.filename:
+            raise HTTPException(400, "Upload a PDF verification document for inventory assign")
+        doc_raw = await document.read()
 
     row = await _finalize_enroll_payload(db, payload)
     if photo and photo.filename:
@@ -712,12 +736,25 @@ async def enroll_scholar(
                 row.photo_path = photos.save_photo(row.id, raw, photo.filename, photo.content_type)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+    if want_doc:
+        try:
+            row.inv_verify_doc_path = inv_docs.save_doc(
+                row.id, doc_raw, document.filename, document.content_type
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     await write_audit(
         db,
-        "scholar.enroll",
+        "scholar.enroll" if not want_doc else "scholar.enroll_doc_verified",
         user=user,
-        details={"id": str(row.id), "lab": lab.name, "name": name, "scholar_id": row.scholar_id},
+        details={
+            "id": str(row.id),
+            "lab": lab.name,
+            "name": name,
+            "scholar_id": row.scholar_id,
+            "verify_method": "document" if want_doc else "none",
+        },
         request=request,
     )
     await db.commit()
@@ -803,7 +840,7 @@ async def verify_scholar_otp(
 
 
 @router.post("/{scholar_id}/assign-inventory")
-async def assign_inventory_with_otp(
+async def assign_inventory_with_verification(
     scholar_id: UUID,
     db: DbDep,
     user: OperatorUser,
@@ -811,14 +848,19 @@ async def assign_inventory_with_otp(
     inventory_kind: str = Form(...),
     inventory_item_id: str = Form(""),
     inventory_label: str = Form(""),
+    verify_method: str = Form("otp"),
+    document: UploadFile | None = File(None),
 ):
-    """Inventory assign always requires OTP to the scholar's email (compulsory)."""
+    """Assign inventory with verification.
+
+    Primary: email OTP. Secondary: upload a PDF proof (faculty mail attachment, etc.).
+    """
     row = await _get_or_404(db, scholar_id)
     if row.status == "removed":
         raise HTTPException(400, "Cannot assign inventory to a removed scholar")
-    email_norm = (row.email or "").strip()
-    if not email_norm:
-        raise HTTPException(400, "Scholar email is required for inventory-assign OTP")
+    method = (verify_method or "otp").strip().lower()
+    if method not in {"otp", "document"}:
+        raise HTTPException(400, "verify_method must be otp or document")
     kind = (inventory_kind or "").strip().lower()
     if kind not in {"listed", "non_list"}:
         raise HTTPException(400, "inventory_kind must be listed or non_list")
@@ -839,6 +881,48 @@ async def assign_inventory_with_otp(
     elif not label:
         raise HTTPException(400, "Type a non-list inventory label / IC No.")
 
+    if method == "document":
+        if not document or not document.filename:
+            raise HTTPException(400, "Upload a PDF verification document")
+        raw = await document.read()
+        try:
+            doc_rel = inv_docs.save_doc(row.id, raw, document.filename, document.content_type)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await _apply_inventory_link(
+            db,
+            row,
+            system_required=True,
+            inventory_kind=kind,
+            inventory_item_id=inv_id,
+            inventory_label=label,
+        )
+        row.inv_verify_doc_path = doc_rel
+        await write_audit(
+            db,
+            "scholar.inv_assign_doc_verified",
+            user=user,
+            details={"scholar_id": str(row.id), "doc": doc_rel, "inventory_kind": kind, "label": label},
+            request=request,
+        )
+        await db.commit()
+        await db.refresh(row)
+        lab = await db.get(Lab, row.lab_id)
+        inv = await db.get(InventoryItem, row.inventory_item_id) if row.inventory_item_id else None
+        return {
+            "ok": True,
+            "pending_otp": False,
+            "verify_method": "document",
+            "scholar": _out(row, lab, inv),
+            "message": "Inventory assigned — verified via uploaded PDF.",
+        }
+
+    email_norm = (row.email or "").strip()
+    if not email_norm:
+        raise HTTPException(
+            400,
+            "Scholar email is required for OTP — or choose document verify and upload a PDF",
+        )
     payload = {
         "scholar_id": str(row.id),
         "inventory_kind": kind,
@@ -872,8 +956,22 @@ async def assign_inventory_with_otp(
         "challenge_id": str(challenge.id),
         "email": email_norm,
         "purpose": email_otp.PURPOSE_INV_ASSIGN,
+        "verify_method": "otp",
         "message": f"OTP sent to {email_norm}. Inventory assigns after verification.",
     }
+
+
+@router.get("/{scholar_id}/inv-verify-doc")
+async def scholar_inv_verify_doc(scholar_id: UUID, db: DbDep, user: CurrentUser):
+    row = await _get_or_404(db, scholar_id)
+    path = inv_docs.resolve_doc(getattr(row, "inv_verify_doc_path", "") or "")
+    if not path:
+        raise HTTPException(404, "No inventory verification document")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=f"inv-verify-{row.scholar_id or row.id}.pdf",
+    )
 
 
 @router.get("/{scholar_id}", response_model=ScholarOut)

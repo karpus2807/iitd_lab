@@ -24,6 +24,7 @@ agent/*.db
 .DS_Store
 state/
 data/scholar-photos/
+data/inv-verify-docs/
 data/postgres/
 data/update-request.json
 data/update-status.json

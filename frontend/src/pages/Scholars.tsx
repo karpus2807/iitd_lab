@@ -26,6 +26,7 @@ type Scholar = {
   email: string
   phone: string
   has_photo: boolean
+  has_inv_verify_doc?: boolean
   status: string
   notes?: string
   removed_at?: string | null
@@ -54,6 +55,7 @@ const EMPTY = {
   phone: '',
   notes: '',
   require_otp: false,
+  verify_method: 'otp' as 'otp' | 'document',
 }
 
 function ScholarPhoto({ id }: { id: string }) {
@@ -110,11 +112,22 @@ export default function Scholars() {
   const [suggestions, setSuggestions] = useState<InvSuggest[]>([])
   const [showSuggest, setShowSuggest] = useState(false)
   const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [enrolDocFile, setEnrolDocFile] = useState<File | null>(null)
   const [otpChallengeId, setOtpChallengeId] = useState('')
   const [otpEmail, setOtpEmail] = useState('')
   const [otpCode, setOtpCode] = useState('')
   const [otpMessage, setOtpMessage] = useState('')
+  const [assignFor, setAssignFor] = useState<Scholar | null>(null)
+  const [assignKind, setAssignKind] = useState<'listed' | 'non_list'>('listed')
+  const [assignItemId, setAssignItemId] = useState('')
+  const [assignLabel, setAssignLabel] = useState('')
+  const [assignSearch, setAssignSearch] = useState('')
+  const [assignSuggest, setAssignSuggest] = useState<InvSuggest[]>([])
+  const [assignMethod, setAssignMethod] = useState<'otp' | 'document'>('otp')
+  const [assignDoc, setAssignDoc] = useState<File | null>(null)
   const photoRef = useRef<HTMLInputElement>(null)
+  const enrolDocRef = useRef<HTMLInputElement>(null)
+  const assignDocRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const suggestRef = useRef<HTMLDivElement>(null)
 
@@ -199,6 +212,24 @@ export default function Scholars() {
   }, [form.inv_search, form.system_required, form.inventory_mode])
 
   useEffect(() => {
+    if (!assignFor || assignKind !== 'listed') {
+      setAssignSuggest([])
+      return
+    }
+    const needle = assignSearch.trim()
+    if (needle.length < 1) {
+      setAssignSuggest([])
+      return
+    }
+    const t = window.setTimeout(() => {
+      api<InvSuggest[]>(`/api/inventory/suggest?q=${encodeURIComponent(needle)}&limit=15`)
+        .then((rows) => setAssignSuggest(rows || []))
+        .catch(() => setAssignSuggest([]))
+    }, 200)
+    return () => window.clearTimeout(t)
+  }, [assignFor, assignKind, assignSearch])
+
+  useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!suggestRef.current?.contains(e.target as Node)) setShowSuggest(false)
     }
@@ -255,9 +286,17 @@ export default function Scholars() {
       } else {
         fd.append('inventory_kind', 'none')
       }
-      // Inv assign ⇒ OTP always; plain enrol ⇒ optional checkbox
-      const forceOtp = sysYes
-      fd.append('require_otp', forceOtp || form.require_otp ? 'true' : 'false')
+      if (sysYes) {
+        fd.append('verify_method', form.verify_method)
+        if (form.verify_method === 'document') {
+          if (!enrolDocFile) throw new Error('Upload a PDF verification document')
+          fd.append('document', enrolDocFile)
+        }
+        fd.append('require_otp', form.verify_method === 'otp' ? 'true' : 'false')
+      } else {
+        fd.append('require_otp', form.require_otp ? 'true' : 'false')
+        fd.append('verify_method', 'otp')
+      }
       if (photoFile) fd.append('photo', photoFile)
       const created = await api<any>('/api/scholars', { method: 'POST', body: fd })
       if (created?.pending_otp) {
@@ -272,7 +311,9 @@ export default function Scholars() {
       setNotice(`Enrolled ${created.full_name}`)
       setForm({ ...EMPTY })
       setPhotoFile(null)
+      setEnrolDocFile(null)
       if (photoRef.current) photoRef.current.value = ''
+      if (enrolDocRef.current) enrolDocRef.current.value = ''
       setEnrollOpen(false)
       setTab('active')
       await load()
@@ -431,34 +472,63 @@ export default function Scholars() {
     }
   }
 
-  async function assignInvWithOtp(s: Scholar) {
+  function openAssign(s: Scholar) {
     if (!canEdit) return
-    const kind = prompt('Inventory kind: listed or non_list', s.inventory_kind === 'listed' ? 'listed' : 'non_list')
-    if (!kind || !['listed', 'non_list'].includes(kind)) return
-    let inventory_item_id = ''
-    let inventory_label = ''
-    if (kind === 'listed') {
-      inventory_item_id = prompt('Inventory item UUID (from Inv Management)', s.inventory_item_id || '') || ''
-      if (!inventory_item_id) return
-    } else {
-      inventory_label = prompt('Non-list inventory label / IC', s.inventory_label || '') || ''
-      if (!inventory_label) return
+    setAssignFor(s)
+    setAssignKind(s.inventory_kind === 'non_list' ? 'non_list' : 'listed')
+    setAssignItemId(s.inventory_item_id || '')
+    setAssignLabel(s.inventory_label || '')
+    setAssignSearch(s.inventory_kind === 'listed' ? (s.inventory_label || '') : '')
+    setAssignSuggest([])
+    setAssignMethod('otp')
+    setAssignDoc(null)
+    if (assignDocRef.current) assignDocRef.current.value = ''
+    setErr('')
+    setNotice('')
+  }
+
+  async function submitAssign(e: FormEvent) {
+    e.preventDefault()
+    if (!assignFor || !canEdit) return
+    if (assignKind === 'listed' && !assignItemId) {
+      setErr('Choose an inventory item from search results')
+      return
+    }
+    if (assignKind === 'non_list' && !assignLabel.trim()) {
+      setErr('Type a non-list inventory label / IC No.')
+      return
+    }
+    if (assignMethod === 'document' && !assignDoc) {
+      setErr('Upload a PDF verification document')
+      return
     }
     setBusy(true)
     setErr('')
     try {
       const fd = new FormData()
-      fd.append('inventory_kind', kind)
-      fd.append('inventory_item_id', inventory_item_id)
-      fd.append('inventory_label', inventory_label)
-      const r = await api<any>(`/api/scholars/${s.id}/assign-inventory`, { method: 'POST', body: fd })
-      setOtpChallengeId(r.challenge_id)
-      setOtpEmail(r.email)
-      setOtpMessage(r.message || 'OTP sent for inventory assign')
-      setOtpCode('')
-      setNotice(r.message || 'OTP sent')
+      fd.append('inventory_kind', assignKind)
+      fd.append('inventory_item_id', assignKind === 'listed' ? assignItemId : '')
+      fd.append('inventory_label', assignKind === 'non_list' ? assignLabel.trim() : assignLabel)
+      fd.append('verify_method', assignMethod)
+      if (assignMethod === 'document' && assignDoc) fd.append('document', assignDoc)
+      const r = await api<any>(`/api/scholars/${assignFor.id}/assign-inventory`, { method: 'POST', body: fd })
+      if (r?.pending_otp) {
+        setOtpChallengeId(r.challenge_id)
+        setOtpEmail(r.email)
+        setOtpMessage(r.message || 'OTP sent for inventory assign')
+        setOtpCode('')
+        setNotice(r.message || 'OTP sent')
+        setAssignFor(null)
+        return
+      }
+      setNotice(r.message || `Inventory assigned for ${r.scholar?.full_name || assignFor.full_name}`)
+      setAssignFor(null)
+      setAssignDoc(null)
+      if (assignDocRef.current) assignDocRef.current.value = ''
+      await load()
+      await loadFacets()
     } catch (e: any) {
-      setErr(e?.message || 'Assign OTP failed')
+      setErr(e?.message || 'Inventory assign failed')
     } finally {
       setBusy(false)
     }
@@ -652,9 +722,43 @@ export default function Scholars() {
               <span>Require email OTP for this enrolment (optional)</span>
             </label>
           ) : (
-            <p className="muted" style={{ margin: '16px 0 0' }}>
-              Inventory assign requires email OTP (compulsory). Enter a valid email above.
-            </p>
+            <div style={{ margin: '16px 0 0' }}>
+              <p className="muted" style={{ marginTop: 0 }}>
+                Inventory assign needs verification — primary email OTP, or secondary PDF proof (faculty mail attachment).
+              </p>
+              <div className="toolbar" style={{ gap: 16, marginBottom: 8 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="radio"
+                    checked={form.verify_method === 'otp'}
+                    onChange={() => setForm({ ...form, verify_method: 'otp' })}
+                  />
+                  Email OTP (primary)
+                </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="radio"
+                    checked={form.verify_method === 'document'}
+                    onChange={() => setForm({ ...form, verify_method: 'document' })}
+                  />
+                  PDF document
+                </label>
+              </div>
+              {form.verify_method === 'otp' ? (
+                <p className="muted" style={{ margin: 0, fontSize: 13 }}>Enter a valid email above — OTP is sent before inventory links.</p>
+              ) : (
+                <label className="field" style={{ marginBottom: 0, maxWidth: 420 }}>
+                  Verification PDF
+                  <input
+                    ref={enrolDocRef}
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    style={{ width: '100%' }}
+                    onChange={(e) => setEnrolDocFile(e.target.files?.[0] || null)}
+                  />
+                </label>
+              )}
+            </div>
           )}
 
           {form.system_required === 'yes' && (
@@ -709,6 +813,91 @@ export default function Scholars() {
           <div className="toolbar" style={{ marginTop: 16, marginBottom: 0, gap: 8 }}>
             <button className="btn" disabled={busy || !labId} type="submit">{busy ? 'Saving…' : 'Save enrolment'}</button>
             <button className="btn secondary" type="button" onClick={() => setEnrollOpen(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {assignFor && canEdit && (
+        <form className="card" onSubmit={submitAssign} style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Assign inventory · {assignFor.full_name}</h3>
+          <p className="muted">Primary: email OTP. Secondary: upload a PDF proof (no OTP).</p>
+          <div className="toolbar" style={{ gap: 16, marginBottom: 12 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input type="radio" checked={assignKind === 'listed'} onChange={() => { setAssignKind('listed'); setAssignItemId(''); setAssignLabel(''); setAssignSearch('') }} />
+              From Inv list
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input type="radio" checked={assignKind === 'non_list'} onChange={() => { setAssignKind('non_list'); setAssignItemId(''); setAssignSuggest([]) }} />
+              Non-list
+            </label>
+          </div>
+          {assignKind === 'listed' ? (
+            <div className="field" style={{ maxWidth: 480, position: 'relative' }}>
+              <label>Search inventory</label>
+              <input
+                style={{ width: '100%' }}
+                value={assignSearch}
+                onChange={(e) => { setAssignSearch(e.target.value); setAssignItemId(''); setAssignLabel('') }}
+                placeholder="IC No. / name"
+              />
+              {assignSuggest.length > 0 && (
+                <div className="card" style={{ position: 'absolute', zIndex: 20, left: 0, right: 0, top: '100%', marginTop: 4, maxHeight: 220, overflow: 'auto', padding: 0 }}>
+                  {assignSuggest.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="btn secondary"
+                      style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0, border: 'none', borderBottom: '1px solid var(--line)' }}
+                      onClick={() => {
+                        setAssignItemId(s.id)
+                        setAssignLabel(s.ic_no)
+                        setAssignSearch(`${s.ic_no} — ${s.item_name || 'item'}`)
+                        setAssignSuggest([])
+                      }}
+                    >
+                      <strong className="mono">{s.ic_no}</strong>
+                      <div className="muted" style={{ fontSize: 12 }}>{s.item_name || '—'}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {assignItemId ? <p className="muted" style={{ fontSize: 12 }}>Selected · {assignLabel}</p> : null}
+            </div>
+          ) : (
+            <label className="field" style={{ maxWidth: 480 }}>
+              Non-list label / IC
+              <input style={{ width: '100%' }} value={assignLabel} onChange={(e) => setAssignLabel(e.target.value)} />
+            </label>
+          )}
+          <div className="toolbar" style={{ gap: 16, margin: '12px 0' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input type="radio" checked={assignMethod === 'otp'} onChange={() => setAssignMethod('otp')} />
+              Email OTP (primary)
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input type="radio" checked={assignMethod === 'document'} onChange={() => setAssignMethod('document')} />
+              PDF document
+            </label>
+          </div>
+          {assignMethod === 'otp' ? (
+            <p className="muted" style={{ fontSize: 13 }}>
+              OTP goes to {assignFor.email || '— (add email on scholar first, or use PDF verify)'}
+            </p>
+          ) : (
+            <label className="field" style={{ maxWidth: 420 }}>
+              Verification PDF
+              <input
+                ref={assignDocRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                style={{ width: '100%' }}
+                onChange={(e) => setAssignDoc(e.target.files?.[0] || null)}
+              />
+            </label>
+          )}
+          <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+            <button className="btn" disabled={busy} type="submit">{busy ? 'Saving…' : 'Assign inventory'}</button>
+            <button className="btn secondary" type="button" onClick={() => setAssignFor(null)}>Cancel</button>
           </div>
         </form>
       )}
@@ -775,6 +964,26 @@ export default function Scholars() {
               <div><div className="muted" style={{ fontSize: 12 }}>Faculty</div>{detail.faculty || '—'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>System</div>{detail.system_required ? 'Yes' : 'No'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Inventory</div>{detail.inventory_kind === 'none' ? '—' : `${detail.inventory_kind}: ${detail.inventory_label}`}</div>
+              <div>
+                <div className="muted" style={{ fontSize: 12 }}>Inv verify doc</div>
+                {detail.has_inv_verify_doc ? (
+                  <a href={`/api/scholars/${detail.id}/inv-verify-doc`} target="_blank" rel="noreferrer" onClick={(e) => {
+                    e.preventDefault()
+                    const token = getToken()
+                    void fetch(`/api/scholars/${detail.id}/inv-verify-doc`, {
+                      headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    }).then(async (res) => {
+                      if (!res.ok) throw new Error('Download failed')
+                      const blob = await res.blob()
+                      const url = URL.createObjectURL(blob)
+                      window.open(url, '_blank')
+                      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+                    }).catch((err) => setErr(err?.message || 'Could not open PDF'))
+                  }}>Open PDF</a>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </div>
               <div><div className="muted" style={{ fontSize: 12 }}>Email</div>{detail.email || '—'}</div>
               <div><div className="muted" style={{ fontSize: 12 }}>Phone</div>{detail.phone || '—'}</div>
               {tab === 'removed' && (
@@ -858,8 +1067,8 @@ export default function Scholars() {
                 <td className="row-actions">
                   <button className="btn secondary" type="button" onClick={() => setDetail(s)}>Details</button>
                   {canEdit && tab === 'active' && (
-                    <button className="btn secondary" type="button" disabled={busy} onClick={() => void assignInvWithOtp(s)}>
-                      Assign inv (OTP)
+                    <button className="btn secondary" type="button" disabled={busy} onClick={() => openAssign(s)}>
+                      Assign inv
                     </button>
                   )}
                   {canEdit && tab === 'removed' && (
