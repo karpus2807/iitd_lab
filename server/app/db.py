@@ -100,6 +100,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_memory_extra_column)
         await conn.run_sync(ensure_agent_update_columns)
         await conn.run_sync(ensure_inventory_assigned_column)
+        await conn.run_sync(ensure_inventory_assign_meta_columns)
         await conn.run_sync(ensure_scholar_removal_columns)
         await conn.run_sync(ensure_scholar_inv_verify_doc_column)
         await conn.run_sync(ensure_scholar_bio_approve_columns)
@@ -306,6 +307,34 @@ def ensure_inventory_assigned_column(sync_conn) -> None:
     existing = {c["name"] for c in insp.get_columns("inventory_items")}
     if "assigned_to" not in existing:
         sync_conn.execute(text("ALTER TABLE inventory_items ADD COLUMN assigned_to VARCHAR(255) DEFAULT ''"))
+
+
+def ensure_inventory_assign_meta_columns(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "inventory_items" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("inventory_items")}
+    if sync_conn.dialect.name == "postgresql":
+        types = {
+            "assigned_scholar_id": "UUID",
+            "assigned_at": "TIMESTAMPTZ",
+            "assigned_by": "VARCHAR(80) DEFAULT ''",
+            "assign_verify_method": "VARCHAR(16) DEFAULT ''",
+            "assign_verify_doc_path": "VARCHAR(512) DEFAULT ''",
+        }
+    else:
+        types = {
+            "assigned_scholar_id": "CHAR(32)",
+            "assigned_at": "DATETIME",
+            "assigned_by": "VARCHAR(80) DEFAULT ''",
+            "assign_verify_method": "VARCHAR(16) DEFAULT ''",
+            "assign_verify_doc_path": "VARCHAR(512) DEFAULT ''",
+        }
+    for name, sql_type in types.items():
+        if name not in existing:
+            sync_conn.execute(text(f"ALTER TABLE inventory_items ADD COLUMN {name} {sql_type}"))
 
 
 def ensure_scholar_removal_columns(sync_conn) -> None:

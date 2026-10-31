@@ -581,7 +581,12 @@ class InventoryItem(Base, TimestampMixin):
     gis_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     inv_type: Mapped[str] = mapped_column(String(64), default="", index=True)  # Institute / IRD / …
     remark: Mapped[str] = mapped_column(Text, default="")
-    assigned_to: Mapped[str] = mapped_column(String(255), default="")  # scholar / person name when issued
+    assigned_to: Mapped[str] = mapped_column(String(255), default="")  # scholar / person / lab owner name
+    assigned_scholar_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    assigned_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    assigned_by: Mapped[str] = mapped_column(String(80), default="")
+    assign_verify_method: Mapped[str] = mapped_column(String(16), default="")  # otp | document | owner
+    assign_verify_doc_path: Mapped[str] = mapped_column(String(512), default="")
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | removed
     removed_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)

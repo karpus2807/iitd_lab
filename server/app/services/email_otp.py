@@ -19,6 +19,8 @@ OTP_MAX_ATTEMPTS = 5
 PURPOSE_ENROLL = "scholar_enroll"
 PURPOSE_IMPORT = "scholar_import"
 PURPOSE_INV_ASSIGN = "inv_assign"
+PURPOSE_INV_ISSUE = "inv_issue"  # Inv Management → assign IC to scholar
+PURPOSE_INV_REVOKE = "inv_revoke"  # Inv Management → lab owner takes back
 
 
 def _hash_code(code: str) -> str:

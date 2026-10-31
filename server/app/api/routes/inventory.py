@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import and_, func, or_, select
 
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
-from app.models import InventoryItem, Lab, Machine, utcnow
+from app.models import InventoryItem, Lab, Machine, Scholar, utcnow
 from app.schemas.inv_mgmt import (
     InventoryBatchUpdate,
     InventoryIdsBody,
@@ -18,9 +18,17 @@ from app.schemas.inv_mgmt import (
     InventoryRemoveBody,
     InventorySuggestItem,
 )
+from app.services import email_otp
+from app.services import inv_assign
 from app.services import inv_mgmt as svc
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
+
+
+def _truthy(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
 def _out(
@@ -51,6 +59,11 @@ def _out(
             "machine_id": machine.id if machine else None,
             "machine_hostname": (machine.hostname or machine.display_name or None) if machine else None,
             "machine_lab_name": lab,
+            "assigned_scholar_id": getattr(row, "assigned_scholar_id", None),
+            "assigned_at": getattr(row, "assigned_at", None),
+            "assigned_by": getattr(row, "assigned_by", None) or "",
+            "assign_verify_method": getattr(row, "assign_verify_method", None) or "",
+            "has_assign_verify_doc": bool(getattr(row, "assign_verify_doc_path", None) or ""),
         }
     )
 
@@ -631,6 +644,380 @@ async def empty_removed_inventory(db: DbDep, user: OperatorUser, request: Reques
     )
     await db.commit()
     return {"ok": True, "deleted": deleted}
+
+
+@router.get("/dashboard")
+async def inventory_dashboard(db: DbDep, user: CurrentUser):
+    """Per-lab inventory counts (similar to scholars dashboard)."""
+    labs = (
+        await db.execute(
+            select(Lab).where(func.lower(Lab.name) != "unassigned").order_by(Lab.name.asc())
+        )
+    ).scalars().all()
+    active = InventoryItem.status == "active"
+    total = (await db.execute(select(func.count()).select_from(InventoryItem).where(active))).scalar_one()
+    assigned = (
+        await db.execute(
+            select(func.count())
+            .select_from(InventoryItem)
+            .where(
+                active,
+                or_(
+                    InventoryItem.assigned_scholar_id.is_not(None),
+                    and_(InventoryItem.assigned_to.is_not(None), InventoryItem.assigned_to != ""),
+                ),
+            )
+        )
+    ).scalar_one()
+    machines_total = (await db.execute(select(func.count()).select_from(Machine))).scalar_one()
+    lab_rows = []
+    for lab in labs:
+        loc = lab.name.strip().lower()
+        in_lab = or_(
+            func.lower(InventoryItem.inventory_location) == loc,
+            InventoryItem.ic_no.in_(
+                select(Machine.inventory_id).where(
+                    Machine.lab_id == lab.id, Machine.inventory_id.is_not(None)
+                )
+            ),
+        )
+        s_count = (
+            await db.execute(select(func.count()).select_from(InventoryItem).where(active, in_lab))
+        ).scalar_one()
+        s_assigned = (
+            await db.execute(
+                select(func.count())
+                .select_from(InventoryItem)
+                .where(
+                    active,
+                    in_lab,
+                    or_(
+                        InventoryItem.assigned_scholar_id.is_not(None),
+                        and_(InventoryItem.assigned_to.is_not(None), InventoryItem.assigned_to != ""),
+                    ),
+                )
+            )
+        ).scalar_one()
+        m_count = (
+            await db.execute(select(func.count()).select_from(Machine).where(Machine.lab_id == lab.id))
+        ).scalar_one()
+        lab_rows.append(
+            {
+                "id": str(lab.id),
+                "name": lab.name,
+                "room": lab.room or "",
+                "building": lab.building or "",
+                "incharge": lab.incharge or "",
+                "items": s_count,
+                "assigned": s_assigned,
+                "unassigned": max(0, s_count - s_assigned),
+                "machines": m_count,
+            }
+        )
+    return {
+        "items": total,
+        "assigned": assigned,
+        "unassigned": max(0, total - assigned),
+        "machines": machines_total,
+        "labs": lab_rows,
+    }
+
+
+@router.get("/dashboard/{lab_id}")
+async def inventory_dashboard_lab(lab_id: UUID, db: DbDep, user: CurrentUser):
+    lab = await db.get(Lab, lab_id)
+    if not lab:
+        raise HTTPException(404, "Lab not found")
+    loc = lab.name.strip().lower()
+    in_lab = or_(
+        func.lower(InventoryItem.inventory_location) == loc,
+        InventoryItem.ic_no.in_(
+            select(Machine.inventory_id).where(Machine.lab_id == lab.id, Machine.inventory_id.is_not(None))
+        ),
+    )
+    rows = (
+        await db.execute(
+            select(InventoryItem)
+            .where(InventoryItem.status == "active", in_lab)
+            .order_by(InventoryItem.ic_no.asc())
+        )
+    ).scalars().all()
+    links = await _machines_by_ic(db, [r.ic_no for r in rows])
+    items = [_link_out(r, links) for r in rows]
+    return {
+        "lab": {
+            "id": str(lab.id),
+            "name": lab.name,
+            "room": lab.room or "",
+            "building": lab.building or "",
+            "incharge": lab.incharge or "",
+            "email": lab.email or "",
+        },
+        "items": [i.model_dump(mode="json") for i in items],
+        "counts": {
+            "items": len(items),
+            "assigned": sum(1 for i in items if i.assigned),
+            "unassigned": sum(1 for i in items if not i.assigned),
+        },
+    }
+
+
+@router.get("/assignee-search")
+async def inventory_assignee_search(
+    db: DbDep,
+    user: CurrentUser,
+    q: str = Query("", min_length=0),
+    limit: int = Query(20, ge=1, le=50),
+):
+    return await inv_assign.search_assignees(db, q, limit=limit)
+
+
+@router.get("/assigned-search")
+async def inventory_assigned_search(
+    db: DbDep,
+    user: CurrentUser,
+    q: str = Query("", min_length=0),
+    limit: int = Query(20, ge=1, le=50),
+):
+    return await inv_assign.search_assigned(db, q, limit=limit)
+
+
+@router.post("/assign")
+async def inventory_assign_start(
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    item_id: UUID = Form(...),
+    scholar_id: UUID = Form(...),
+    verify_method: str = Form("otp"),
+    document: UploadFile | None = File(None),
+):
+    """Assign inventory to a scholar. Primary OTP to scholar email, or PDF document."""
+    item = await _get_or_404(db, item_id)
+    if item.status != "active":
+        raise HTTPException(400, "Cannot assign a removed inventory item")
+    scholar = await db.get(Scholar, scholar_id)
+    if not scholar or scholar.status != "active":
+        raise HTTPException(400, "Scholar not found or not active")
+    method = (verify_method or "otp").strip().lower()
+    if method not in {"otp", "document"}:
+        raise HTTPException(400, "verify_method must be otp or document")
+
+    if method == "document":
+        if not document or not document.filename:
+            raise HTTPException(400, "Upload a PDF verification document")
+        raw = await document.read()
+        try:
+            doc_rel = inv_assign.save_assign_doc(
+                item.id, raw, document.filename, document.content_type
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        await inv_assign.apply_assign_to_scholar(
+            db, item, scholar, via="document", by=user.username, doc_path=doc_rel
+        )
+        await write_audit(
+            db,
+            "inventory.assign_doc",
+            user=user,
+            details={"item_id": str(item.id), "ic_no": item.ic_no, "scholar_id": str(scholar.id)},
+            request=request,
+        )
+        await db.commit()
+        links = await _machines_by_ic(db, [item.ic_no])
+        return {
+            "ok": True,
+            "pending_otp": False,
+            "verify_method": "document",
+            "item": _link_out(item, links).model_dump(mode="json"),
+            "message": f"Assigned {item.ic_no} to {scholar.full_name} (PDF verified).",
+        }
+
+    email = (scholar.email or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(
+            400,
+            "Scholar email is required for OTP assign — add email on the scholar record, or use PDF verify",
+        )
+    payload = {
+        "item_id": str(item.id),
+        "scholar_id": str(scholar.id),
+        "ic_no": item.ic_no,
+    }
+    await email_otp.expire_open_for_email(db, email_otp.PURPOSE_INV_ISSUE, email)
+    challenge, code = await email_otp.create_challenge(
+        db,
+        purpose=email_otp.PURPOSE_INV_ISSUE,
+        email=email,
+        payload=payload,
+        created_by=user.username,
+    )
+    try:
+        await email_otp.send_otp_mail(
+            db,
+            to=email,
+            code=code,
+            context=f"inventory assign · {item.ic_no} → {scholar.full_name}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Could not send OTP email: {exc}") from exc
+    await write_audit(
+        db,
+        "inventory.assign_otp_sent",
+        user=user,
+        details={"item_id": str(item.id), "challenge_id": str(challenge.id), "email": email},
+        request=request,
+    )
+    await db.commit()
+    return {
+        "pending_otp": True,
+        "challenge_id": str(challenge.id),
+        "email": email,
+        "verify_method": "otp",
+        "message": f"OTP sent to {email}. Inventory assigns after the scholar shares the code.",
+    }
+
+
+@router.post("/assign/verify-otp")
+async def inventory_assign_verify_otp(
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    challenge_id: UUID = Form(...),
+    code: str = Form(...),
+):
+    try:
+        challenge = await email_otp.verify_challenge(
+            db, challenge_id=challenge_id, code=code, purpose=email_otp.PURPOSE_INV_ISSUE
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    payload = dict(challenge.payload or {})
+    item = await _get_or_404(db, UUID(str(payload["item_id"])))
+    scholar = await db.get(Scholar, UUID(str(payload["scholar_id"])))
+    if not scholar or scholar.status != "active":
+        raise HTTPException(400, "Scholar no longer available")
+    await inv_assign.apply_assign_to_scholar(
+        db, item, scholar, via="otp", by=user.username
+    )
+    await write_audit(
+        db,
+        "inventory.assign_otp_verified",
+        user=user,
+        details={"item_id": str(item.id), "scholar_id": str(scholar.id)},
+        request=request,
+    )
+    await db.commit()
+    links = await _machines_by_ic(db, [item.ic_no])
+    return {
+        "ok": True,
+        "item": _link_out(item, links).model_dump(mode="json"),
+        "message": f"Assigned {item.ic_no} to {scholar.full_name}.",
+    }
+
+
+@router.post("/revoke")
+async def inventory_revoke_start(
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    item_id: UUID = Form(...),
+):
+    """Start revoke: OTP to lab owner (incharge email) who takes the inventory back."""
+    item = await _get_or_404(db, item_id)
+    if item.status != "active":
+        raise HTTPException(400, "Cannot revoke a removed inventory item")
+    if not svc.is_assigned_item(item) and not item.assigned_scholar_id:
+        raise HTTPException(400, "Inventory is not currently assigned")
+    lab = await inv_assign.lab_for_inventory(db, item)
+    if not lab:
+        raise HTTPException(400, "Could not resolve lab owner for this inventory item")
+    email = (lab.email or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(
+            400,
+            f"Lab '{lab.name}' has no owner email — set Lab incharge email under Labs first",
+        )
+    payload = {
+        "item_id": str(item.id),
+        "lab_id": str(lab.id),
+        "ic_no": item.ic_no,
+        "owner_name": (lab.incharge or "").strip(),
+    }
+    await email_otp.expire_open_for_email(db, email_otp.PURPOSE_INV_REVOKE, email)
+    challenge, code = await email_otp.create_challenge(
+        db,
+        purpose=email_otp.PURPOSE_INV_REVOKE,
+        email=email,
+        payload=payload,
+        created_by=user.username,
+    )
+    try:
+        await email_otp.send_otp_mail(
+            db,
+            to=email,
+            code=code,
+            context=f"inventory revoke / owner takeover · {item.ic_no} · {lab.name}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Could not send OTP email: {exc}") from exc
+    await write_audit(
+        db,
+        "inventory.revoke_otp_sent",
+        user=user,
+        details={
+            "item_id": str(item.id),
+            "lab_id": str(lab.id),
+            "challenge_id": str(challenge.id),
+            "email": email,
+        },
+        request=request,
+    )
+    await db.commit()
+    return {
+        "pending_otp": True,
+        "challenge_id": str(challenge.id),
+        "email": email,
+        "owner_name": lab.incharge or "",
+        "lab_name": lab.name,
+        "message": f"OTP sent to lab owner {lab.incharge or email} ({email}). Enter code to transfer inventory to owner.",
+    }
+
+
+@router.post("/revoke/verify-otp")
+async def inventory_revoke_verify_otp(
+    db: DbDep,
+    user: OperatorUser,
+    request: Request,
+    challenge_id: UUID = Form(...),
+    code: str = Form(...),
+):
+    try:
+        challenge = await email_otp.verify_challenge(
+            db, challenge_id=challenge_id, code=code, purpose=email_otp.PURPOSE_INV_REVOKE
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    payload = dict(challenge.payload or {})
+    item = await _get_or_404(db, UUID(str(payload["item_id"])))
+    lab = await db.get(Lab, UUID(str(payload["lab_id"])))
+    if not lab:
+        raise HTTPException(400, "Lab no longer available")
+    await inv_assign.apply_revoke_to_owner(db, item, lab, by=user.username)
+    await write_audit(
+        db,
+        "inventory.revoke_otp_verified",
+        user=user,
+        details={"item_id": str(item.id), "lab_id": str(lab.id), "owner": lab.incharge},
+        request=request,
+    )
+    await db.commit()
+    links = await _machines_by_ic(db, [item.ic_no])
+    return {
+        "ok": True,
+        "item": _link_out(item, links).model_dump(mode="json"),
+        "message": f"{item.ic_no} transferred to lab owner {lab.incharge or lab.name}.",
+    }
 
 
 @router.post("", response_model=InventoryItemOut)

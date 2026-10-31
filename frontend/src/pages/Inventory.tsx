@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ago, api, currentUser, downloadFile } from '../api'
 
+type InvTab = 'dashboard' | 'active' | 'assign' | 'revoke' | 'removed'
+
 type InvItem = {
   id: string
   ic_no: string
@@ -13,6 +15,10 @@ type InvItem = {
   inv_type: string
   remark: string
   assigned_to?: string
+  assigned_scholar_id?: string | null
+  assigned_at?: string | null
+  assigned_by?: string
+  assign_verify_method?: string
   status: string
   removed_at?: string | null
   removed_by?: string | null
@@ -21,6 +27,49 @@ type InvItem = {
   assigned?: boolean
   machine_id?: string | null
   machine_hostname?: string | null
+}
+
+type DashLab = {
+  id: string
+  name: string
+  room?: string
+  building?: string
+  incharge?: string
+  items: number
+  assigned: number
+  unassigned: number
+  machines: number
+}
+
+type DashSummary = {
+  items: number
+  assigned: number
+  unassigned: number
+  machines: number
+  labs: DashLab[]
+}
+
+type AssigneeHit = {
+  type: 'scholar' | 'machine'
+  id: string
+  label: string
+  scholar_id?: string
+  bio_id?: string
+  email?: string
+  has_email?: boolean
+  inventory_id?: string
+  lab_id?: string
+  lab_name?: string
+}
+
+type AssignedHit = {
+  item_id: string
+  ic_no: string
+  item_name: string
+  assigned_to: string
+  assigned_at?: string | null
+  scholar?: { id: string; full_name: string; scholar_id: string; bio_id: string; email: string } | null
+  owner?: { lab_id: string; lab_name: string; incharge: string; email: string; phone: string } | null
 }
 
 type Suggest = {
@@ -74,7 +123,7 @@ function LinkStatus({ item }: { item: InvItem }) {
 export default function Inventory() {
   const role = currentUser()?.role
   const canEdit = role === 'ADMIN' || role === 'OPERATOR'
-  const [tab, setTab] = useState<'active' | 'removed'>('active')
+  const [tab, setTab] = useState<InvTab>('dashboard')
   const [rows, setRows] = useState<InvItem[]>([])
   const [total, setTotal] = useState(0)
   const [q, setQ] = useState('')
@@ -103,12 +152,33 @@ export default function Inventory() {
   })
   const [removeOpen, setRemoveOpen] = useState(false)
   const [removeRemark, setRemoveRemark] = useState('')
+  const [dash, setDash] = useState<DashSummary | null>(null)
+  const [dashLabItems, setDashLabItems] = useState<{ lab: DashLab & { email?: string }; items: InvItem[]; counts: { items: number; assigned: number; unassigned: number } } | null>(null)
+  const [invQ, setInvQ] = useState('')
+  const [invHits, setInvHits] = useState<Suggest[]>([])
+  const [pickedInv, setPickedInv] = useState<Suggest | null>(null)
+  const [assigneeQ, setAssigneeQ] = useState('')
+  const [assigneeHits, setAssigneeHits] = useState<AssigneeHit[]>([])
+  const [pickedScholar, setPickedScholar] = useState<AssigneeHit | null>(null)
+  const [assignMethod, setAssignMethod] = useState<'otp' | 'document'>('otp')
+  const [assignDoc, setAssignDoc] = useState<File | null>(null)
+  const [otpChallengeId, setOtpChallengeId] = useState('')
+  const [otpEmail, setOtpEmail] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [otpMessage, setOtpMessage] = useState('')
+  const [otpKind, setOtpKind] = useState<'assign' | 'revoke' | ''>('')
+  const [revokeQ, setRevokeQ] = useState('')
+  const [revokeHits, setRevokeHits] = useState<AssignedHit[]>([])
+  const [pickedRevoke, setPickedRevoke] = useState<AssignedHit | null>(null)
   const suggestRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const assignDocRef = useRef<HTMLInputElement>(null)
+  const listTabs = tab === 'active' || tab === 'removed'
 
   const filtersActive = !!(filterType || filterLocation || filterInvType || (filterLink && filterLink !== 'any'))
 
   const loadFacets = useCallback(async () => {
+    if (!listTabs) return
     try {
       const data = await api<{
         inventory_types: string[]
@@ -123,9 +193,10 @@ export default function Inventory() {
       setFacetLocations([])
       setFacetInvTypes([])
     }
-  }, [tab])
+  }, [tab, listTabs])
 
   const load = useCallback(async () => {
+    if (!listTabs) return
     setErr('')
     try {
       const qs = new URLSearchParams()
@@ -151,7 +222,34 @@ export default function Inventory() {
       setRows([])
       setTotal(0)
     }
-  }, [tab, q, filterType, filterLocation, filterInvType, filterLink])
+  }, [tab, q, filterType, filterLocation, filterInvType, filterLink, listTabs])
+
+  const loadDashboard = useCallback(async () => {
+    setBusy(true)
+    setErr('')
+    try {
+      setDash(await api<DashSummary>('/api/inventory/dashboard'))
+    } catch (e: any) {
+      setErr(e?.message || 'Could not load inventory dashboard')
+      setDash(null)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  async function openDashLab(id: string) {
+    setBusy(true)
+    setErr('')
+    try {
+      const data = await api<any>(`/api/inventory/dashboard/${id}`)
+      setDashLabItems(data)
+    } catch (e: any) {
+      setErr(e?.message || 'Could not load lab inventory')
+      setDashLabItems(null)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -160,6 +258,13 @@ export default function Inventory() {
   useEffect(() => {
     void loadFacets()
   }, [loadFacets])
+
+  useEffect(() => {
+    if (tab === 'dashboard') {
+      setDashLabItems(null)
+      void loadDashboard()
+    }
+  }, [tab, loadDashboard])
 
   useEffect(() => {
     const needle = q.trim()
@@ -177,6 +282,47 @@ export default function Inventory() {
     }, 220)
     return () => window.clearTimeout(t)
   }, [q, tab])
+
+  useEffect(() => {
+    if (tab !== 'assign') return
+    const needle = invQ.trim()
+    if (needle.length < 1) {
+      setInvHits([])
+      return
+    }
+    const t = window.setTimeout(() => {
+      api<Suggest[]>(`/api/inventory/suggest?q=${encodeURIComponent(needle)}&limit=15`)
+        .then((rows) => setInvHits(rows || []))
+        .catch(() => setInvHits([]))
+    }, 200)
+    return () => window.clearTimeout(t)
+  }, [invQ, tab])
+
+  useEffect(() => {
+    if (tab !== 'assign') return
+    const needle = assigneeQ.trim()
+    if (needle.length < 1) {
+      setAssigneeHits([])
+      return
+    }
+    const t = window.setTimeout(() => {
+      api<AssigneeHit[]>(`/api/inventory/assignee-search?q=${encodeURIComponent(needle)}&limit=20`)
+        .then((rows) => setAssigneeHits(rows || []))
+        .catch(() => setAssigneeHits([]))
+    }, 200)
+    return () => window.clearTimeout(t)
+  }, [assigneeQ, tab])
+
+  useEffect(() => {
+    if (tab !== 'revoke') return
+    const needle = revokeQ.trim()
+    const t = window.setTimeout(() => {
+      api<AssignedHit[]>(`/api/inventory/assigned-search?q=${encodeURIComponent(needle)}&limit=20`)
+        .then((rows) => setRevokeHits(rows || []))
+        .catch(() => setRevokeHits([]))
+    }, 200)
+    return () => window.clearTimeout(t)
+  }, [revokeQ, tab])
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -419,41 +565,373 @@ export default function Inventory() {
     }
   }
 
+  async function submitAssign(e: FormEvent) {
+    e.preventDefault()
+    if (!canEdit || !pickedInv || !pickedScholar || pickedScholar.type !== 'scholar') {
+      setErr('Pick an inventory IC and a scholar')
+      return
+    }
+    if (assignMethod === 'otp' && !pickedScholar.has_email) {
+      setErr('Scholar has no email — use PDF verification or add email on Scholars first')
+      return
+    }
+    if (assignMethod === 'document' && !assignDoc) {
+      setErr('Upload a PDF verification document')
+      return
+    }
+    setBusy(true)
+    setErr('')
+    setNotice('')
+    try {
+      const fd = new FormData()
+      fd.append('item_id', pickedInv.id)
+      fd.append('scholar_id', pickedScholar.id)
+      fd.append('verify_method', assignMethod)
+      if (assignMethod === 'document' && assignDoc) fd.append('document', assignDoc)
+      const r = await api<any>('/api/inventory/assign', { method: 'POST', body: fd })
+      if (r.pending_otp) {
+        setOtpChallengeId(r.challenge_id)
+        setOtpEmail(r.email)
+        setOtpMessage(r.message || 'OTP sent')
+        setOtpKind('assign')
+        setOtpCode('')
+        setNotice(r.message)
+        return
+      }
+      setNotice(r.message || 'Assigned')
+      setPickedInv(null)
+      setPickedScholar(null)
+      setInvQ('')
+      setAssigneeQ('')
+      setAssignDoc(null)
+      if (assignDocRef.current) assignDocRef.current.value = ''
+    } catch (e: any) {
+      setErr(e?.message || 'Assign failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitRevoke(e: FormEvent) {
+    e.preventDefault()
+    if (!canEdit || !pickedRevoke) {
+      setErr('Select an assigned inventory item')
+      return
+    }
+    if (!pickedRevoke.owner?.email) {
+      setErr('Lab owner email missing — set email on the Lab (incharge) first')
+      return
+    }
+    setBusy(true)
+    setErr('')
+    setNotice('')
+    try {
+      const fd = new FormData()
+      fd.append('item_id', pickedRevoke.item_id)
+      const r = await api<any>('/api/inventory/revoke', { method: 'POST', body: fd })
+      setOtpChallengeId(r.challenge_id)
+      setOtpEmail(r.email)
+      setOtpMessage(r.message || 'OTP sent to lab owner')
+      setOtpKind('revoke')
+      setOtpCode('')
+      setNotice(r.message)
+    } catch (e: any) {
+      setErr(e?.message || 'Revoke start failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitOtp(e: FormEvent) {
+    e.preventDefault()
+    if (!otpChallengeId || !otpCode.trim() || !otpKind) return
+    setBusy(true)
+    setErr('')
+    try {
+      const fd = new FormData()
+      fd.append('challenge_id', otpChallengeId)
+      fd.append('code', otpCode.trim())
+      const path = otpKind === 'assign' ? '/api/inventory/assign/verify-otp' : '/api/inventory/revoke/verify-otp'
+      const r = await api<any>(path, { method: 'POST', body: fd })
+      setNotice(r.message || 'Verified')
+      setOtpChallengeId('')
+      setOtpCode('')
+      setOtpEmail('')
+      setOtpMessage('')
+      setOtpKind('')
+      if (otpKind === 'assign') {
+        setPickedInv(null)
+        setPickedScholar(null)
+        setInvQ('')
+        setAssigneeQ('')
+      } else {
+        setPickedRevoke(null)
+        setRevokeQ('')
+        setRevokeHits([])
+      }
+    } catch (e: any) {
+      setErr(e?.message || 'OTP verification failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       <div className="topbar">
         <div>
           <h2>Inv Management</h2>
           <p>
-            Lab asset registry (IC No.) · {total} {tab}
-            {canEdit
-              ? ' · add, edit, import/export, soft-remove, restore, permanent delete'
-              : ' · view / export'}
+            {tab === 'dashboard'
+              ? 'Lab-wise inventory counts, assignments, and drill-down'
+              : tab === 'assign'
+                ? 'Assign IC to a scholar — OTP (primary) or PDF verification'
+                : tab === 'revoke'
+                  ? 'Revoke assignment — lab owner OTP takeover'
+                  : `Lab asset registry (IC No.) · ${total} ${tab}${canEdit ? ' · add, edit, import/export, soft-remove' : ' · view / export'}`}
           </p>
         </div>
       </div>
 
       <div className="tabs" style={{ marginBottom: 12 }}>
-        <button
-          className={tab === 'active' ? 'active' : ''}
-          onClick={() => {
-            setTab('active')
-            setSelected({})
-          }}
-        >
-          Active
-        </button>
-        <button
-          className={tab === 'removed' ? 'active' : ''}
-          onClick={() => {
-            setTab('removed')
-            setSelected({})
-          }}
-        >
-          Removed
-        </button>
+        <button className={tab === 'dashboard' ? 'active' : ''} type="button" onClick={() => { setTab('dashboard'); setSelected({}) }}>Dashboard</button>
+        <button className={tab === 'active' ? 'active' : ''} type="button" onClick={() => { setTab('active'); setSelected({}) }}>Active</button>
+        <button className={tab === 'assign' ? 'active' : ''} type="button" onClick={() => { setTab('assign'); setSelected({}); setOtpKind('') }}>Assign inv</button>
+        <button className={tab === 'revoke' ? 'active' : ''} type="button" onClick={() => { setTab('revoke'); setSelected({}); setOtpKind('') }}>Revoke inv</button>
+        <button className={tab === 'removed' ? 'active' : ''} type="button" onClick={() => { setTab('removed'); setSelected({}) }}>Removed</button>
       </div>
 
+      {err && <p className="err">{err}</p>}
+      {notice && <p className="muted">{notice}</p>}
+
+      {tab === 'dashboard' && (
+        <>
+          {busy && !dash && <p className="muted">Loading inventory dashboard…</p>}
+          {dash && (
+            <>
+              <div className="grid stats">
+                <div className="card stat"><div className="label">Items</div><div className="value">{dash.items}</div></div>
+                <div className="card stat online"><div className="label">Assigned</div><div className="value">{dash.assigned}</div></div>
+                <div className="card stat"><div className="label">Unassigned</div><div className="value">{dash.unassigned}</div></div>
+                <div className="card stat"><div className="label">Lab machines</div><div className="value">{dash.machines}</div></div>
+              </div>
+              <div className="split" style={{ marginTop: 16 }}>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Labs</h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Lab</th>
+                        <th>Items</th>
+                        <th>Assigned</th>
+                        <th>Unassigned</th>
+                        <th>Machines</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dash.labs.map((l) => (
+                        <tr key={l.id} className="clickable" onClick={() => void openDashLab(l.id)}>
+                          <td>
+                            <strong>{l.name}</strong>
+                            {l.incharge ? <div className="muted" style={{ fontSize: 12 }}>Incharge · {l.incharge}</div> : null}
+                          </td>
+                          <td className="mono">{l.items}</td>
+                          <td className="mono">{l.assigned}</td>
+                          <td className="mono">{l.unassigned}</td>
+                          <td className="mono">{l.machines}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                  <div className="section-head" style={{ padding: 16 }}>
+                    <h3 className="section-title" style={{ margin: 0 }}>
+                      {dashLabItems ? `${dashLabItems.lab.name} · inventory` : 'Lab detail'}
+                    </h3>
+                    {dashLabItems && (
+                      <button className="btn secondary" type="button" onClick={() => setDashLabItems(null)}>Close</button>
+                    )}
+                  </div>
+                  {!dashLabItems && <p className="muted" style={{ padding: 16 }}>Click a lab to see its inventory items.</p>}
+                  {dashLabItems && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>IC No.</th>
+                          <th>Name</th>
+                          <th>Assigned to</th>
+                          <th>Assigned</th>
+                          <th>Type</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashLabItems.items.map((it) => (
+                          <tr key={it.id}>
+                            <td className="mono">{it.ic_no}</td>
+                            <td>{it.item_name || '—'}</td>
+                            <td>{it.assigned_to || '—'}</td>
+                            <td className="muted">{it.assigned_at ? ago(it.assigned_at) : '—'}</td>
+                            <td>{it.inventory_type || '—'}</td>
+                          </tr>
+                        ))}
+                        {!dashLabItems.items.length && (
+                          <tr><td colSpan={5} className="muted" style={{ padding: 16 }}>No items for this lab.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'assign' && canEdit && (
+        <form className="card" onSubmit={submitAssign} style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Assign inventory</h3>
+          <p className="muted">Search IC, then scholar (or machine to find lab). Verification: OTP (primary) or PDF — one required.</p>
+          <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <label className="field">
+              Inventory IC / name
+              <input style={{ width: '100%' }} value={invQ} onChange={(e) => { setInvQ(e.target.value); setPickedInv(null) }} placeholder="Type IC No. or item name" />
+              {invHits.length > 0 && !pickedInv && (
+                <div className="card" style={{ marginTop: 4, padding: 0, maxHeight: 180, overflow: 'auto' }}>
+                  {invHits.map((h) => (
+                    <button key={h.id} type="button" className="btn secondary" style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }} onClick={() => { setPickedInv(h); setInvQ(`${h.ic_no} — ${h.item_name || 'item'}`); setInvHits([]) }}>
+                      <strong className="mono">{h.ic_no}</strong>
+                      <div className="muted" style={{ fontSize: 12 }}>{h.item_name || '—'}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {pickedInv && <p className="muted" style={{ fontSize: 12 }}>Selected · {pickedInv.ic_no}</p>}
+            </label>
+            <label className="field">
+              Scholar ID / name / machine ID
+              <input style={{ width: '100%' }} value={assigneeQ} onChange={(e) => { setAssigneeQ(e.target.value); setPickedScholar(null) }} placeholder="Type student ID, bio-id, name, or machine ID" />
+              {assigneeHits.length > 0 && !pickedScholar && (
+                <div className="card" style={{ marginTop: 4, padding: 0, maxHeight: 220, overflow: 'auto' }}>
+                  {assigneeHits.map((h) => (
+                    <button
+                      key={`${h.type}-${h.id}`}
+                      type="button"
+                      className="btn secondary"
+                      style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }}
+                      onClick={() => {
+                        if (h.type === 'scholar') {
+                          setPickedScholar(h)
+                          setAssigneeQ(`${h.label} · ${h.scholar_id || h.bio_id || ''}`)
+                          setAssigneeHits([])
+                        } else {
+                          setAssigneeQ('')
+                          setAssigneeHits([])
+                          setNotice(`Machine ${h.label} · ${h.lab_name || 'lab'} — now type a scholar name/ID in that lab`)
+                        }
+                      }}
+                    >
+                      <strong>{h.type === 'scholar' ? h.label : `Machine · ${h.label}`}</strong>
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        {h.type === 'scholar'
+                          ? `ID ${h.scholar_id || '—'} · bio ${h.bio_id || '—'} · ${h.lab_name || ''} · ${h.has_email ? h.email : 'no email'}`
+                          : `Machine ID ${h.inventory_id || '—'} · ${h.lab_name || '—'}`}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {pickedScholar && (
+                <p className="muted" style={{ fontSize: 12 }}>
+                  Selected · {pickedScholar.label}
+                  {pickedScholar.has_email ? ` · ${pickedScholar.email}` : ' · no email (use PDF)'}
+                </p>
+              )}
+            </label>
+          </div>
+          <div className="toolbar" style={{ gap: 16, margin: '12px 0' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input type="radio" checked={assignMethod === 'otp'} onChange={() => setAssignMethod('otp')} />
+              Email OTP (primary)
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input type="radio" checked={assignMethod === 'document'} onChange={() => setAssignMethod('document')} />
+              PDF document
+            </label>
+          </div>
+          {assignMethod === 'document' && (
+            <label className="field" style={{ maxWidth: 420 }}>
+              Verification PDF
+              <input ref={assignDocRef} type="file" accept="application/pdf,.pdf" onChange={(e) => setAssignDoc(e.target.files?.[0] || null)} />
+            </label>
+          )}
+          <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+            <button className="btn" disabled={busy} type="submit">{busy ? 'Working…' : 'Assign inventory'}</button>
+          </div>
+        </form>
+      )}
+
+      {tab === 'revoke' && canEdit && (
+        <form className="card" onSubmit={submitRevoke} style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Revoke inventory</h3>
+          <p className="muted">Find assigned IC / scholar. OTP goes to lab owner (incharge email from Labs). After verify, inventory transfers to the owner.</p>
+          <label className="field" style={{ maxWidth: 480 }}>
+            Search assigned IC / scholar
+            <input style={{ width: '100%' }} value={revokeQ} onChange={(e) => { setRevokeQ(e.target.value); setPickedRevoke(null) }} placeholder="IC No., scholar name, or ID" />
+          </label>
+          {revokeHits.length > 0 && !pickedRevoke && (
+            <div className="card" style={{ marginTop: 8, padding: 0, maxHeight: 240, overflow: 'auto' }}>
+              {revokeHits.map((h) => (
+                <button key={h.item_id} type="button" className="btn secondary" style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }} onClick={() => { setPickedRevoke(h); setRevokeHits([]) }}>
+                  <strong className="mono">{h.ic_no}</strong> · {h.item_name || 'item'}
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    Assigned to {h.assigned_to || h.scholar?.full_name || '—'}
+                    {h.owner ? ` · owner ${h.owner.incharge || '?'} (${h.owner.email || 'no email'}) · ${h.owner.lab_name}` : ' · owner unknown'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {pickedRevoke && (
+            <div style={{ marginTop: 12 }}>
+              <p><strong className="mono">{pickedRevoke.ic_no}</strong> → {pickedRevoke.assigned_to || '—'}</p>
+              {pickedRevoke.scholar && (
+                <p className="muted" style={{ fontSize: 13 }}>
+                  Scholar · {pickedRevoke.scholar.full_name} · ID {pickedRevoke.scholar.scholar_id || '—'}
+                </p>
+              )}
+              {pickedRevoke.owner ? (
+                <p className="muted" style={{ fontSize: 13 }}>
+                  Lab owner · {pickedRevoke.owner.incharge || '—'} · {pickedRevoke.owner.email || 'no email'} · {pickedRevoke.owner.lab_name}
+                </p>
+              ) : (
+                <p className="err">Could not resolve lab owner for this item.</p>
+              )}
+            </div>
+          )}
+          <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+            <button className="btn" disabled={busy || !pickedRevoke} type="submit">{busy ? 'Sending…' : 'Send owner OTP'}</button>
+          </div>
+        </form>
+      )}
+
+      {(otpKind === 'assign' || otpKind === 'revoke') && otpChallengeId && canEdit && (
+        <form className="card" onSubmit={submitOtp} style={{ marginBottom: 16 }}>
+          <h3 style={{ marginTop: 0 }}>{otpKind === 'assign' ? 'Verify scholar OTP' : 'Verify owner OTP'}</h3>
+          <p className="muted">{otpMessage || `Code sent to ${otpEmail}`}</p>
+          <label>
+            OTP code
+            <input required value={otpCode} onChange={(e) => setOtpCode(e.target.value)} placeholder="6-digit code" autoComplete="one-time-code" />
+          </label>
+          <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
+            <button className="btn" disabled={busy} type="submit">{busy ? 'Verifying…' : 'Verify & complete'}</button>
+            <button className="btn secondary" type="button" onClick={() => { setOtpChallengeId(''); setOtpKind(''); setOtpCode('') }}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {listTabs && (
+      <>
       <div className="card toolbar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 140 }}>
           <span className="muted" style={{ fontSize: 12 }}>Type</span>
@@ -641,9 +1119,6 @@ export default function Inventory() {
           </>
         )}
       </div>
-
-      {err && <p className="err">{err}</p>}
-      {notice && <p className="muted" style={{ marginBottom: 8 }}>{notice}</p>}
 
       {(adding || editing) && canEdit && (
         <form className="card" onSubmit={saveForm} style={{ marginBottom: 16 }}>
@@ -894,6 +1369,8 @@ export default function Inventory() {
           </tbody>
         </table>
       </div>
+      </>
+      )}
     </>
   )
 }

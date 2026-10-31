@@ -18,6 +18,11 @@ class InventoryItemOut(BaseModel):
     inv_type: str = ""
     remark: str = ""
     assigned_to: str = ""
+    assigned_scholar_id: UUID | None = None
+    assigned_at: datetime | None = None
+    assigned_by: str = ""
+    assign_verify_method: str = ""
+    has_assign_verify_doc: bool = False
     status: str = "active"
     removed_at: datetime | None = None
     removed_by: str | None = None
