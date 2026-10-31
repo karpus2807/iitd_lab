@@ -65,30 +65,6 @@ type DashSummary = {
   labs: DashLab[]
 }
 
-type DashScholar = Scholar & {
-  inventory?: {
-    id: string | null
-    ic_no: string
-    item_name: string
-    inventory_type: string
-    inventory_location: string
-    assigned_to: string
-  } | null
-}
-
-type DashLabDetail = {
-  lab: { id: string; name: string; room?: string; building?: string }
-  machines: number
-  scholars: DashScholar[]
-  counts: {
-    scholars: number
-    approved: number
-    pending: number
-    no_dues: number
-    with_inventory: number
-  }
-}
-
 type InvSuggest = {
   id: string
   ic_no: string
@@ -165,7 +141,6 @@ export default function Scholars() {
   const [rows, setRows] = useState<Scholar[]>([])
   const [total, setTotal] = useState(0)
   const [dash, setDash] = useState<DashSummary | null>(null)
-  const [dashLab, setDashLab] = useState<DashLabDetail | null>(null)
   const [dashBusy, setDashBusy] = useState(false)
   const [q, setQ] = useState('')
   const [filterGroup, setFilterGroup] = useState('')
@@ -260,20 +235,6 @@ export default function Scholars() {
     }
   }, [])
 
-  async function openDashLab(id: string) {
-    setDashBusy(true)
-    setErr('')
-    try {
-      const data = await api<DashLabDetail>(`/api/scholars/dashboard/${id}`)
-      setDashLab(data)
-    } catch (e: any) {
-      setErr(e?.message || 'Could not load lab scholars')
-      setDashLab(null)
-    } finally {
-      setDashBusy(false)
-    }
-  }
-
   useEffect(() => {
     void loadLabs().catch((e) => setErr(e.message))
   }, [loadLabs])
@@ -285,7 +246,6 @@ export default function Scholars() {
   }, [load])
   useEffect(() => {
     if (tab === 'dashboard') {
-      setDashLab(null)
       void loadDashboard()
     }
   }, [tab, loadDashboard])
@@ -704,10 +664,12 @@ export default function Scholars() {
           <h2>Scholars</h2>
           <p>
             {tab === 'dashboard'
-              ? 'Lab-wise scholar counts, inventory assignments, and drill-down'
+              ? 'Lab-wise scholar counts — click a lab to open its full scholar list (same as Machines from the main dashboard)'
               : tab === 'logs'
                 ? 'Import/export activity reports — every row result, errors, and clear history'
-                : `Enrol M.Tech / Ph.D. / Postdoc / staff · ${total} ${tab}${canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}`}
+                : selectedLab
+                  ? `${selectedLab.name} · ${total} ${tab} scholar${total === 1 ? '' : 's'}${canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}`
+                  : `Enrol M.Tech / Ph.D. / Postdoc / staff · ${total} ${tab}${canEdit ? ' · enroll, import/export, remove/restore' : ' · view / export'}`}
           </p>
         </div>
       </div>
@@ -719,13 +681,13 @@ export default function Scholars() {
         >
           Dashboard
         </button>
-        <button className={tab === 'active' ? 'active' : ''} onClick={() => { setTab('active'); setSelected({}); setDetail(null); setDashLab(null) }}>
+        <button className={tab === 'active' ? 'active' : ''} onClick={() => { setTab('active'); setSelected({}); setDetail(null) }}>
           Active
         </button>
-        <button className={tab === 'removed' ? 'active' : ''} onClick={() => { setTab('removed'); setSelected({}); setDetail(null); setDashLab(null) }}>
+        <button className={tab === 'removed' ? 'active' : ''} onClick={() => { setTab('removed'); setSelected({}); setDetail(null) }}>
           Removed
         </button>
-        <button className={tab === 'logs' ? 'active' : ''} onClick={() => { setTab('logs'); setSelected({}); setDetail(null); setDashLab(null); setEnrollOpen(false); setEditFor(null); setRemoveOpen(false) }}>
+        <button className={tab === 'logs' ? 'active' : ''} onClick={() => { setTab('logs'); setSelected({}); setDetail(null); setEnrollOpen(false); setEditFor(null); setRemoveOpen(false) }}>
           Logs & reports
         </button>
       </div>
@@ -746,8 +708,11 @@ export default function Scholars() {
                 <div className="card stat"><div className="label">With inventory</div><div className="value">{dash.with_inventory}</div></div>
                 <div className="card stat"><div className="label">Lab machines</div><div className="value">{dash.machines}</div></div>
               </div>
-              <div className="card" style={{ padding: 0, overflowX: 'auto', marginTop: 16 }}>
-                <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Labs</h3>
+              <div className="card" style={{ marginTop: 16 }}>
+                <h3 className="section-title">Labs</h3>
+                <p className="muted" style={{ marginTop: -8, marginBottom: 12, fontSize: 13 }}>
+                  Click a lab to open its scholars on the Active tab (full page), like Machines from Lab monitoring.
+                </p>
                 <table>
                   <thead>
                     <tr>
@@ -765,8 +730,12 @@ export default function Scholars() {
                       <tr
                         key={l.id}
                         className="clickable"
-                        style={dashLab?.lab.id === l.id ? { outline: '1px solid var(--accent, #3b82f6)' } : undefined}
-                        onClick={() => void openDashLab(l.id)}
+                        onClick={() => {
+                          setLabId(l.id)
+                          setSelected({})
+                          setDetail(null)
+                          setTab('active')
+                        }}
                       >
                         <td>
                           <strong>{l.name}</strong>
@@ -789,96 +758,6 @@ export default function Scholars() {
                     )}
                   </tbody>
                 </table>
-              </div>
-
-              <div className="card" style={{ padding: 0, overflowX: 'auto', marginTop: 16 }}>
-                <div className="section-head" style={{ padding: 16, margin: 0 }}>
-                  <h3 className="section-title" style={{ margin: 0 }}>
-                    {dashLab ? `${dashLab.lab.name} · scholars` : 'Lab detail'}
-                  </h3>
-                  {dashLab && (
-                    <button className="btn secondary" type="button" onClick={() => setDashLab(null)}>Close</button>
-                  )}
-                </div>
-                {!dashLab && !dashBusy && (
-                  <p className="muted" style={{ padding: 16, margin: 0 }}>Click a lab above to see its scholars and assigned inventory.</p>
-                )}
-                {dashBusy && !dashLab && <p className="muted" style={{ padding: 16 }}>Loading…</p>}
-                {dashLab && (
-                  <>
-                    <div className="toolbar" style={{ padding: '0 16px 12px', gap: 12, flexWrap: 'wrap' }}>
-                      <span className="muted">{dashLab.counts.scholars} scholars</span>
-                      <span className="muted">{dashLab.counts.approved} approved</span>
-                      <span className="muted">{dashLab.counts.with_inventory} with inv</span>
-                      <span className="muted">{dashLab.machines} machines in lab</span>
-                      <button
-                        className="btn secondary"
-                        type="button"
-                        onClick={() => {
-                          setLabId(dashLab.lab.id)
-                          setTab('active')
-                          setDashLab(null)
-                        }}
-                      >
-                        Open in Active
-                      </button>
-                    </div>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>ID</th>
-                          <th>Bio-ID</th>
-                          <th>Group</th>
-                          <th>Status</th>
-                          <th>Inventory</th>
-                          <th>Assigned</th>
-                          <th>Faculty</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashLab.scholars.map((s) => (
-                          <tr key={s.id} style={rowTone(s)}>
-                            <td><strong>{s.full_name}</strong></td>
-                            <td className="mono">{s.scholar_id || '—'}</td>
-                            <td className="mono">{s.bio_id || '—'}</td>
-                            <td>{s.group_name || '—'}</td>
-                            <td>
-                              {s.no_dues ? (
-                                <span className="badge CRITICAL">no dues</span>
-                              ) : s.approved ? (
-                                <span className="badge ONLINE">active</span>
-                              ) : (
-                                <span className="badge INFO">pending</span>
-                              )}
-                            </td>
-                            <td>
-                              {!s.inventory ? (
-                                <span className="muted">—</span>
-                              ) : (
-                                <>
-                                  <span className="mono">{s.inventory.ic_no || s.inventory_label || '—'}</span>
-                                  {s.inventory.item_name ? (
-                                    <div className="muted" style={{ fontSize: 12 }}>{s.inventory.item_name}</div>
-                                  ) : s.inventory_kind === 'non_list' ? (
-                                    <div className="muted" style={{ fontSize: 12 }}>non-list</div>
-                                  ) : null}
-                                </>
-                              )}
-                            </td>
-                            <td className="muted" style={{ whiteSpace: 'nowrap' }}>
-                              {s.inventory_assigned_at ? ago(s.inventory_assigned_at) : '—'}
-                            </td>
-                            <td>{s.faculty || '—'}</td>
-                          </tr>
-                        ))}
-                        {!dashLab.scholars.length && (
-                          <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No active scholars in this lab.</td></tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </>
-                )}
               </div>
             </>
           )}

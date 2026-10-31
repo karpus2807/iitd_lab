@@ -153,7 +153,6 @@ export default function Inventory() {
   const [removeOpen, setRemoveOpen] = useState(false)
   const [removeRemark, setRemoveRemark] = useState('')
   const [dash, setDash] = useState<DashSummary | null>(null)
-  const [dashLabItems, setDashLabItems] = useState<{ lab: DashLab & { email?: string }; items: InvItem[]; counts: { items: number; assigned: number; unassigned: number } } | null>(null)
   const [invQ, setInvQ] = useState('')
   const [invHits, setInvHits] = useState<Suggest[]>([])
   const [pickedInv, setPickedInv] = useState<Suggest | null>(null)
@@ -237,20 +236,6 @@ export default function Inventory() {
     }
   }, [])
 
-  async function openDashLab(id: string) {
-    setBusy(true)
-    setErr('')
-    try {
-      const data = await api<any>(`/api/inventory/dashboard/${id}`)
-      setDashLabItems(data)
-    } catch (e: any) {
-      setErr(e?.message || 'Could not load lab inventory')
-      setDashLabItems(null)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   useEffect(() => {
     void load()
   }, [load])
@@ -261,7 +246,6 @@ export default function Inventory() {
 
   useEffect(() => {
     if (tab === 'dashboard') {
-      setDashLabItems(null)
       void loadDashboard()
     }
   }, [tab, loadDashboard])
@@ -684,12 +668,14 @@ export default function Inventory() {
           <h2>Inv Management</h2>
           <p>
             {tab === 'dashboard'
-              ? 'Lab-wise inventory counts, assignments, and drill-down'
+              ? 'Lab-wise inventory counts — click a lab to open its full Active list (same as Machines from the main dashboard)'
               : tab === 'assign'
                 ? 'Assign IC to a scholar — OTP (primary) or PDF verification'
                 : tab === 'revoke'
                   ? 'Revoke assignment — lab owner OTP takeover'
-                  : `Lab asset registry (IC No.) · ${total} ${tab}${canEdit ? ' · add, edit, import/export, soft-remove' : ' · view / export'}`}
+                  : filterLocation && filterLocation !== '__blank__'
+                    ? `${filterLocation} · ${total} ${tab} item${total === 1 ? '' : 's'}${canEdit ? ' · add, edit, import/export, soft-remove' : ' · view / export'}`
+                    : `Lab asset registry (IC No.) · ${total} ${tab}${canEdit ? ' · add, edit, import/export, soft-remove' : ' · view / export'}`}
           </p>
         </div>
       </div>
@@ -716,73 +702,47 @@ export default function Inventory() {
                 <div className="card stat"><div className="label">Unassigned</div><div className="value">{dash.unassigned}</div></div>
                 <div className="card stat"><div className="label">Lab machines</div><div className="value">{dash.machines}</div></div>
               </div>
-              <div className="split" style={{ marginTop: 16 }}>
-                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-                  <h3 className="section-title" style={{ padding: 16, margin: 0 }}>Labs</h3>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Lab</th>
-                        <th>Items</th>
-                        <th>Assigned</th>
-                        <th>Unassigned</th>
-                        <th>Machines</th>
+              <div className="card" style={{ marginTop: 16 }}>
+                <h3 className="section-title">Labs</h3>
+                <p className="muted" style={{ marginTop: -8, marginBottom: 12, fontSize: 13 }}>
+                  Click a lab to open its inventory on the Active tab (full page), like Machines from Lab monitoring.
+                </p>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Lab</th>
+                      <th>Items</th>
+                      <th>Assigned</th>
+                      <th>Unassigned</th>
+                      <th>Machines</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dash.labs.map((l) => (
+                      <tr
+                        key={l.id}
+                        className="clickable"
+                        onClick={() => {
+                          setFilterLocation(l.name)
+                          setSelected({})
+                          setTab('active')
+                        }}
+                      >
+                        <td>
+                          <strong>{l.name}</strong>
+                          {l.incharge ? <div className="muted" style={{ fontSize: 12 }}>Incharge · {l.incharge}</div> : null}
+                        </td>
+                        <td className="mono">{l.items}</td>
+                        <td className="mono">{l.assigned}</td>
+                        <td className="mono">{l.unassigned}</td>
+                        <td className="mono">{l.machines}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {dash.labs.map((l) => (
-                        <tr key={l.id} className="clickable" onClick={() => void openDashLab(l.id)}>
-                          <td>
-                            <strong>{l.name}</strong>
-                            {l.incharge ? <div className="muted" style={{ fontSize: 12 }}>Incharge · {l.incharge}</div> : null}
-                          </td>
-                          <td className="mono">{l.items}</td>
-                          <td className="mono">{l.assigned}</td>
-                          <td className="mono">{l.unassigned}</td>
-                          <td className="mono">{l.machines}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-                  <div className="section-head" style={{ padding: 16 }}>
-                    <h3 className="section-title" style={{ margin: 0 }}>
-                      {dashLabItems ? `${dashLabItems.lab.name} · inventory` : 'Lab detail'}
-                    </h3>
-                    {dashLabItems && (
-                      <button className="btn secondary" type="button" onClick={() => setDashLabItems(null)}>Close</button>
+                    ))}
+                    {!dash.labs.length && (
+                      <tr><td colSpan={5} className="muted" style={{ padding: 16 }}>No labs yet.</td></tr>
                     )}
-                  </div>
-                  {!dashLabItems && <p className="muted" style={{ padding: 16 }}>Click a lab to see its inventory items.</p>}
-                  {dashLabItems && (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>IC No.</th>
-                          <th>Name</th>
-                          <th>Assigned to</th>
-                          <th>Assigned</th>
-                          <th>Type</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashLabItems.items.map((it) => (
-                          <tr key={it.id}>
-                            <td className="mono">{it.ic_no}</td>
-                            <td>{it.item_name || '—'}</td>
-                            <td>{it.assigned_to || '—'}</td>
-                            <td className="muted">{it.assigned_at ? ago(it.assigned_at) : '—'}</td>
-                            <td>{it.inventory_type || '—'}</td>
-                          </tr>
-                        ))}
-                        {!dashLabItems.items.length && (
-                          <tr><td colSpan={5} className="muted" style={{ padding: 16 }}>No items for this lab.</td></tr>
-                        )}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
+                  </tbody>
+                </table>
               </div>
             </>
           )}
