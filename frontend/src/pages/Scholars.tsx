@@ -473,23 +473,6 @@ export default function Scholars() {
     }
   }
 
-  async function runPurge(ids: string[] = selectedIds) {
-    if (!ids.length) return
-    if (!confirm(`Permanently delete ${ids.length} removed scholar(s)? This cannot be undone.`)) return
-    setBusy(true)
-    try {
-      const r = await api('/api/scholars/purge', { method: 'POST', body: JSON.stringify({ ids }) })
-      setNotice(`Permanently deleted ${r.deleted} scholar(s)`)
-      setSelected({})
-      setDetail(null)
-      await load()
-    } catch (e: any) {
-      setErr(e?.message || 'Permanent delete failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function runEmptyRemoved() {
     if (!total) return
     if (!confirm(`Empty Removed — permanently delete ALL ${total} removed scholar(s)?`)) return
@@ -887,9 +870,6 @@ export default function Scholars() {
           <>
             <button className="btn" type="button" disabled={busy || !selectedIds.length} onClick={() => void runRestore(selectedIds)}>
               Restore selected ({selectedIds.length})
-            </button>
-            <button className="btn danger" type="button" disabled={busy || !selectedIds.length} onClick={() => void runPurge(selectedIds)}>
-              Permanent delete selected ({selectedIds.length})
             </button>
             <button className="btn danger" type="button" disabled={busy || total < 1} onClick={() => void runEmptyRemoved()}>
               Empty removed ({total})
@@ -1368,10 +1348,7 @@ export default function Scholars() {
                     </>
                   )}
                   {canEdit && tab === 'removed' && (
-                    <>
-                      <button className="btn secondary" type="button" disabled={busy} onClick={() => void runRestore([s.id])}>Restore</button>
-                      <button className="btn danger" type="button" disabled={busy} onClick={() => void runPurge([s.id])}>Delete forever</button>
-                    </>
+                    <button className="btn secondary" type="button" disabled={busy} onClick={() => void runRestore([s.id])}>Restore</button>
                   )}
                 </td>
               </tr>
@@ -1380,7 +1357,7 @@ export default function Scholars() {
               <tr>
                 <td colSpan={13} className="muted" style={{ padding: 16 }}>
                   {tab === 'removed'
-                    ? 'No removed scholars. Soft-removed enrolments appear here for restore or permanent delete.'
+                    ? 'No removed scholars. Soft-removed enrolments appear here for restore, or Empty removed to delete all forever.'
                     : 'No scholars yet. Download template (has example row), fill real data, Import — or Enrol one by one.'}
                 </td>
               </tr>
