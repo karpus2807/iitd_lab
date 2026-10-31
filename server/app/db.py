@@ -101,6 +101,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_agent_update_columns)
         await conn.run_sync(ensure_inventory_assigned_column)
         await conn.run_sync(ensure_scholar_removal_columns)
+        await conn.run_sync(ensure_registration_token_last_used)
 
 
 def machine_address_column_sql(dialect_name: str) -> dict[str, str]:
@@ -327,3 +328,16 @@ def ensure_scholar_removal_columns(sync_conn) -> None:
     for name, sql_type in types.items():
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE scholars ADD COLUMN {name} {sql_type}"))
+
+
+def ensure_registration_token_last_used(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "registration_tokens" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("registration_tokens")}
+    if "last_used_at" in existing:
+        return
+    sql_type = "TIMESTAMPTZ" if sync_conn.dialect.name == "postgresql" else "DATETIME"
+    sync_conn.execute(text(f"ALTER TABLE registration_tokens ADD COLUMN last_used_at {sql_type}"))

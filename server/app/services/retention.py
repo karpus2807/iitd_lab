@@ -19,35 +19,48 @@ logger = logging.getLogger("labwatch.retention")
 
 
 async def prune_unused_registration_tokens(db: AsyncSession) -> int:
-    """Revoke and delete registration tokens that were never used after N days."""
+    """Revoke + delete registration tokens that were never used after N days,
+    and also drop unused tokens whose expires_at has already passed.
+    """
     settings = get_settings()
     days = settings.unused_registration_token_days
-    if days <= 0:
-        return 0
-    cut = utcnow() - timedelta(days=days)
-    rows = (
+    now = utcnow()
+    # Never-used and past expiry → remove immediately
+    expired_unused = (
         await db.execute(
             select(RegistrationToken).where(
                 RegistrationToken.use_count == 0,
-                RegistrationToken.created_at < cut,
+                RegistrationToken.expires_at.is_not(None),
+                RegistrationToken.expires_at < now,
             )
         )
     ).scalars().all()
-    if not rows:
+    stale_unused: list[RegistrationToken] = []
+    if days > 0:
+        cut = now - timedelta(days=days)
+        stale_unused = (
+            await db.execute(
+                select(RegistrationToken).where(
+                    RegistrationToken.use_count == 0,
+                    RegistrationToken.created_at < cut,
+                )
+            )
+        ).scalars().all()
+    victims = {row.id: row for row in [*expired_unused, *stale_unused]}
+    if not victims:
         return 0
-    for row in rows:
+    for row in victims.values():
         row.revoked = True
     await db.flush()
     deleted = (
-        await db.execute(
-            delete(RegistrationToken).where(
-                RegistrationToken.use_count == 0,
-                RegistrationToken.created_at < cut,
-            )
-        )
+        await db.execute(delete(RegistrationToken).where(RegistrationToken.id.in_(list(victims.keys()))))
     ).rowcount or 0
     if deleted:
-        logger.info("Auto-deleted %s unused registration token(s) older than %s day(s)", deleted, days)
+        logger.info(
+            "Auto-deleted %s unused registration token(s) (stale>%sdays and/or expired)",
+            deleted,
+            days,
+        )
     return deleted
 
 

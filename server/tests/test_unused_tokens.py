@@ -71,4 +71,47 @@ async def test_unused_tokens_pruned_after_two_days(client: AsyncClient, auth_hea
     assert token_id not in ids
     assert kept_id in ids
     assert used_id in ids
+    by_id = {t["id"]: t for t in listed.json()}
+    assert by_id[kept_id]["status"] == "unused"
+    assert by_id[kept_id]["last_used_at"] is None
+    assert by_id[used_id]["status"] == "used"
+    assert by_id[used_id]["use_count"] == 1
     assert listed.json()[0]["unused_auto_delete_days"] == 2
+
+
+@pytest.mark.asyncio
+async def test_token_last_used_set_on_register(client: AsyncClient, auth_headers: dict):
+    created = await client.post(
+        "/api/admin/tokens",
+        headers=auth_headers,
+        json={"label": "use-me", "expires_hours": 24, "max_uses": 3},
+    )
+    assert created.status_code == 200
+    raw = created.json()["token"]
+    tid = created.json()["id"]
+
+    reg = await client.post(
+        "/api/agents/register",
+        json={
+            "registration_token": raw,
+            "agent_uuid": "agent-uuid-token-use",
+            "agent_version": "1.1.50",
+            "inventory_id": "INV/token-use",
+            "identity": {
+                "hostname": "token-use-host",
+                "os_name": "Linux",
+                "architecture": "x86_64",
+                "ip_addresses": ["10.0.0.44"],
+                "mac_addresses": ["aa:bb:cc:dd:ee:44"],
+                "is_virtual": False,
+            },
+        },
+    )
+    assert reg.status_code == 200, reg.text
+
+    listed = await client.get("/api/admin/tokens", headers=auth_headers)
+    row = next(t for t in listed.json() if t["id"] == tid)
+    assert row["status"] == "used"
+    assert row["use_count"] == 1
+    assert row["last_used_at"]
+    assert row["enrolled_agents"] >= 1

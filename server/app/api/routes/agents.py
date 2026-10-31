@@ -279,6 +279,7 @@ async def register_agent(body: RegisterRequest, db: DbDep):
         )
         db.add(agent)
     token.use_count += 1
+    token.last_used_at = utcnow()
     if inventory_id:
         clash = (
             await db.execute(select(Machine).where(Machine.inventory_id == inventory_id, Machine.id != machine.id))

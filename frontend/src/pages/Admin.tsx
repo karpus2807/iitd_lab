@@ -349,6 +349,23 @@ function Users() {
   )
 }
 
+function tokenStatusLabel(status: string) {
+  switch (status) {
+    case 'used':
+      return 'Used'
+    case 'unused':
+      return 'Unused'
+    case 'revoked':
+      return 'Revoked'
+    case 'expired':
+      return 'Expired'
+    case 'exhausted':
+      return 'Exhausted'
+    default:
+      return status || '—'
+  }
+}
+
 function Tokens() {
   const [rows, setRows] = useState<any[]>([])
   const [labs, setLabs] = useState<any[]>([])
@@ -377,23 +394,60 @@ function Tokens() {
         <button className="btn">New registration token</button>
       </form>
       <p className="muted" style={{ margin: '0 0 12px', fontSize: 13 }}>
-        Unused tokens (0 uses) are auto-revoked and deleted after {autoDays} day{autoDays === 1 ? '' : 's'}.
+        Status shows whether a token enrolled any agent. Unused tokens (0 uses) are auto-revoked and deleted after {autoDays} day{autoDays === 1 ? '' : 's'}
+        (and immediately if already past expiry). Opening this page also runs cleanup.
       </p>
       {created && <div className="card"><p>Store this token now; it will not be shown again.</p><code>{created}</code></div>}
       <div className="card" style={{ padding: 0 }}>
         <table>
-          <thead><tr><th>Label</th><th>Prefix</th><th>Uses</th><th>Created</th><th>Revoked</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th>Prefix</th>
+              <th>Status</th>
+              <th>Uses</th>
+              <th>Last used</th>
+              <th>Created</th>
+              <th>Auto-remove</th>
+              <th></th>
+            </tr>
+          </thead>
           <tbody>
-            {rows.map((t) => (
-              <tr key={t.id}>
-                <td>{t.label}</td>
-                <td className="mono">{t.prefix}</td>
-                <td>{t.use_count}{t.max_uses ? ` / ${t.max_uses}` : ''}</td>
-                <td>{ago(t.created_at)}</td>
-                <td>{t.revoked ? 'yes' : 'no'}</td>
-                <td>{!t.revoked && <button className="btn danger" onClick={async () => { await api(`/api/admin/tokens/${t.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>}</td>
-              </tr>
-            ))}
+            {rows.map((t) => {
+              const st = t.status || (t.revoked ? 'revoked' : t.use_count > 0 ? 'used' : 'unused')
+              return (
+                <tr key={t.id}>
+                  <td>{t.label}</td>
+                  <td className="mono">{t.prefix}</td>
+                  <td>
+                    <strong className={st === 'unused' ? 'err' : st === 'used' ? '' : 'muted'}>
+                      {tokenStatusLabel(st)}
+                    </strong>
+                    {typeof t.enrolled_agents === 'number' && t.enrolled_agents > 0 ? (
+                      <div className="muted" style={{ fontSize: 12 }}>{t.enrolled_agents} agent(s) enrolled</div>
+                    ) : null}
+                  </td>
+                  <td>{t.use_count}{t.max_uses ? ` / ${t.max_uses}` : ''}</td>
+                  <td>{t.last_used_at ? ago(t.last_used_at) : <span className="muted">never</span>}</td>
+                  <td>{ago(t.created_at)}</td>
+                  <td className="muted" style={{ fontSize: 12 }}>
+                    {st === 'unused'
+                      ? (t.unused_deletes_in_hours != null
+                        ? `in ~${t.unused_deletes_in_hours}h`
+                        : `after ${autoDays}d`)
+                      : '—'}
+                  </td>
+                  <td>
+                    {!t.revoked && st !== 'expired' && (
+                      <button className="btn danger" onClick={async () => { await api(`/api/admin/tokens/${t.id}/revoke`, { method: 'POST' }); load() }}>Revoke</button>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+            {!rows.length && (
+              <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No registration tokens.</td></tr>
+            )}
           </tbody>
         </table>
       </div>

@@ -171,25 +171,72 @@ async def create_token(body: RegistrationTokenCreate, db: DbDep, admin: AdminUse
     }
 
 
+def _token_status(row: RegistrationToken) -> str:
+    now = utcnow()
+    if row.revoked:
+        return "revoked"
+    if row.expires_at is not None and row.expires_at <= now:
+        return "expired"
+    if row.max_uses is not None and int(row.use_count or 0) >= int(row.max_uses):
+        return "exhausted"
+    if int(row.use_count or 0) > 0:
+        return "used"
+    return "unused"
+
+
 @router.get("/tokens")
 async def list_tokens(db: DbDep, admin: AdminUser):
     settings = get_settings()
+    # Opportunistic cleanup when admin opens Tokens (hourly job also runs this).
+    from app.services.retention import prune_unused_registration_tokens
+
+    await prune_unused_registration_tokens(db)
+    await db.commit()
+
     rows = (await db.execute(select(RegistrationToken).order_by(RegistrationToken.created_at.desc()))).scalars().all()
-    return [
-        {
-            "id": str(r.id),
-            "prefix": r.token_prefix,
-            "label": r.label,
-            "lab_id": str(r.lab_id) if r.lab_id else None,
-            "expires_at": r.expires_at,
-            "max_uses": r.max_uses,
-            "use_count": r.use_count,
-            "revoked": r.revoked,
-            "created_at": r.created_at,
-            "unused_auto_delete_days": settings.unused_registration_token_days,
-        }
-        for r in rows
-    ]
+    counts: dict[str, int] = {}
+    if rows:
+        ids = [r.id for r in rows]
+        enrolled = (
+            await db.execute(
+                select(Agent.registration_token_id, func.count())
+                .where(Agent.registration_token_id.in_(ids))
+                .group_by(Agent.registration_token_id)
+            )
+        ).all()
+        counts = {str(tid): int(n) for tid, n in enrolled if tid}
+
+    auto_days = settings.unused_registration_token_days
+    now = utcnow()
+    out = []
+    for r in rows:
+        status = _token_status(r)
+        unused_deletes_at = None
+        unused_deletes_in_hours = None
+        if status == "unused" and auto_days > 0 and r.created_at:
+            unused_deletes_at = r.created_at + timedelta(days=auto_days)
+            secs = (unused_deletes_at - now).total_seconds()
+            unused_deletes_in_hours = max(0, int(secs // 3600))
+        out.append(
+            {
+                "id": str(r.id),
+                "prefix": r.token_prefix,
+                "label": r.label,
+                "lab_id": str(r.lab_id) if r.lab_id else None,
+                "expires_at": r.expires_at,
+                "max_uses": r.max_uses,
+                "use_count": r.use_count,
+                "last_used_at": r.last_used_at,
+                "enrolled_agents": counts.get(str(r.id), 0),
+                "status": status,
+                "revoked": r.revoked,
+                "created_at": r.created_at,
+                "unused_auto_delete_days": auto_days,
+                "unused_deletes_at": unused_deletes_at,
+                "unused_deletes_in_hours": unused_deletes_in_hours,
+            }
+        )
+    return out
 
 
 @router.post("/tokens/{token_id}/revoke")

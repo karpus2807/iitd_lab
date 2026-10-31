@@ -149,6 +149,7 @@ class RegistrationToken(Base, TimestampMixin):
     expires_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
     use_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     token_plaintext_once: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
