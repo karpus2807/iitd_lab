@@ -653,13 +653,14 @@ export default function Inventory() {
       fd.append('code', otpCode.trim())
       const path = otpKind === 'assign' ? '/api/inventory/assign/verify-otp' : '/api/inventory/revoke/verify-otp'
       const r = await api<any>(path, { method: 'POST', body: fd })
+      const kind = otpKind
       setNotice(r.message || 'Verified')
       setOtpChallengeId('')
       setOtpCode('')
       setOtpEmail('')
       setOtpMessage('')
       setOtpKind('')
-      if (otpKind === 'assign') {
+      if (kind === 'assign') {
         setPickedInv(null)
         setPickedScholar(null)
         setInvQ('')

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class InventoryItemOut(BaseModel):
@@ -37,6 +37,30 @@ class InventoryItemOut(BaseModel):
     machine_lab_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator(
+        "item_name",
+        "item_description",
+        "inventory_type",
+        "inventory_location",
+        "inv_type",
+        "remark",
+        "assigned_to",
+        "assigned_by",
+        "assign_verify_method",
+        "status",
+        mode="before",
+    )
+    @classmethod
+    def _none_to_empty(cls, v):  # noqa: ANN001
+        return "" if v is None else v
+
+    @field_validator("has_assign_verify_doc", mode="before")
+    @classmethod
+    def _doc_flag(cls, v):  # noqa: ANN001
+        if isinstance(v, bool):
+            return v
+        return False
 
 
 class InventoryItemCreate(BaseModel):

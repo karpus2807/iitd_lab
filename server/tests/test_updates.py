@@ -320,6 +320,9 @@ def update_harness(tmp_path, monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setattr(update_svc, "repo_dir", lambda: tmp_path)
     monkeypatch.setattr(update_svc, "spawn_host_apply", lambda tag: False)
+    # Pin "current" to the fixture's newest release so VERSION bumps don't break tests.
+    monkeypatch.setattr(update_svc, "current_tag", lambda: "v1.1.55")
+    monkeypatch.setattr(update_svc, "current_version", lambda: "1.1.55")
 
     async def fake_fetch(limit=None, proxy_user=None, proxy_password=None):
         rows = RELEASES[: limit or 3]
@@ -334,10 +337,11 @@ def update_harness(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-def test_annotate_current_and_latest():
+def test_annotate_current_and_latest(monkeypatch):
+    monkeypatch.setattr(update_svc, "current_tag", lambda: "v1.1.55")
     builds = update_svc.annotate_builds(RELEASES)
     assert builds[0]["is_latest"] is True
-    current = next(b for b in builds if b["tag"] == update_svc.current_tag())
+    current = next(b for b in builds if b["tag"] == "v1.1.55")
     assert current["is_current"] is True
     older = next(b for b in builds if b["tag"] == "v1.1.4")
     assert older["action"] == "downgrade"
