@@ -458,7 +458,6 @@ function Tokens() {
 function Agents() {
   const [rows, setRows] = useState<any[]>([])
   const [currentVersion, setCurrentVersion] = useState('')
-  const [updateJob, setUpdateJob] = useState<any>(null)
   const [secret, setSecret] = useState('')
   const [q, setQ] = useState('')
   const [selected, setSelected] = useState<Record<string, boolean>>({})
@@ -471,7 +470,6 @@ function Agents() {
     return api('/api/admin/agents').then((data) => {
       const list = Array.isArray(data) ? data : (data.agents || [])
       setCurrentVersion(Array.isArray(data) ? '' : (data.current_version || ''))
-      setUpdateJob(Array.isArray(data) ? null : (data.update_job || null))
       setRows(list)
       setSelected((prev) => {
         const next: Record<string, boolean> = {}
@@ -498,12 +496,13 @@ function Agents() {
   const selectedIds = filtered.filter((a) => selected[a.id]).map((a) => a.id)
   const allFilteredSelected = filtered.length > 0 && filtered.every((a) => selected[a.id])
 
-  // Only show progress for THIS click's queue — never expand to the whole fleet.
+  const trackSet = useMemo(() => new Set(trackIds), [trackIds])
+
+  // Progress panel + per-row meters: ONLY agents queued in this browser action.
   const tracked = useMemo(() => {
     if (!trackIds.length) return []
-    const set = new Set(trackIds)
-    return rows.filter((a) => set.has(a.id))
-  }, [rows, trackIds])
+    return rows.filter((a) => trackSet.has(a.id))
+  }, [rows, trackIds, trackSet])
 
   const batchProgress = useMemo(() => {
     if (!trackIds.length || !tracked.length) return null
@@ -530,6 +529,7 @@ function Agents() {
     })
     const stillActive = active.length > 0
     const state = failed.length && !stillActive ? 'error' : stillActive ? 'running' : ok.length ? 'ok' : 'idle'
+    const one = tracked.length === 1 ? tracked[0] : null
     return {
       active: stillActive,
       progress,
@@ -537,17 +537,24 @@ function Agents() {
       failed: failed.length,
       ok: ok.length,
       total: tracked.length,
+      label: one
+        ? `Update ${one.hostname || one.agent_id}${currentVersion ? ` → ${currentVersion}` : ''}`
+        : `Update ${tracked.length} agents${currentVersion ? ` → ${currentVersion}` : ''}`,
       message: stillActive
-        ? `Updating ${active.length}/${tracked.length} to ${currentVersion || updateJob?.target_version || '…'}`
+        ? one
+          ? `Updating ${one.hostname || one.agent_id}…`
+          : `Updating ${active.length}/${tracked.length}…`
         : failed.length
           ? `${failed.length} failed · ${ok.length} ok`
-          : ok.length
-            ? `All ${ok.length} updated`
+          : ok.length === tracked.length
+            ? one
+              ? `${one.hostname || one.agent_id} updated`
+              : `All ${ok.length} updated`
             : '',
       log: [...(sessionLog ? [sessionLog] : []), ...lines].join('\n'),
       errors: failed.map((a) => `${a.hostname}: ${a.update_message || a.update_status || 'error'}`),
     }
-  }, [tracked, currentVersion, updateJob, sessionLog])
+  }, [tracked, currentVersion, sessionLog, trackIds.length])
 
   const pollUpdates = Boolean(batchProgress?.active)
 
@@ -558,6 +565,17 @@ function Agents() {
     }, 2500)
     return () => window.clearInterval(id)
   }, [pollUpdates])
+
+  // After success/error settles, drop tracking so leftover "ok" statuses don't keep meters around.
+  useEffect(() => {
+    if (!batchProgress || batchProgress.active) return
+    if (!batchProgress.ok && !batchProgress.failed) return
+    const t = window.setTimeout(() => {
+      setTrackIds([])
+      setSessionLog('')
+    }, 8000)
+    return () => window.clearTimeout(t)
+  }, [batchProgress?.active, batchProgress?.ok, batchProgress?.failed, batchProgress?.state])
 
   function toggleAll(checked: boolean) {
     setSelected((prev) => {
@@ -643,26 +661,40 @@ function Agents() {
           {notice}
         </p>
       )}
-      {batchProgress && (batchProgress.active || batchProgress.failed > 0 || batchProgress.ok > 0 || sessionLog) ? (
-        <ProgressPanel
-          showWhenIdle
-          job={{
-            active: batchProgress.active,
-            label: `Agent updates${currentVersion ? ` → ${currentVersion}` : ''}`,
-            message: batchProgress.message,
-            progress: batchProgress.progress,
-            step: batchProgress.active
-              ? `${batchProgress.ok + batchProgress.failed}/${batchProgress.total} finished`
-              : batchProgress.state,
-            state: batchProgress.state,
-            log: batchProgress.log,
-            error: batchProgress.state === 'error' || batchProgress.failed > 0,
-          }}
-        />
+      {batchProgress && (batchProgress.active || batchProgress.failed > 0 || batchProgress.ok > 0) ? (
+        <div style={{ marginBottom: 12 }}>
+          <ProgressPanel
+            showWhenIdle
+            job={{
+              active: batchProgress.active,
+              label: batchProgress.label,
+              message: batchProgress.message,
+              progress: batchProgress.progress,
+              step: batchProgress.active
+                ? `${batchProgress.ok + batchProgress.failed}/${batchProgress.total} finished`
+                : batchProgress.state,
+              state: batchProgress.state,
+              log: batchProgress.log,
+              error: batchProgress.state === 'error' || batchProgress.failed > 0,
+            }}
+          />
+          <button
+            type="button"
+            className="btn secondary"
+            style={{ marginTop: 8 }}
+            onClick={() => {
+              setTrackIds([])
+              setSessionLog('')
+              setNotice('')
+            }}
+          >
+            Dismiss progress
+          </button>
+        </div>
       ) : null}
       {batchProgress?.errors?.length ? (
         <div className="card" style={{ marginBottom: 12, borderColor: 'var(--danger, #c44)' }}>
-          <strong>Update errors</strong>
+          <strong>Update errors (this queue only)</strong>
           <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
             {batchProgress.errors.map((line) => (
               <li key={line} className="err" style={{ marginBottom: 4 }}>
@@ -702,10 +734,11 @@ function Agents() {
           </thead>
           <tbody>
             {filtered.map((a) => {
-              const st = (a.update_status || '').toLowerCase()
-              const pct = typeof a.update_progress === 'number' ? a.update_progress : null
-              const failed = a.update_failed || st === 'error'
-              const active = a.update_active
+              const inThisQueue = trackSet.has(a.id)
+              const st = inThisQueue ? (a.update_status || '').toLowerCase() : ''
+              const pct = inThisQueue && typeof a.update_progress === 'number' ? a.update_progress : null
+              const failed = inThisQueue && (a.update_failed || st === 'error')
+              const active = inThisQueue && a.update_active
               return (
                 <tr key={a.id}>
                   <td>
@@ -752,7 +785,7 @@ function Agents() {
                     ) : (
                       <span className="muted">—</span>
                     )}
-                    {st ? (
+                    {inThisQueue && st ? (
                       <div className={failed ? 'err' : 'muted'} style={{ marginTop: 4 }}>
                         <strong>{st}</strong>
                         {pct != null ? ` · ${pct}%` : ''}
