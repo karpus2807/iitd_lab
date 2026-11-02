@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,7 @@ class Settings(BaseSettings):
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     env: str = Field(default="development", alias="LABWATCH_ENV")
@@ -57,13 +58,23 @@ class Settings(BaseSettings):
     repo_dir: str = Field(default="", alias="LABWATCH_REPO_DIR")
     updates_enabled: bool = Field(default=True, alias="LABWATCH_UPDATES_ENABLED")
     updates_builds: int = Field(default=3, alias="LABWATCH_UPDATES_BUILDS")
-    http_proxy: str = Field(default="", alias="HTTP_PROXY")
-    https_proxy: str = Field(default="", alias="HTTPS_PROXY")
-    no_proxy: str = Field(default="localhost,127.0.0.1,db,web,api", alias="NO_PROXY")
+    http_proxy: str = Field(
+        default="",
+        validation_alias=AliasChoices("HTTP_PROXY", "http_proxy"),
+    )
+    https_proxy: str = Field(
+        default="",
+        validation_alias=AliasChoices("HTTPS_PROXY", "https_proxy"),
+    )
+    no_proxy: str = Field(
+        default="localhost,127.0.0.1,db,web,api",
+        validation_alias=AliasChoices("NO_PROXY", "no_proxy"),
+    )
     # IITD squid uses CGI session login (not HTTP Basic). Login page must be fetched without proxy.
+    # Staff default matches https://github.com/karpus2807/iitd_proxy (role=staff → proxy21).
     proxy_cgi_url: str = Field(
         default="https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi",
-        alias="LABWATCH_PROXY_CGI",
+        validation_alias=AliasChoices("LABWATCH_PROXY_CGI", "proxy_cgi_url"),
     )
 
     @property

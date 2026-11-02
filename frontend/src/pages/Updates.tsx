@@ -40,6 +40,8 @@ type Catalog = {
   proxy_required?: boolean
   used_proxy?: boolean
   direct_ok?: boolean
+  proxy_roles?: string[]
+  proxy_role_default?: string
   apply_ready: { can_spawn: boolean; host_watcher: boolean; repo_dir: string }
   status: UpdateStatus
 }
@@ -47,6 +49,7 @@ type Catalog = {
 export default function Updates() {
   const role = currentUser()?.role
   const [data, setData] = useState<Catalog | null>(null)
+  const [proxyRole, setProxyRole] = useState('staff')
   const [proxyUser, setProxyUser] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
   const [selected, setSelected] = useState('')
@@ -57,6 +60,9 @@ export default function Updates() {
 
   function applyCatalog(catalog: Catalog) {
     setData(catalog)
+    if (catalog.proxy_role_default && !proxyUser) {
+      setProxyRole(catalog.proxy_role_default)
+    }
     if (catalog.builds.length) {
       setSelected(catalog.builds.find((b) => b.is_latest && !b.is_current)?.tag || catalog.builds[0]?.tag || '')
     }
@@ -126,7 +132,11 @@ export default function Updates() {
     try {
       const catalog = await api<Catalog>('/api/admin/updates/fetch', {
         method: 'POST',
-        body: JSON.stringify({ proxy_user: proxyUser, proxy_password: proxyPassword }),
+        body: JSON.stringify({
+          proxy_user: proxyUser,
+          proxy_password: proxyPassword,
+          proxy_role: proxyRole || 'staff',
+        }),
       })
       setFetchProgress(100)
       applyCatalog(catalog)
@@ -193,8 +203,8 @@ export default function Updates() {
         <div>
           <h2>Server updates</h2>
           <p>
-            Releases load automatically when GitHub is reachable. On campus proxy networks, enter credentials and fetch.
-            Stuck installs auto-reset; you can also Cancel and re-run.
+            Releases load automatically when GitHub is reachable. On campus, pick IITD proxy role (staff default), enter userid/password, Fetch.
+            Same flow as <code>iitd-proxy install staff USERID</code>. Stuck installs auto-reset; Cancel and re-run if needed.
           </p>
         </div>
       </div>
@@ -212,9 +222,20 @@ export default function Updates() {
         </p>
       )}
 
-      <form className="card toolbar" onSubmit={fetchBuilds} style={{ marginBottom: 16, alignItems: 'center' }}>
+      <form className="card toolbar" onSubmit={fetchBuilds} style={{ marginBottom: 16, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <select
+          value={proxyRole}
+          onChange={(e) => setProxyRole(e.target.value)}
+          disabled={!proxyRequired || busy}
+          title="IITD proxy category (staff → proxy21 / 10.10.78.21)"
+          style={{ minWidth: 110 }}
+        >
+          {(data?.proxy_roles?.length ? data.proxy_roles : ['staff', 'faculty', 'btech', 'mtech', 'phd', 'visitor']).map((r) => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </select>
         <input
-          placeholder="Proxy username"
+          placeholder="Proxy userid (kerberos)"
           value={proxyUser}
           autoComplete="username"
           onChange={(e) => setProxyUser(e.target.value)}
@@ -236,7 +257,8 @@ export default function Updates() {
       </form>
       {proxyRequired && (
         <p className="muted" style={{ marginTop: -8, marginBottom: 16 }}>
-          Direct GitHub failed. Enter IITD kerberos id/password — LabWatch logs into proxy.cgi on this host (not stored), then fetches releases.
+          Direct GitHub failed. Role <strong>staff</strong> uses proxy21 + 10.10.78.21 (same as iitd-proxy).
+          Password is not stored — only a short-lived proxy.cgi IP session on this host, then releases are fetched.
         </p>
       )}
 

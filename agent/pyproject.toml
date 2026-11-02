@@ -2,7 +2,7 @@
 name = "labwatch-agent"
 version = "1.1.50"
 description = "LabWatch hardware monitoring agent"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
   "httpx>=0.28.0",
   "psutil>=6.1.0",

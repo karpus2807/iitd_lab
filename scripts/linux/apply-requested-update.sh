@@ -72,8 +72,35 @@ if [ ! -d "$REPO/.git" ]; then
   exit 1
 fi
 
+# Campus GitHub fetch: use squid URL from last successful Updates → Fetch (proxy.cgi IP session).
+# File written by LabWatch API after staff/faculty/… login — no password stored.
+PROXY_ENV="$DATA/campus-proxy.env"
+if [ -f "$PROXY_ENV" ]; then
+  echo ">> loading campus proxy from $PROXY_ENV"
+  # shellcheck disable=SC1090
+  set -a
+  # strip comments
+  # shellcheck disable=SC1091
+  . "$PROXY_ENV"
+  set +a
+elif [ -n "${HTTP_PROXY:-}${http_proxy:-}" ]; then
+  echo ">> using existing HTTP_PROXY from environment"
+else
+  # Staff default (same as iitd_proxy role=staff). Requires a live proxy.cgi session on this host.
+  export HTTP_PROXY="${HTTP_PROXY:-http://10.10.78.21:3128/}"
+  export HTTPS_PROXY="${HTTPS_PROXY:-$HTTP_PROXY}"
+  export http_proxy="$HTTP_PROXY"
+  export https_proxy="$HTTPS_PROXY"
+  export NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,::1}"
+  export no_proxy="$NO_PROXY"
+  echo ">> using default staff squid $HTTP_PROXY (Fetch with proxy credentials first if git fails)"
+fi
+
 echo ">> git fetch origin --tags --force"
-git fetch origin --tags --force
+if ! git fetch origin --tags --force; then
+  write_status error "git fetch failed — open Admin → Updates, select role (staff), enter IITD proxy userid/password, Fetch, then Apply again" 0 error
+  exit 1
+fi
 write_status running "Resolving tag $TAG" 35 resolve
 
 if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then

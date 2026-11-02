@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -24,7 +24,23 @@ logger = logging.getLogger("labwatch.updates")
 
 TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.]+)?$")
 SECRET_IN_URL = re.compile(r"://[^/@:]+:[^/@]+@")
-CAMPUS_PROXY = "http://10.10.78.21:3128"
+# IITD campus squid — same role map as https://github.com/karpus2807/iitd_proxy
+# CGI login binds this host's IP; outbound CONNECT uses 10.10.<prefix>.21:3128 (no Basic Auth).
+PROXY_ROLE_PREFIX = {
+    "phd": 61,
+    "mtech": 62,
+    "btech": 22,
+    "staff": 78,
+    "faculty": 82,
+    "visitor": 21,
+}
+PROXY_ROLE_CGI = {
+    "staff": "https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi",
+    "faculty": "https://proxy82.iitd.ac.in/cgi-bin/proxy.cgi",
+    "visitor": "https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi",
+}
+PROXY_PORT = 3128
+CAMPUS_PROXY = "http://10.10.78.21:3128"  # staff default
 SESSION_RE = re.compile(
     r'sessionid"[^>]*value="([a-zA-Z0-9]{16})"|value="([a-zA-Z0-9]{16})"[^>]*name="sessionid"',
     re.IGNORECASE,
@@ -348,57 +364,125 @@ def redact_secrets(text: str) -> str:
     return SECRET_IN_URL.sub("://***:***@", str(text or ""))
 
 
-def _proxy_url(username: str | None = None, password: str | None = None) -> str | None:
+def normalize_proxy_role(role: str | None) -> str:
+    key = (role or "staff").strip().lower()
+    if key not in PROXY_ROLE_PREFIX:
+        raise RuntimeError(
+            f"Unknown proxy role {role!r}. Use one of: {', '.join(sorted(PROXY_ROLE_PREFIX))}"
+        )
+    return key
+
+
+def proxy_prefix_for_role(role: str) -> int:
+    return PROXY_ROLE_PREFIX[normalize_proxy_role(role)]
+
+
+def proxy_url_for_role(role: str | None = "staff") -> str:
+    prefix = proxy_prefix_for_role(role or "staff")
+    return f"http://10.10.{prefix}.21:{PROXY_PORT}/"
+
+
+def proxy_cgi_for_role(role: str | None = "staff") -> str:
+    key = normalize_proxy_role(role)
+    if key in PROXY_ROLE_CGI:
+        return PROXY_ROLE_CGI[key]
+    prefix = PROXY_ROLE_PREFIX[key]
+    return f"https://proxy{prefix}.iitd.ac.in/cgi-bin/proxy.cgi"
+
+
+def campus_proxy_env_path() -> Path:
+    return data_dir() / "campus-proxy.env"
+
+
+def write_campus_proxy_env(role: str, proxy_url: str) -> None:
+    """Persist proxy URL (no password) so host `git fetch` during Apply can use the same squid."""
+    path = campus_proxy_env_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    url = (proxy_url or "").strip().rstrip("/") + "/"
+    body = (
+        f"# Written by LabWatch Updates after proxy.cgi login — no credentials stored.\n"
+        f"# Role={normalize_proxy_role(role)} at {utcnow_iso()}\n"
+        f"HTTP_PROXY={url}\n"
+        f"HTTPS_PROXY={url}\n"
+        f"http_proxy={url}\n"
+        f"https_proxy={url}\n"
+        f"NO_PROXY=localhost,127.0.0.1,::1\n"
+        f"no_proxy=localhost,127.0.0.1,::1\n"
+        f"LABWATCH_PROXY_ROLE={normalize_proxy_role(role)}\n"
+    )
+    path.write_text(body, encoding="utf-8")
+
+
+def _proxy_url(username: str | None = None, password: str | None = None, role: str | None = None) -> str | None:
+    """Return squid URL. Never embeds Basic Auth (IITD uses CGI IP sessions)."""
     settings = get_settings()
     raw = ""
-    for value in (settings.https_proxy, settings.http_proxy):
-        if value and value.strip():
-            raw = value.strip()
+    for value in (settings.https_proxy, settings.http_proxy, os.environ.get("HTTPS_PROXY"), os.environ.get("HTTP_PROXY")):
+        if value and str(value).strip():
+            raw = str(value).strip()
             break
-    user = (username or "").strip()
     if not raw:
-        if not user:
-            return None
-        raw = CAMPUS_PROXY
+        if role or username:
+            return proxy_url_for_role(role or "staff")
+        return None
     parts = urlsplit(raw)
     scheme = parts.scheme or "http"
     host = parts.hostname or "10.10.78.21"
-    port = parts.port or (443 if scheme == "https" else 3128)
+    port = parts.port or PROXY_PORT
+    # Strip any userinfo — Basic Auth in the proxy URL causes CONNECT 302 → proxy.cgi.
     netloc = f"{host}:{port}" if port else host
-    if user:
-        netloc = f"{quote(user, safe='')}:{quote(password or '', safe='')}@{netloc}"
-    return urlunsplit((scheme, netloc, parts.path or "", "", ""))
+    path = parts.path if parts.path not in {"", "/"} else ""
+    return urlunsplit((scheme, netloc, path, "", ""))
 
 
 def _extract_session_id(html: str) -> str | None:
     match = SESSION_RE.search(html or "")
-    if not match:
-        return None
-    return match.group(1) or match.group(2)
+    if match:
+        return match.group(1) or match.group(2)
+    # Fallback: HTMLParser-style scan like iitd_proxy SessionParser
+    for m in re.finditer(r"<input\b[^>]*>", html or "", flags=re.IGNORECASE):
+        tag = m.group(0)
+        if re.search(r'\bname\s*=\s*["\']sessionid["\']', tag, re.I):
+            vm = re.search(r'\bvalue\s*=\s*["\']([a-zA-Z0-9]{16})["\']', tag, re.I)
+            if vm:
+                return vm.group(1)
+    return None
 
 
-async def campus_proxy_cgi_login(username: str, password: str) -> str:
+async def campus_proxy_cgi_login(
+    username: str,
+    password: str,
+    *,
+    role: str | None = "staff",
+) -> str:
     """Authenticate this host on IITD squid via proxy.cgi (IP session; not HTTP Basic).
 
+    Mirrors https://github.com/karpus2807/iitd_proxy login(): role selects CGI + squid prefix.
     The CGI page must be hit *without* HTTP(S)_PROXY, otherwise squid loops 302→proxy.cgi.
-    After success, outbound CONNECT via CAMPUS_PROXY works until the session expires.
     """
     user = (username or "").strip()
     if not user:
         raise RuntimeError("Proxy username is required")
     if not password:
         raise RuntimeError("Proxy password is required")
+    role_key = normalize_proxy_role(role)
     settings = get_settings()
-    cgi = (settings.proxy_cgi_url or "").strip() or "https://proxy21.iitd.ac.in/cgi-bin/proxy.cgi"
+    # Explicit LABWATCH_PROXY_CGI overrides only when role is staff (legacy env).
+    if role_key == "staff" and (settings.proxy_cgi_url or "").strip():
+        cgi = settings.proxy_cgi_url.strip()
+    else:
+        cgi = proxy_cgi_for_role(role_key)
+    proxy_url = proxy_url_for_role(role_key)
 
     # trust_env=False: never send CGI through squid (that is the 302 failure mode).
+    # verify=False: same IITD-only TLS fallback as iitd_proxy (fresh CA stores sometimes miss chain).
     async with httpx.AsyncClient(timeout=25.0, trust_env=False, follow_redirects=True, verify=False) as client:
         page = await client.get(cgi)
         page.raise_for_status()
         session_id = _extract_session_id(page.text)
         if not session_id:
             raise RuntimeError(
-                "Could not read proxy.cgi session id. Check LABWATCH_PROXY_CGI / campus network."
+                f"Could not read proxy.cgi session id from {cgi}. Check campus network / role={role_key}."
             )
         response = await client.post(
             cgi,
@@ -413,18 +497,19 @@ async def campus_proxy_cgi_login(username: str, password: str) -> str:
         body = response.text or ""
 
     low = body.lower()
-    if "logged in successfully" in low or "already logged in" in low:
-        logger.info("Campus proxy.cgi login ok for user=%s", user)
+    # iitd_proxy accepts any "successfully" / "already logged in" (not only "logged in successfully").
+    if "successfully" in low or "already logged in" in low:
+        logger.info("Campus proxy.cgi login ok role=%s user=%s proxy=%s", role_key, user, proxy_url)
+        write_campus_proxy_env(role_key, proxy_url)
         return session_id
     if "does'not match" in low or "does not match" in low or ("invalid" in low and "password" in low):
-        raise RuntimeError("Campus proxy rejected the login. Check username and password.")
+        raise RuntimeError("Campus proxy rejected the login. Check role, userid, and password.")
     if "session expired" in low:
         raise RuntimeError("Campus proxy session expired; try Fetch again.")
     raise RuntimeError(
-        "Campus proxy login failed (unexpected proxy.cgi response). "
-        "Confirm IITD kerberos id/password and proxy category (proxy21)."
+        f"Campus proxy login failed for role={role_key} (unexpected proxy.cgi response). "
+        "Confirm IITD kerberos id/password and role (staff → proxy21 / 10.10.78.21)."
     )
-
 
 async def _http_get_releases(url: str, headers: dict[str, str], limit: int, proxy: str | None) -> list[dict[str, Any]]:
     try:
@@ -487,6 +572,7 @@ async def fetch_github_releases(
     limit: int | None = None,
     proxy_user: str | None = None,
     proxy_password: str | None = None,
+    proxy_role: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch releases. Tries direct first when no proxy user is given; otherwise uses campus proxy."""
     settings = get_settings()
@@ -498,24 +584,28 @@ async def fetch_github_releases(
         "X-GitHub-Api-Version": "2022-11-28",
     }
     user = (proxy_user or "").strip()
+    role = (proxy_role or "staff").strip().lower() or "staff"
     if user:
         # IITD squid: CGI login binds this host IP; do NOT put Basic Auth in the proxy URL
-        # (that path gets CONNECT 302 → proxy.cgi).
-        await campus_proxy_cgi_login(user, proxy_password or "")
-        proxy = _proxy_url(None, None) or CAMPUS_PROXY
+        # (that path gets CONNECT 302 → proxy.cgi). Same flow as iitd_proxy install <role> <userid>.
+        await campus_proxy_cgi_login(user, proxy_password or "", role=role)
+        proxy = proxy_url_for_role(role)
         releases = await _http_get_releases(url, headers, limit, proxy)
     else:
-        # Prefer direct GitHub; only fall back to env proxy (no credentials) if configured.
+        # Prefer direct GitHub; only fall back to env / role default squid (no CGI) if configured.
         try:
             releases = await _http_get_releases(url, headers, limit, None)
         except Exception as direct_exc:  # noqa: BLE001
-            env_proxy = _proxy_url(None, None)
+            env_proxy = _proxy_url(None, None, role=None)
             if not env_proxy:
                 raise direct_exc
             try:
                 releases = await _http_get_releases(url, headers, limit, env_proxy)
             except Exception:
-                raise direct_exc from None
+                raise RuntimeError(
+                    f"{redact_secrets(str(direct_exc))} — direct GitHub blocked. "
+                    "Enter IITD proxy role + userid/password and Fetch (staff for most lab servers)."
+                ) from direct_exc
     cache_path().write_text(json.dumps({"fetched_at": utcnow_iso(), "releases": releases}, indent=2), encoding="utf-8")
     return releases
 
@@ -596,6 +686,7 @@ async def list_builds(
     live: bool = False,
     proxy_user: str | None = None,
     proxy_password: str | None = None,
+    proxy_role: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     source = "idle"
@@ -608,6 +699,7 @@ async def list_builds(
                 settings.updates_builds,
                 proxy_user=proxy_user,
                 proxy_password=proxy_password,
+                proxy_role=proxy_role,
             )
             source = "github"
         except Exception as exc:  # noqa: BLE001 — surface GitHub/proxy failures to the admin UI
@@ -625,13 +717,16 @@ async def list_builds(
     fetched_via_proxy = bool(used_proxy and source == "github")
     # Fetch button only needed when direct GitHub is not available.
     proxy_required = not (source == "github" and not fetched_via_proxy)
-    return _catalog_payload(
+    payload = _catalog_payload(
         releases=releases,
         source=source,
         error=error,
         used_proxy=fetched_via_proxy,
         proxy_required=proxy_required,
     )
+    payload["proxy_roles"] = sorted(PROXY_ROLE_PREFIX.keys())
+    payload["proxy_role_default"] = "staff"
+    return payload
 
 
 def cached_catalog() -> dict[str, Any]:

@@ -15,6 +15,7 @@ class ApplyBuildBody(BaseModel):
 class FetchBuildsBody(BaseModel):
     proxy_user: str = ""
     proxy_password: str = ""
+    proxy_role: str = "staff"
 
 
 class CancelUpdateBody(BaseModel):
@@ -32,16 +33,28 @@ async def list_updates(admin: AdminUser):
 async def fetch_updates(body: FetchBuildsBody, db: DbDep, admin: AdminUser, request: Request):
     user = (body.proxy_user or "").strip()
     password = body.proxy_password or ""
-    # Proxy credentials optional: empty → try direct; with user → campus proxy.
+    role = (body.proxy_role or "staff").strip().lower() or "staff"
+    # Proxy credentials optional: empty → try direct; with user → campus proxy.cgi (iitd_proxy style).
     if user and not password:
         raise HTTPException(400, "Proxy password is required when a proxy username is set")
-    catalog = await update_svc.list_builds(live=True, proxy_user=user or None, proxy_password=password or None)
+    if user and role not in update_svc.PROXY_ROLE_PREFIX:
+        raise HTTPException(
+            400,
+            f"Unknown proxy role {role!r}. Use: {', '.join(sorted(update_svc.PROXY_ROLE_PREFIX))}",
+        )
+    catalog = await update_svc.list_builds(
+        live=True,
+        proxy_user=user or None,
+        proxy_password=password or None,
+        proxy_role=role if user else None,
+    )
     await write_audit(
         db,
         "server.update.fetch",
         user=admin,
         details={
             "proxy_user": user or None,
+            "proxy_role": role if user else None,
             "used_proxy": catalog.get("used_proxy"),
             "source": catalog.get("source"),
         },

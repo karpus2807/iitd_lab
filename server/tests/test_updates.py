@@ -324,7 +324,7 @@ def update_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(update_svc, "current_tag", lambda: "v1.1.55")
     monkeypatch.setattr(update_svc, "current_version", lambda: "1.1.55")
 
-    async def fake_fetch(limit=None, proxy_user=None, proxy_password=None):
+    async def fake_fetch(limit=None, proxy_user=None, proxy_password=None, proxy_role=None):
         rows = RELEASES[: limit or 3]
         update_svc.cache_path().parent.mkdir(parents=True, exist_ok=True)
         update_svc.cache_path().write_text(json.dumps({"releases": rows}), encoding="utf-8")
@@ -347,15 +347,16 @@ def test_annotate_current_and_latest(monkeypatch):
     assert older["action"] == "downgrade"
 
 
-def test_proxy_url_injects_credentials(monkeypatch):
-    monkeypatch.setenv("HTTP_PROXY", "http://10.10.78.21:3128")
+def test_proxy_url_strips_basic_auth(monkeypatch):
+    """IITD squid uses CGI IP sessions — never put userid:password in the proxy URL."""
+    monkeypatch.setenv("HTTP_PROXY", "http://kerberosid:p%40ss@10.10.78.21:3128")
     monkeypatch.setenv("HTTPS_PROXY", "")
     get_settings.cache_clear()
     url = update_svc._proxy_url("kerberosid", "p@ss")
-    assert "kerberosid" in url
-    assert "p%40ss" in url
+    assert url is not None
+    assert "kerberosid" not in url
+    assert "@" not in url
     assert "10.10.78.21:3128" in url
-    assert "p@ss" not in update_svc.redact_secrets(url)
     get_settings.cache_clear()
 
 
@@ -424,8 +425,9 @@ def test_cancel_apply_unlocks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_campus_proxy_cgi_login_posts_validate(monkeypatch):
+async def test_campus_proxy_cgi_login_posts_validate(monkeypatch, tmp_path):
     get_settings.cache_clear()
+    monkeypatch.setattr(update_svc, "repo_dir", lambda: tmp_path)
     calls: list[tuple] = []
 
     class FakeResponse:
@@ -453,17 +455,28 @@ async def test_campus_proxy_cgi_login_posts_validate(monkeypatch):
 
         async def post(self, url, data=None):
             calls.append(("POST", url, data))
-            return FakeResponse("You are logged in successfully as campusid")
+            # iitd_proxy accepts any "successfully" substring
+            return FakeResponse("Login successfully completed for campusid")
 
     monkeypatch.setattr(update_svc.httpx, "AsyncClient", FakeClient)
-    sid = await update_svc.campus_proxy_cgi_login("campusid", "campuspass")
+    sid = await update_svc.campus_proxy_cgi_login("campusid", "campuspass", role="staff")
     assert sid == "aabbccddeeff0011"
-    assert calls[0][0] == "GET"
+    assert "proxy21" in calls[0][1]
     assert calls[1][0] == "POST"
     assert calls[1][2]["action"] == "Validate"
     assert calls[1][2]["userid"] == "campusid"
     assert calls[1][2]["pass"] == "campuspass"
+    env = (tmp_path / "data" / "campus-proxy.env").read_text(encoding="utf-8")
+    assert "10.10.78.21" in env
+    assert "LABWATCH_PROXY_ROLE=staff" in env
     get_settings.cache_clear()
+
+
+def test_proxy_role_urls_match_iitd_proxy():
+    assert update_svc.proxy_url_for_role("staff") == "http://10.10.78.21:3128/"
+    assert update_svc.proxy_url_for_role("faculty") == "http://10.10.82.21:3128/"
+    assert "proxy82" in update_svc.proxy_cgi_for_role("faculty")
+    assert "proxy61" in update_svc.proxy_cgi_for_role("phd")
 
 
 @pytest.mark.asyncio
@@ -472,8 +485,8 @@ async def test_fetch_with_proxy_runs_cgi_login_first(monkeypatch, tmp_path):
     monkeypatch.setattr(update_svc, "repo_dir", lambda: tmp_path)
     order: list[str] = []
 
-    async def fake_login(user, password):
-        order.append(f"login:{user}")
+    async def fake_login(user, password, *, role="staff"):
+        order.append(f"login:{user}:{role}")
         assert password == "pw"
         return "sid"
 
@@ -483,10 +496,12 @@ async def test_fetch_with_proxy_runs_cgi_login_first(monkeypatch, tmp_path):
 
     monkeypatch.setattr(update_svc, "campus_proxy_cgi_login", fake_login)
     monkeypatch.setattr(update_svc, "_http_get_releases", fake_get)
-    rows = await update_svc.fetch_github_releases(limit=3, proxy_user="u1", proxy_password="pw")
+    rows = await update_svc.fetch_github_releases(
+        limit=3, proxy_user="u1", proxy_password="pw", proxy_role="staff"
+    )
     assert len(rows) == 3
-    assert order[0] == "login:u1"
-    assert order[1].startswith("get:http://")
+    assert order[0] == "login:u1:staff"
+    assert order[1].startswith("get:http://10.10.78.21")
     assert "@" not in order[1]  # no Basic Auth in proxy URL
     get_settings.cache_clear()
 

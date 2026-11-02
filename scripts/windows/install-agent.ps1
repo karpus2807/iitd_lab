@@ -100,7 +100,7 @@ function Find-PythonExe {
     $cmd = Get-Command $t.File -ErrorAction SilentlyContinue
     if (-not $cmd) { continue }
     try {
-      $exe = & $cmd.Source @($t.Args + @("-c", "import sys; assert sys.version_info >= (3, 8); print(sys.executable)")) 2>$null
+      $exe = & $cmd.Source @($t.Args + @("-c", "import sys; assert sys.version_info >= (3, 10); print(sys.executable)")) 2>$null
       if (-not $exe) { continue }
       $exe = ([string]$exe).Trim()
       if ($exe -match '\\WindowsApps\\') { continue }
@@ -178,7 +178,7 @@ function Get-AgentSourceFromGitHub([string]$DestRoot) {
 $pythonExe = Find-PythonExe
 if (-not $pythonExe) {
   throw @"
-Python 3.8+ is required and must be on PATH.
+Python 3.10+ is required and must be on PATH.
 1) Download https://www.python.org/downloads/windows/
 2) Enable 'Add python.exe to PATH'
 3) Close this window, open a NEW Admin PowerShell, re-run the installer.

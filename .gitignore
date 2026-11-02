@@ -30,6 +30,8 @@ data/update-request.json
 data/update-status.json
 data/update-apply.log
 data/releases-cache.json
+data/campus-proxy.env
+
 docker/wheels/*.whl
 agent/python-runtime/*.tgz
 agent/python-runtime/*.partial
