@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.2.1](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.1)
+**Latest release:** [v1.2.2](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.2)
 
 ## Requirements
 
@@ -13,14 +13,14 @@ Hosts are matched by hardware IDs, not IP. Linux and Windows.
 |---|---|
 | **Linux OS** | **Ubuntu 16.04+** (and similar Debian 9+ / modern glibc hosts) |
 | **Windows** | Windows 10 (1803+) / Windows 11 |
-| **Agent Python** | **3.10+** at runtime (bundled 3.12 on older hosts) |
+| **Agent runtime** | LabWatch brings **CPython 3.12** when needed |
 
-On Ubuntu 16/18 (or any host with only **Python 2** / 3.5–3.7), the Linux installer
-auto-downloads LabWatch’s **bundled CPython 3.12** from the server
-(`/python-runtime.tgz`) into `/opt/labwatch-agent/python`. System Python 2 is
-left untouched — the agent does **not** run on Python 2 (EOL; modern deps need 3.10+).
+**Host Python can be anything** (Python 2, 3.5, 3.8, 3.10, or missing). The Linux
+installer does **not** require you to upgrade system Python — if the host is below
+3.10 it downloads LabWatch’s bundled CPython 3.12 from `/python-runtime.tgz` into
+`/opt/labwatch-agent/python` and installs the agent there. System Python is left alone.
 
-Server-side: after deploy, once: `./scripts/linux/prefetch-python-runtime.sh` then recreate `api`.
+Server-side (once): `./scripts/linux/prefetch-python-runtime.sh` then recreate `api`.
 
 ## Agent install (lab PC)
 

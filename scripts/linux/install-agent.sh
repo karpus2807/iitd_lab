@@ -337,7 +337,7 @@ _ensure_host_tools() {
 }
 
 _python_ok() {
-  # Wheelhouse/deps need 3.10+ (pydantic 2.14, pip 26). Bundled 3.12 used when host is older.
+  # Agent venv needs 3.10+ for current wheels. Host Python may be anything (2.x / 3.5 / 3.8…).
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null
 }
 
@@ -345,8 +345,24 @@ _python_has_sqlite() {
   "$1" -c 'import sqlite3; sqlite3.connect(":memory:").close()' 2>/dev/null
 }
 
-_candidate_paths() {
-  local c path
+_host_python_summary() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -V 2>&1 || true
+    return 0
+  fi
+  if command -v python2 >/dev/null 2>&1; then
+    python2 -V 2>&1 || true
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    python -V 2>&1 || true
+    return 0
+  fi
+  echo "none"
+}
+
+_candidate_bundled() {
+  local path
   for path in \
     "${PREFIX}/python/bin/python3" \
     "${PREFIX}/python/bin/python" \
@@ -355,35 +371,39 @@ _candidate_paths() {
   do
     [[ -x "$path" ]] && echo "$path"
   done
-  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+}
+
+_candidate_system() {
+  local c path
+  for c in python3.14 python3.13 python3.12 python3.11 python3.10; do
     path="/usr/bin/$c"
     [[ -x "$path" ]] && echo "$path"
   done
-  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+  for c in python3.14 python3.13 python3.12 python3.11 python3.10; do
     path="$(command -v "$c" 2>/dev/null || true)"
     [[ -n "$path" ]] || continue
-    [[ "$path" == /usr/local/* ]] && continue
-    [[ "$path" == /usr/bin/* ]] && continue
     echo "$path"
   done
-  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
-    path="/usr/local/bin/$c"
-    [[ -x "$path" ]] && echo "$path"
-  done
+  # Generic python3 only if it is already 3.10+
+  path="$(command -v python3 2>/dev/null || true)"
+  if [[ -n "$path" ]] && _python_ok "$path"; then
+    echo "$path"
+  fi
 }
 
-_find_python() {
-  # $1 = 1 prefer sqlite, 0 any 3.10+
+_pick_python() {
+  # stdin: candidate paths; $1=1 require sqlite
   local prefer="${1:-1}" path
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
+    [[ -x "$path" ]] || continue
     _python_ok "$path" || continue
     if [[ "$prefer" == "1" ]]; then
       _python_has_sqlite "$path" || continue
     fi
     echo "$path"
     return 0
-  done < <(_candidate_paths)
+  done
   return 1
 }
 
@@ -393,18 +413,18 @@ _bootstrap_bundled_python() {
   case "$arch" in
     x86_64|aarch64) ;;
     *)
-      echo "No bundled Python for arch=${arch}. Install Python 3.10+ manually." >&2
+      echo "No LabWatch bundled Python for arch=${arch}." >&2
       return 1
       ;;
   esac
   if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
-    echo "curl and tar are required to install the bundled Python runtime." >&2
+    echo "curl and tar are required to download LabWatch's bundled CPython 3.12." >&2
     return 1
   fi
   dest="${PREFIX}/python"
   work="$(mktemp -d)"
   tgz="$work/python-runtime.tgz"
-  echo "Host needs Python 3.10+ — downloading LabWatch bundled CPython 3.12 (${arch})…" >&2
+  echo "Downloading LabWatch bundled CPython 3.12 for ${arch} (host Python is left untouched)…" >&2
   if ! curl -fsSL "${SERVER_URL}/python-runtime.tgz?arch=${arch}" -o "$tgz"; then
     echo "ERROR: could not download ${SERVER_URL}/python-runtime.tgz?arch=${arch}" >&2
     echo "On the LabWatch server run: ./scripts/linux/prefetch-python-runtime.sh" >&2
@@ -418,7 +438,6 @@ _bootstrap_bundled_python() {
   if [[ -d "$work/python" ]]; then
     cp -a "$work/python/." "$dest/"
   else
-    # Unexpected layout — copy everything except the tarball
     find "$work" -mindepth 1 -maxdepth 1 ! -name 'python-runtime.tgz' -exec cp -a {} "$dest/" \;
   fi
   rm -rf "$work"
@@ -433,51 +452,53 @@ _bootstrap_bundled_python() {
 }
 
 _ensure_python() {
-  local found
-  found="$(_find_python 1 || true)"
+  # Goal: install works no matter what Python the host has (2.x, 3.5, 3.8, none…).
+  # Agent always runs on CPython >=3.10 — preferably LabWatch's own 3.12 bundle.
+  local found host_py
+  host_py="$(_host_python_summary)"
+  echo "Host Python: ${host_py} — left unchanged. Agent uses its own CPython under ${PREFIX}/python when needed." >&2
+
+  found="$(_pick_python 1 < <(_candidate_bundled) || true)"
   if [[ -n "$found" ]]; then
-    echo "$found"
-    return 0
-  fi
-  found="$(_find_python 0 || true)"
-  if [[ -n "$found" ]]; then
+    echo "Reusing LabWatch bundled runtime: $found" >&2
     echo "$found"
     return 0
   fi
 
-  if command -v python2 >/dev/null 2>&1 || command -v python2.7 >/dev/null 2>&1; then
-    echo "Python 2 detected on this host. LabWatch agent cannot run on Python 2 (EOL)." >&2
-    echo "Installing bundled CPython 3.12 alongside it (system Python 2 stays untouched)…" >&2
-  elif command -v python3 >/dev/null 2>&1; then
-    echo "System $(python3 -V 2>&1) is older than 3.10 (agent wheelhouse needs 3.10+)." >&2
-    echo "Installing bundled CPython 3.12 for LabWatch…" >&2
-  else
-    echo "No usable Python 3.10+ found. Trying distro packages, then bundled CPython 3.12…" >&2
-  fi
-
-  if command -v apt-get >/dev/null; then
-    _pkg_install libsqlite3-0 python3 python3-venv python3-pip \
-      python3.10 python3.10-venv python3.12 python3.12-venv || true
-  elif command -v dnf >/dev/null; then
-    _pkg_install sqlite python3 python3-pip python3-virtualenv || true
-  fi
-  found="$(_find_python 1 || true)"
+  found="$(_pick_python 1 < <(_candidate_system) || true)"
   if [[ -n "$found" ]]; then
+    echo "Using system Python 3.10+: $found" >&2
     echo "$found"
     return 0
   fi
-  found="$(_find_python 0 || true)"
+  found="$(_pick_python 0 < <(_candidate_system) || true)"
   if [[ -n "$found" ]]; then
+    echo "Using system Python 3.10+: $found" >&2
     echo "$found"
     return 0
   fi
 
+  # Prefer bundled download over apt — works on Ubuntu 16/18 where distro python is 3.5/3.6/3.8.
   found="$(_bootstrap_bundled_python || true)"
   if [[ -n "$found" ]]; then
     echo "$found"
     return 0
   fi
-  echo "Need Python 3.10+ (or LabWatch bundled CPython 3.12 from /python-runtime.tgz)." >&2
+
+  echo "Trying distro Python 3.10/3.12 packages as fallback…" >&2
+  if command -v apt-get >/dev/null; then
+    _pkg_install libsqlite3-0 python3.10 python3.10-venv python3.12 python3.12-venv || true
+  elif command -v dnf >/dev/null; then
+    _pkg_install sqlite python3 python3-pip python3-virtualenv || true
+  fi
+  found="$(_pick_python 1 < <(_candidate_system) || true)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+
+  echo "Could not obtain CPython 3.10+ for the agent (bundled download failed)." >&2
+  echo "Fix: ensure ${SERVER_URL}/python-runtime.tgz is reachable, then re-run installer." >&2
   return 1
 }
 
@@ -488,15 +509,12 @@ if ! command -v curl >/dev/null; then
   _pkg_install curl || exit 1
 fi
 PYTHON_BIN="$(_ensure_python)" || {
-  echo "python3 3.10+ is required (bundled runtime install failed)."
+  echo "LabWatch could not install its bundled CPython 3.12. Check network to ${SERVER_URL}/python-runtime.tgz"
   exit 1
 }
-echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN -V 2>&1))"
+echo "Using Python for agent: $PYTHON_BIN ($($PYTHON_BIN -V 2>&1))"
 if ! _python_has_sqlite "$PYTHON_BIN"; then
   echo "NOTE: $PYTHON_BIN has no stdlib _sqlite3 — will use pysqlite3-binary from LabWatch wheels."
-fi
-if [[ "$PYTHON_BIN" == /usr/local/* ]]; then
-  echo "NOTE: using /usr/local Python. Distro python3 or LabWatch bundled runtime is preferred."
 fi
 
 if systemctl is-active --quiet labwatch-agent 2>/dev/null || [[ -f "${CONFIG_DIR}/config.toml" ]]; then
