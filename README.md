@@ -5,7 +5,22 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.1.80](https://github.com/karpus2807/iitd_lab/releases/tag/v1.1.80)
+**Latest release:** [v1.2.0](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.0)
+
+## Requirements
+
+| | Supported |
+|---|---|
+| **Linux OS** | **Ubuntu 16.04+** (and similar Debian 9+ / modern glibc hosts) |
+| **Windows** | Windows 10 (1803+) / Windows 11 |
+| **Agent Python** | **3.8+** at runtime |
+
+On Ubuntu 16/18 (or any host with only **Python 2** / 3.5–3.7), the Linux installer
+auto-downloads LabWatch’s **bundled CPython 3.12** from the server
+(`/python-runtime.tgz`) into `/opt/labwatch-agent/python`. System Python 2 is
+left untouched — the agent does **not** run on Python 2 (EOL; modern deps need 3.8+).
+
+Server-side: after deploy, once: `./scripts/linux/prefetch-python-runtime.sh` then recreate `api`.
 
 ## Agent install (lab PC)
 
@@ -130,7 +145,7 @@ Postgres volume and `.env` are kept.
 ```bash
 cd ~/iitd_lab
 git fetch origin --tags
-git checkout -f v1.1.80
+git checkout -f v1.2.0
 sudo docker compose up -d --force-recreate --no-deps api web
 curl -sS http://127.0.0.1:8080/health
 ```
@@ -152,9 +167,9 @@ Compose maps host **8080 →** nginx. Health: `http://127.0.0.1:8080/health`.
 
 ```
 server/     FastAPI
-agent/      Python agent (3.8+)
+agent/      Python agent (runtime 3.8+; bundled 3.12 for old Ubuntu)
 frontend/   React UI → docker/web-static
-scripts/    installers
+scripts/    installers (+ prefetch-python-runtime.sh)
 docs/       troubleshooting, hardware
 ```
 

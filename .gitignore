@@ -31,6 +31,8 @@ data/update-status.json
 data/update-apply.log
 data/releases-cache.json
 docker/wheels/*.whl
+agent/python-runtime/*.tgz
+agent/python-runtime/*.partial
 uploads/
 *.pem
 *.key

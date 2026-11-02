@@ -106,6 +106,15 @@ async def test_install_script_and_agent_pack(client: AsyncClient):
     assert "/api/machines?inventory_id=" in text
     assert "dmidecode" in text
     assert "pciutils" in text
+    assert "python-runtime.tgz" in text
+    assert "Ubuntu 16.04" in text or "16.04+" in text
+    assert "_bootstrap_bundled_python" in text
+
+    missing = await client.get("/python-runtime.tgz", params={"arch": "x86_64"})
+    # 404 until server runs prefetch-python-runtime.sh; endpoint must exist.
+    assert missing.status_code in {200, 404}
+    if missing.status_code == 404:
+        assert b"prefetch-python-runtime" in missing.content
 
     ps1 = await client.get("/install-agent.ps1")
     assert ps1.status_code == 200, ps1.text

@@ -71,7 +71,16 @@ cd ~/iitd_lab
 sudo docker compose up -d --force-recreate --no-deps api web
 ```
 
-Still need a local Python 3.8+ on the lab PC (OS package / python.org). Only pip packages come from hobbit.
+If the lab PC has no Python 3.8+ (Ubuntu 16/18 with 3.5/3.6, or Python 2 only), the
+installer pulls LabWatch’s bundled CPython from `/python-runtime.tgz`. Prefetch that
+on the server once:
+
+```bash
+./scripts/linux/prefetch-python-runtime.sh
+sudo docker compose up -d --force-recreate --no-deps api
+```
+
+Pip packages still come from the agent wheelhouse on hobbit (offline).
 
 ## Agent NEVER_CONNECTED / enrolled=no
 

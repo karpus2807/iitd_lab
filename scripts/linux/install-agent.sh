@@ -263,14 +263,56 @@ _pkg_install() {
   _pkg_install_once "${pkgs[@]}" || true
 }
 
+_check_os_supported() {
+  # LabWatch agents: Ubuntu 16.04+ (and similar glibc hosts). Older Ubuntu rejected.
+  if [[ ! -f /etc/os-release ]]; then
+    echo "OS: unknown (no /etc/os-release) — continuing; need Python 3.8+ or bundled runtime."
+    return 0
+  fi
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  local id="${ID:-}" ver_full="${VERSION_ID:-}" ver_major
+  ver_major="${ver_full%%.*}"
+  case "$id" in
+    ubuntu)
+      if [[ -n "$ver_major" && "$ver_major" -lt 16 ]]; then
+        echo "Ubuntu ${ver_full} is not supported. LabWatch needs Ubuntu 16.04 or newer."
+        exit 1
+      fi
+      echo "OS: Ubuntu ${ver_full} (supported — 16.04+)"
+      ;;
+    debian)
+      if [[ -n "$ver_major" && "$ver_major" -lt 9 ]]; then
+        echo "WARN: Debian ${ver_full} is older than recommended; bundled Python may still work."
+      else
+        echo "OS: Debian ${ver_full} (supported)"
+      fi
+      ;;
+    *)
+      echo "OS: ${PRETTY_NAME:-$id $ver_full} — supported if glibc works with bundled CPython 3.12"
+      ;;
+  esac
+}
+
+_host_arch() {
+  local m
+  m="$(uname -m 2>/dev/null || echo x86_64)"
+  case "$m" in
+    x86_64|amd64) echo x86_64 ;;
+    aarch64|arm64) echo aarch64 ;;
+    *) echo "$m" ;;
+  esac
+}
+
 _ensure_host_tools() {
   local pkgs=()
-  # Always prefer a distro python3 with venv+sqlite for the agent.
-  command -v python3 >/dev/null || pkgs+=(python3 python3-venv python3-pip)
+  # Distro python3 is nice-to-have; Ubuntu 16 may only have 3.5 — we bootstrap 3.12 later.
+  command -v python3 >/dev/null || pkgs+=(python3 python3-venv python3-pip) || true
   if command -v apt-get >/dev/null; then
     pkgs+=(libsqlite3-0)
   fi
   command -v curl >/dev/null || pkgs+=(curl)
+  command -v tar >/dev/null || pkgs+=(tar)
   command -v dmidecode >/dev/null || pkgs+=(dmidecode)
   command -v lspci >/dev/null || pkgs+=(pciutils)
   command -v lsblk >/dev/null || pkgs+=(util-linux)
@@ -281,10 +323,8 @@ _ensure_host_tools() {
     echo "Host collector tools already present."
   else
     echo "Installing missing collector tools: ${pkgs[*]}"
-    _pkg_install "${pkgs[@]}"
+    _pkg_install "${pkgs[@]}" || true
   fi
-  # Optional GPU helpers (free). Sysfs is primary; these fill util when present.
-  # Failures are ignored — lab machines may lack repos or be offline.
   local gpu_pkgs=()
   if command -v apt-get >/dev/null; then
     command -v intel_gpu_top >/dev/null || gpu_pkgs+=(intel-gpu-tools)
@@ -297,7 +337,7 @@ _ensure_host_tools() {
 }
 
 _python_ok() {
-  # 3.8+ required.
+  # Agent runtime requires 3.8+ (bundled CPython used when host is older / Python 2 only).
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null
 }
 
@@ -305,78 +345,150 @@ _python_has_sqlite() {
   "$1" -c 'import sqlite3; sqlite3.connect(":memory:").close()' 2>/dev/null
 }
 
-_pick_python_from_list() {
-  # Prefer interpreters that already have working stdlib sqlite3.
-  local prefer_sqlite="$1"
-  shift
-  local path
-  for path in "$@"; do
-    [[ -x "$path" ]] || continue
-    _python_ok "$path" || continue
-    if [[ "$prefer_sqlite" == "1" ]]; then
-      _python_has_sqlite "$path" || continue
-    fi
-    echo "$path"
-    return 0
-  done
-  return 1
-}
-
 _candidate_paths() {
   local c path
-  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
+  for path in \
+    "${PREFIX}/python/bin/python3" \
+    "${PREFIX}/python/bin/python" \
+    /opt/labwatch-agent/python/bin/python3 \
+    /opt/labwatch-agent/python/bin/python
+  do
+    [[ -x "$path" ]] && echo "$path"
+  done
+  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
     path="/usr/bin/$c"
     [[ -x "$path" ]] && echo "$path"
   done
-  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
+  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
     path="$(command -v "$c" 2>/dev/null || true)"
     [[ -n "$path" ]] || continue
     [[ "$path" == /usr/local/* ]] && continue
     [[ "$path" == /usr/bin/* ]] && continue
     echo "$path"
   done
-  for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python3.13 python3.14; do
+  for c in python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3; do
     path="/usr/local/bin/$c"
     [[ -x "$path" ]] && echo "$path"
   done
 }
 
 _find_python() {
-  local -a paths=()
-  mapfile -t paths < <(_candidate_paths)
-  # 1) Any 3.8+ with working sqlite3
-  _pick_python_from_list 1 "${paths[@]}" && return 0
-  # 2) Any 3.8+ (optional pysqlite3-binary later)
-  _pick_python_from_list 0 "${paths[@]}" && return 0
+  # $1 = 1 prefer sqlite, 0 any 3.8+
+  local prefer="${1:-1}" path
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    _python_ok "$path" || continue
+    if [[ "$prefer" == "1" ]]; then
+      _python_has_sqlite "$path" || continue
+    fi
+    echo "$path"
+    return 0
+  done < <(_candidate_paths)
+  return 1
+}
+
+_bootstrap_bundled_python() {
+  local arch dest work tgz pybin
+  arch="$(_host_arch)"
+  case "$arch" in
+    x86_64|aarch64) ;;
+    *)
+      echo "No bundled Python for arch=${arch}. Install Python 3.8+ manually." >&2
+      return 1
+      ;;
+  esac
+  if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
+    echo "curl and tar are required to install the bundled Python runtime." >&2
+    return 1
+  fi
+  dest="${PREFIX}/python"
+  work="$(mktemp -d)"
+  tgz="$work/python-runtime.tgz"
+  echo "Host needs Python 3.8+ — downloading LabWatch bundled CPython (${arch})…" >&2
+  if ! curl -fsSL "${SERVER_URL}/python-runtime.tgz?arch=${arch}" -o "$tgz"; then
+    echo "ERROR: could not download ${SERVER_URL}/python-runtime.tgz?arch=${arch}" >&2
+    echo "On the LabWatch server run: ./scripts/linux/prefetch-python-runtime.sh" >&2
+    echo "Then: sudo docker compose up -d --force-recreate --no-deps api" >&2
+    rm -rf "$work"
+    return 1
+  fi
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  tar -xzf "$tgz" -C "$work"
+  if [[ -d "$work/python" ]]; then
+    cp -a "$work/python/." "$dest/"
+  else
+    # Unexpected layout — copy everything except the tarball
+    find "$work" -mindepth 1 -maxdepth 1 ! -name 'python-runtime.tgz' -exec cp -a {} "$dest/" \;
+  fi
+  rm -rf "$work"
+  for pybin in "$dest/bin/python3" "$dest/bin/python"; do
+    if [[ -x "$pybin" ]] && _python_ok "$pybin"; then
+      echo "$pybin"
+      return 0
+    fi
+  done
+  echo "ERROR: bundled Python unpack failed under $dest" >&2
   return 1
 }
 
 _ensure_python() {
   local found
-  found="$(_find_python || true)"
+  found="$(_find_python 1 || true)"
   if [[ -n "$found" ]]; then
     echo "$found"
     return 0
   fi
-  echo "Python 3.8+ with sqlite3 not found. Trying to install a distro interpreter…"
+  found="$(_find_python 0 || true)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+
+  if command -v python2 >/dev/null 2>&1 || command -v python2.7 >/dev/null 2>&1; then
+    echo "Python 2 detected on this host. LabWatch agent cannot run on Python 2 (EOL)." >&2
+    echo "Installing bundled CPython 3.12 alongside it (system Python 2 stays untouched)…" >&2
+  elif command -v python3 >/dev/null 2>&1; then
+    echo "System $(python3 -V 2>&1) is older than 3.8." >&2
+    echo "Installing bundled CPython 3.12 for LabWatch…" >&2
+  else
+    echo "No usable Python 3.8+ found. Trying distro packages, then bundled runtime…" >&2
+  fi
+
   if command -v apt-get >/dev/null; then
-    _pkg_install libsqlite3-0 python3 python3-venv python3-pip python3.10 python3.10-venv python3.12 python3.12-venv || true
+    _pkg_install libsqlite3-0 python3 python3-venv python3-pip \
+      python3.8 python3.8-venv python3.10 python3.10-venv python3.12 python3.12-venv || true
   elif command -v dnf >/dev/null; then
     _pkg_install sqlite python3 python3-pip python3-virtualenv || true
   fi
-  found="$(_find_python || true)"
+  found="$(_find_python 1 || true)"
   if [[ -n "$found" ]]; then
     echo "$found"
     return 0
   fi
-  echo "Need Python 3.8+ built WITH sqlite3 (apt install python3 python3-venv)."
-  echo "A /usr/local Python without _sqlite3 will not work — use the distro python3 instead."
+  found="$(_find_python 0 || true)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+
+  found="$(_bootstrap_bundled_python || true)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+  echo "Need Python 3.8+ (or LabWatch bundled runtime from /python-runtime.tgz)." >&2
   return 1
 }
 
+_check_os_supported
 _ensure_host_tools
+if ! command -v curl >/dev/null; then
+  echo "curl is required (apt install curl after campus proxy login if needed)."
+  _pkg_install curl || exit 1
+fi
 PYTHON_BIN="$(_ensure_python)" || {
-  echo "python3 3.8+ is required."
+  echo "python3 3.8+ is required (bundled runtime install failed)."
   exit 1
 }
 echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN -V 2>&1))"
@@ -384,11 +496,7 @@ if ! _python_has_sqlite "$PYTHON_BIN"; then
   echo "NOTE: $PYTHON_BIN has no stdlib _sqlite3 — will use pysqlite3-binary from LabWatch wheels."
 fi
 if [[ "$PYTHON_BIN" == /usr/local/* ]]; then
-  echo "WARNING: using /usr/local Python. Prefer: apt install python3 python3-venv"
-fi
-if ! command -v curl >/dev/null; then
-  echo "curl is required (apt install curl after campus proxy login if needed)."
-  _pkg_install curl || exit 1
+  echo "NOTE: using /usr/local Python. Distro python3 or LabWatch bundled runtime is preferred."
 fi
 
 if systemctl is-active --quiet labwatch-agent 2>/dev/null || [[ -f "${CONFIG_DIR}/config.toml" ]]; then
@@ -399,7 +507,7 @@ fi
 _toml_get() {
   local file="$1" key="$2"
   [[ -f "$file" ]] || return 0
-  python3 - "$file" "$key" <<'PY'
+  $PYTHON_BIN - "$file" "$key" <<'PY'
 import re, sys
 text = open(sys.argv[1], encoding="utf-8").read()
 key = sys.argv[2]
@@ -452,7 +560,7 @@ fi
 if [[ -z "$LAB_ID" ]]; then
   _say "Fetching labs from ${SERVER_URL} (direct, 20s timeout)…"
   LABS_JSON="$(
-    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" EXISTING_LAB_ID="$EXISTING_LAB_ID" EXISTING_LAB_NAME="$EXISTING_LAB_NAME" python3 - <<'PY'
+    SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" EXISTING_LAB_ID="$EXISTING_LAB_ID" EXISTING_LAB_NAME="$EXISTING_LAB_NAME" $PYTHON_BIN - <<'PY'
 import json, os, sys, urllib.error, urllib.parse, urllib.request
 
 def call(method, path, data=None, token=None):
@@ -510,7 +618,7 @@ PY
     echo "Could not fetch labs. Check username/password and that ${SERVER_URL} is reachable."
     exit 1
   }
-  python3 - "$LABS_JSON" <<'PY' >"${TTY:-/dev/stderr}"
+  $PYTHON_BIN - "$LABS_JSON" <<'PY' >"${TTY:-/dev/stderr}"
 import json, sys
 data = json.loads(sys.argv[1])
 print("\nLabs:")
@@ -529,7 +637,7 @@ PY
     CHOICE="$REPLY_TTY"
   fi
   LAB_PICK="$(
-    CHOICE="$CHOICE" python3 - "$LABS_JSON" <<'PY'
+    CHOICE="$CHOICE" $PYTHON_BIN - "$LABS_JSON" <<'PY'
 import json, os, sys
 data = json.loads(sys.argv[1])
 labs = data["labs"]
@@ -558,9 +666,9 @@ PY
     echo "Invalid lab choice."
     exit 1
   }
-  LAB_ID="$(printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lab_id"])')"
-  LAB_NAME="$(printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lab"])')"
-  if printf '%s' "$LAB_PICK" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("kept") else 1)'; then
+  LAB_ID="$(printf '%s' "$LAB_PICK" | $PYTHON_BIN -c 'import json,sys; print(json.load(sys.stdin)["lab_id"])')"
+  LAB_NAME="$(printf '%s' "$LAB_PICK" | $PYTHON_BIN -c 'import json,sys; print(json.load(sys.stdin)["lab"])')"
+  if printf '%s' "$LAB_PICK" | $PYTHON_BIN -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("kept") else 1)'; then
     _say "Keeping ${LAB_NAME}"
   else
     _say "Selected ${LAB_NAME}"
@@ -570,7 +678,7 @@ fi
 
 echo "Logging in to ${SERVER_URL} and enrolling ${INVENTORY_ID}…"
 ENROLL_JSON="$(
-  SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" LAB_ID="$LAB_ID" python3 - <<'PY'
+  SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" LAB_ID="$LAB_ID" $PYTHON_BIN - <<'PY'
 import json, os, urllib.error, urllib.request
 payload = {
     "username": os.environ["USERNAME"],
@@ -597,8 +705,8 @@ except urllib.error.URLError as exc:
     raise SystemExit(f"Enroll failed: {exc}")
 PY
 )"
-TOKEN="$(printf '%s' "$ENROLL_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["registration_token"])')"
-REMOTE_URL="$(printf '%s' "$ENROLL_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("server_url") or "")')"
+TOKEN="$(printf '%s' "$ENROLL_JSON" | $PYTHON_BIN -c 'import json,sys; print(json.load(sys.stdin)["registration_token"])')"
+REMOTE_URL="$(printf '%s' "$ENROLL_JSON" | $PYTHON_BIN -c 'import json,sys; print(json.load(sys.stdin).get("server_url") or "")')"
 if [[ -n "$REMOTE_URL" ]]; then
   SERVER_URL="$REMOTE_URL"
   SERVER_HOST="${SERVER_URL#*://}"
@@ -710,7 +818,7 @@ PY_SITE="$("$PREFIX/venv/bin/python" -c 'import sysconfig; print(sysconfig.get_p
 mkdir -p "$PY_SITE"
 echo "$PREFIX" > "$PY_SITE/labwatch.pth"
 
-LAB_TOML="$(printf '%s' "$LAB_NAME" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+LAB_TOML="$(printf '%s' "$LAB_NAME" | $PYTHON_BIN -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [server]
 url = "${SERVER_URL}"

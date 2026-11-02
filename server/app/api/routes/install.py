@@ -102,3 +102,36 @@ async def agent_pack():
             "X-LabWatch-Agent-Version": pack_ver,
         },
     )
+
+
+@router.get("/python-runtime.tgz")
+async def python_runtime(arch: str = "x86_64"):
+    """Standalone CPython for Ubuntu 16.04+ hosts without Python 3.8+.
+
+    Prefetch on the server: ``./scripts/linux/prefetch-python-runtime.sh``
+    """
+    key = (arch or "x86_64").strip().lower().replace("amd64", "x86_64").replace("arm64", "aarch64")
+    if key in {"x86_64", "x64", "amd64"}:
+        fname = "linux-x86_64.tgz"
+    elif key in {"aarch64", "arm64"}:
+        fname = "linux-aarch64.tgz"
+    else:
+        return PlainTextResponse(
+            f"unsupported arch={arch!r}; use x86_64 or aarch64\n",
+            status_code=400,
+        )
+    path = repo_dir() / "agent" / "python-runtime" / fname
+    if not path.is_file():
+        return PlainTextResponse(
+            "python-runtime missing on server — run scripts/linux/prefetch-python-runtime.sh\n",
+            status_code=404,
+        )
+    data = path.read_bytes()
+    return Response(
+        content=data,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-LabWatch-Python-Runtime-Arch": fname.replace("linux-", "").replace(".tgz", ""),
+        },
+    )
