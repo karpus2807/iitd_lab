@@ -422,7 +422,8 @@ def _lspci_devices() -> list[dict[str, Any]]:
     return devices
 
 
-def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
+def collect_gpus_linux(*, include_live: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
+    """GPU inventory. Live util/temp/power are for metrics; inventory keeps identity cheap."""
     from labwatch_agent.collectors.gpu_sysfs import (
         dedupe_gpus,
         enrich_linux_gpu,
@@ -435,13 +436,20 @@ def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
     gpus: list[dict[str, Any]] = []
     nvidia_pci: set[str] = set()
     if which("nvidia-smi"):
-        query = (
-            "--query-gpu=index,name,uuid,serial,memory.total,memory.used,"
-            "utilization.gpu,temperature.gpu,power.draw,clocks.gr,clocks.mem,pci.bus_id,driver_version"
-        )
+        # Identity query only unless include_live (avoids pulling live clocks on hourly inventory).
+        if include_live:
+            query = (
+                "--query-gpu=index,name,uuid,serial,memory.total,memory.used,"
+                "utilization.gpu,temperature.gpu,power.draw,clocks.gr,clocks.mem,pci.bus_id,driver_version"
+            )
+        else:
+            query = "--query-gpu=index,name,uuid,serial,memory.total,memory.used,pci.bus_id,driver_version"
         code, out, err = run_cmd(["nvidia-smi", query, "--format=csv,noheader,nounits"])
         if code == 0:
-            gpus = parse_nvidia_smi_csv(out)
+            if include_live:
+                gpus = parse_nvidia_smi_csv(out)
+            else:
+                gpus = _parse_nvidia_identity_csv(out)
             for g in gpus:
                 extra = g.setdefault("extra", {})
                 extra["gpu_kind"] = "discrete"
@@ -491,34 +499,86 @@ def collect_gpus_linux() -> tuple[list[dict[str, Any]], list[str]]:
             if not gpus:
                 notes.append("No GPU devices reported by PCI enumeration.")
 
-    drm_rows = iter_drm_gpus()
-    gpus = [enrich_linux_gpu(g, drm_rows) for g in gpus]
+    drm_rows = iter_drm_gpus(include_live=include_live)
+    gpus = [enrich_linux_gpu(g, drm_rows, include_live=include_live) for g in gpus]
     gpus = dedupe_gpus(gpus)
 
-    jetson = collect_jetson_gpu()
-    if jetson:
-        if gpus:
-            gpus[0] = merge_gpu(gpus[0], jetson)
-            from labwatch_agent.collectors.gpu_sysfs import compute_telemetry_pct
+    # Jetson tegrastats is relatively expensive — only on live/metrics path.
+    if include_live:
+        jetson = collect_jetson_gpu()
+        if jetson:
+            if gpus:
+                gpus[0] = merge_gpu(gpus[0], jetson)
+                from labwatch_agent.collectors.gpu_sysfs import compute_telemetry_pct
 
-            gpus[0].setdefault("extra", {})["telemetry_pct"] = compute_telemetry_pct(gpus[0])
-            gpus[0]["extra"]["driver_status"] = gpus[0]["extra"].get("driver_status") or "ok"
-            gpus[0]["extra"]["driver_ok"] = True
-        else:
-            gpus = [jetson]
-        notes.append("Jetson/L4T GPU telemetry filled from sysfs/tegrastats (nvidia-smi fields are often N/A).")
+                gpus[0].setdefault("extra", {})["telemetry_pct"] = compute_telemetry_pct(gpus[0])
+                gpus[0]["extra"]["driver_status"] = gpus[0]["extra"].get("driver_status") or "ok"
+                gpus[0]["extra"]["driver_ok"] = True
+            else:
+                gpus = [jetson]
+            notes.append("Jetson/L4T GPU telemetry filled from sysfs/tegrastats (nvidia-smi fields are often N/A).")
+    elif is_jetson() and not gpus:
+        # Cheap identity placeholder without tegrastats.
+        gpus = [
+            {
+                "index": 0,
+                "vendor": "NVIDIA",
+                "model": board_model() or "NVIDIA Jetson",
+                "slot_designation": "SoC (nvgpu)",
+                "extra": {"gpu_kind": "integrated", "memory_kind": "unified", "bus": "soc", "platform": "jetson"},
+            }
+        ]
     return gpus, notes
 
 
-def collect_storage_linux() -> dict[str, Any]:
+def _parse_nvidia_identity_csv(text: str) -> list[dict[str, Any]]:
+    """Parse short nvidia-smi identity CSV (no util/temp/power columns)."""
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 6:
+            continue
+        try:
+            idx = int(float(parts[0]))
+        except ValueError:
+            idx = len(rows)
+        mem_total = None
+        mem_used = None
+        try:
+            if parts[4] and parts[4].upper() not in {"[N/A]", "N/A"}:
+                mem_total = int(float(parts[4]) * 1024 * 1024)
+            if parts[5] and parts[5].upper() not in {"[N/A]", "N/A"}:
+                mem_used = int(float(parts[5]) * 1024 * 1024)
+        except ValueError:
+            pass
+        rows.append(
+            {
+                "index": idx,
+                "vendor": "NVIDIA",
+                "model": parts[1],
+                "uuid": parts[2] if parts[2].upper() not in {"[N/A]", "N/A"} else None,
+                "serial_number": parts[3] if parts[3].upper() not in {"[N/A]", "N/A"} else None,
+                "vram_bytes": mem_total,
+                "vram_used_bytes": mem_used,
+                "pci_bus": parts[6] if len(parts) > 6 else None,
+                "driver_version": parts[7] if len(parts) > 7 else None,
+            }
+        )
+    return rows
+
+
+def collect_storage_linux(*, include_smart: bool = True) -> dict[str, Any]:
     notes: list[str] = []
     disks = _lsblk_disks(notes)
     disks = [d for d in disks if is_physical_disk(d.get("name"))]
-    if which("smartctl"):
-        for d in disks:
-            _fill_smart(d)
+    if include_smart:
+        if which("smartctl"):
+            for d in disks:
+                _fill_smart(d)
+        else:
+            notes.append("smartctl not installed; SMART health not collected.")
     else:
-        notes.append("smartctl not installed; SMART health not collected.")
+        notes.append("SMART skipped on light inventory (full scan runs hourly).")
     filesystems = []
     for part in psutil.disk_partitions(all=False):
         if part.fstype in {"squashfs", "overlay", "tmpfs", "devtmpfs", "efivarfs"}:
@@ -761,6 +821,32 @@ def collect_metrics(prev_net=None, prev_disk=None, prev_ts=None) -> tuple[dict[s
                         "memory_clock_mhz": parsed.get("memory_clock_mhz"),
                     }
                 )
+    # Intel/AMD (and other DRM) live util/temp — inventory path is identity-only.
+    try:
+        from labwatch_agent.collectors.gpu_sysfs import iter_drm_gpus, normalize_pci_bus
+
+        drm_rows = iter_drm_gpus(include_live=True)
+    except Exception:
+        drm_rows = []
+    for i, row in enumerate(drm_rows):
+        vendor = (row.get("vendor") or "").lower()
+        # Discrete NVIDIA already covered by nvidia-smi above when available.
+        if vendor == "nvidia" and gpus:
+            continue
+        pci = normalize_pci_bus(row.get("pci_bus")) or ""
+        gpus.append(
+            {
+                "index": len(gpus),
+                "gpu_key": pci or row.get("card") or f"drm-{i}",
+                "utilization_pct": row.get("utilization_pct"),
+                "temperature_c": row.get("temperature_c"),
+                "vram_used_bytes": row.get("vram_used_bytes"),
+                "vram_total_bytes": row.get("vram_bytes"),
+                "power_w": row.get("power_w"),
+                "graphics_clock_mhz": row.get("graphics_clock_mhz"),
+                "memory_clock_mhz": row.get("memory_clock_mhz"),
+            }
+        )
     jetson = collect_jetson_gpu()
     if jetson:
         overlay = {

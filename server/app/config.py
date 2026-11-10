@@ -30,9 +30,12 @@ class Settings(BaseSettings):
     access_token_minutes: int = 480
     refresh_token_days: int = 7
 
-    heartbeat_interval_seconds: int = Field(default=30, alias="HEARTBEAT_INTERVAL_SECONDS")
-    offline_after_seconds: int = Field(default=90, alias="OFFLINE_AFTER_SECONDS")
-    unhealthy_after_seconds: int = Field(default=180, alias="UNHEALTHY_AFTER_SECONDS")
+    # Agent poll cadence (also returned on register so agents adopt server defaults).
+    heartbeat_interval_seconds: int = Field(default=60, alias="HEARTBEAT_INTERVAL_SECONDS")
+    metric_interval_seconds: int = Field(default=180, alias="METRIC_INTERVAL_SECONDS")
+    inventory_interval_seconds: int = Field(default=3600, alias="INVENTORY_INTERVAL_SECONDS")
+    offline_after_seconds: int = Field(default=180, alias="OFFLINE_AFTER_SECONDS")
+    unhealthy_after_seconds: int = Field(default=360, alias="UNHEALTHY_AFTER_SECONDS")
     require_agent_approval: bool = Field(default=False, alias="REQUIRE_AGENT_APPROVAL")
 
     metrics_raw_retention_days: int = Field(default=30, alias="METRICS_RAW_RETENTION_DAYS")

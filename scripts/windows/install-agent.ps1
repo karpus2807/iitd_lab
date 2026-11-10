@@ -428,9 +428,9 @@ lab_id = "$([string]$lab.id)"
 lab = "$labToml"
 
 [agent]
-heartbeat_interval = 30
-metric_interval = 30
-inventory_interval = 300
+heartbeat_interval = 60
+metric_interval = 180
+inventory_interval = 3600
 
 [tls]
 verify = true

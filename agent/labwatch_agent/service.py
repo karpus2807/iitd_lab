@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from labwatch_agent import __version__
 from labwatch_agent.client import AgentAuthError, AgentClient
-from labwatch_agent.collectors import collect_inventory, collect_metrics
+from labwatch_agent.collectors import collect_inventory, collect_metrics, inventory_static_fingerprint
 from labwatch_agent.config import AgentConfig, load_config, read_state, write_state
 from labwatch_agent.netaddr import collect_host_addresses
 from labwatch_agent.queue import EventQueue, QueueLogHandler
@@ -63,6 +63,34 @@ def _bypass_campus_proxy(server_url: str) -> None:
         os.environ.pop(key, None)
 
 
+def _apply_server_intervals(cfg: AgentConfig, data: dict) -> None:
+    """Adopt poll intervals from /register or /heartbeat (server is fleet source of truth)."""
+    mapping = (
+        ("heartbeat_interval", "heartbeat_interval"),
+        ("metric_interval", "metric_interval"),
+        ("inventory_interval", "inventory_interval"),
+    )
+    changed = False
+    for src, attr in mapping:
+        raw = data.get(src)
+        if raw is None:
+            continue
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if val >= 15 and getattr(cfg, attr) != val:
+            setattr(cfg, attr, val)
+            changed = True
+    if changed:
+        logger.info(
+            "Poll intervals heartbeat=%ss metrics=%ss inventory=%ss",
+            cfg.heartbeat_interval,
+            cfg.metric_interval,
+            cfg.inventory_interval,
+        )
+
+
 def _ensure_registered(cfg: AgentConfig, client: AgentClient, state: dict, identity: dict) -> dict:
     if state.get("agent_id") and state.get("agent_secret"):
         client.agent_id = state["agent_id"]
@@ -72,11 +100,13 @@ def _ensure_registered(cfg: AgentConfig, client: AgentClient, state: dict, ident
         raise SystemExit("No registration token configured and agent is not enrolled. Set REGISTRATION_TOKEN.")
     logger.info("Registering with %s", cfg.server_url)
     data = client.register(cfg.registration_token, identity, _agent_uuid(cfg, state), __version__, cfg.inventory_id)
+    _apply_server_intervals(cfg, data)
     state = {
         "agent_id": data["agent_id"],
         "agent_secret": data["agent_secret"],
         "machine_id": data["machine_id"],
         "approved": data.get("approved", True),
+        "inventory_fp": state.get("inventory_fp") or "",
     }
     write_state(cfg, state)
     logger.info("Registered machine_id=%s", data["machine_id"])
@@ -209,12 +239,21 @@ def run(cfg: AgentConfig) -> int:
         try:
             if last_inv == 0 or now - last_inv >= jitter(cfg.inventory_interval) or not enrolled:
                 try:
-                    inventory, errors = collect_inventory(_agent_uuid(cfg, state))
+                    # Full HW scan is rare (hourly). Live util/temp stay on metrics path.
+                    inventory, errors = collect_inventory(_agent_uuid(cfg, state), full=True)
                     identity = inventory.get("identity") or identity
                     state = _ensure_registered(cfg, client, state, identity)
-                    client.inventory(inventory)
-                    last_inv = now
-                    logger.info("Inventory submitted")
+                    fp = inventory_static_fingerprint(inventory)
+                    prev_fp = str(state.get("inventory_fp") or "")
+                    if prev_fp and prev_fp == fp and last_inv != 0:
+                        last_inv = now
+                        logger.info("Inventory unchanged (fingerprint match) — skip upload")
+                    else:
+                        client.inventory(inventory)
+                        state["inventory_fp"] = fp
+                        write_state(cfg, state)
+                        last_inv = now
+                        logger.info("Inventory submitted")
                     for note in inventory.get("collection_notes") or []:
                         _log_collector_note(note)
                     for err in errors:
@@ -248,6 +287,7 @@ def run(cfg: AgentConfig) -> int:
                         }
                     )
                     last_hb = now
+                    _apply_server_intervals(cfg, hb or {})
                     if _handle_commands(client, hb.get("commands") or []):
                         break
                 except AgentAuthError:
@@ -290,7 +330,8 @@ def run(cfg: AgentConfig) -> int:
             logger.warning("Sync failed (%s); buffering and retrying", exc)
             queue.push("log", {"level": "WARNING", "message": f"server unreachable: {exc}"})
             client.sleep_backoff()
-        time.sleep(1)
+        # Idle wait: longer than 1s cuts wakeups; still responsive vs shortest interval.
+        time.sleep(min(5.0, max(2.0, min(cfg.heartbeat_interval, cfg.metric_interval) / 15.0)))
     client.close()
     logger.info("Agent stopped")
     return 0
@@ -315,9 +356,11 @@ def register_once(cfg: AgentConfig) -> int:
     state = read_state(cfg)
     client = AgentClient(cfg, state.get("agent_id", ""), state.get("agent_secret", ""))
     try:
-        inventory, errors = collect_inventory(_agent_uuid(cfg, state))
+        inventory, errors = collect_inventory(_agent_uuid(cfg, state), full=True)
         identity = inventory.get("identity") or _fallback_identity()
         state = _ensure_registered(cfg, client, state, identity)
+        state["inventory_fp"] = inventory_static_fingerprint(inventory)
+        write_state(cfg, state)
         client.inventory(inventory)
         print(f"registered machine_id={state.get('machine_id', '')} agent_id={state.get('agent_id', '')}")
         print(f"hostname={identity.get('hostname', '')}")

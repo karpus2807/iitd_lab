@@ -302,13 +302,14 @@ async def register_agent(body: RegisterRequest, db: DbDep):
         agent_secret=secret,
         approved=machine.approved,
         heartbeat_interval=settings.heartbeat_interval_seconds,
-        metric_interval=settings.heartbeat_interval_seconds,
-        inventory_interval=300,
+        metric_interval=settings.metric_interval_seconds,
+        inventory_interval=settings.inventory_interval_seconds,
     )
 
 
 @router.post("/heartbeat")
 async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
+    settings = get_settings()
     machine = await db.get(Machine, agent.machine_id)
     if not machine or not machine.approved:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Machine not approved")
@@ -349,6 +350,10 @@ async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
         "server_time": utcnow().isoformat(),
         "status": machine.status,
         "commands": commands,
+        # Fleet cadence — already-registered agents never hit /register again.
+        "heartbeat_interval": settings.heartbeat_interval_seconds,
+        "metric_interval": settings.metric_interval_seconds,
+        "inventory_interval": settings.inventory_interval_seconds,
     }
 
 
