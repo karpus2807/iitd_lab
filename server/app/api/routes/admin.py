@@ -542,6 +542,8 @@ async def get_settings_admin(db: DbDep, admin: AdminUser):
     channels = (await db.execute(select(NotificationChannelConfig))).scalars().all()
     return {
         "heartbeat_interval_seconds": settings.heartbeat_interval_seconds,
+        "metric_interval_seconds": settings.metric_interval_seconds,
+        "inventory_interval_seconds": settings.inventory_interval_seconds,
         "offline_after_seconds": settings.offline_after_seconds,
         "unhealthy_after_seconds": settings.unhealthy_after_seconds,
         "require_agent_approval": settings.require_agent_approval,

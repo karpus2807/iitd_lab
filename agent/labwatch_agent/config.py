@@ -19,9 +19,10 @@ class AgentConfig:
     server_url: str = "http://hobbit2.cse.iitd.ac.in"
     registration_token: str = ""
     agent_id: str = ""
-    heartbeat_interval: int = 30
-    metric_interval: int = 30
-    inventory_interval: int = 300
+    # Defaults match server RegisterResponse: alive check, live metrics, rare HW inventory.
+    heartbeat_interval: int = 60
+    metric_interval: int = 180
+    inventory_interval: int = 3600
     log_level: str = "INFO"
     tls_verify: bool = True
     tls_ca_file: str = ""
@@ -61,9 +62,9 @@ def load_config(path: str | None = None) -> AgentConfig:
         server_url=_env("SERVER_URL", server.get("url", "http://hobbit2.cse.iitd.ac.in")) or "http://hobbit2.cse.iitd.ac.in",
         registration_token=_env("REGISTRATION_TOKEN", server.get("registration_token", "")) or "",
         agent_id=_env("AGENT_ID", agent.get("id", "")) or "",
-        heartbeat_interval=int(_env("HEARTBEAT_INTERVAL", str(agent.get("heartbeat_interval", 30)))),
-        metric_interval=int(_env("METRIC_INTERVAL", str(agent.get("metric_interval", 30)))),
-        inventory_interval=int(_env("INVENTORY_INTERVAL", str(agent.get("inventory_interval", 300)))),
+        heartbeat_interval=int(_env("HEARTBEAT_INTERVAL", str(agent.get("heartbeat_interval", 60)))),
+        metric_interval=int(_env("METRIC_INTERVAL", str(agent.get("metric_interval", 180)))),
+        inventory_interval=int(_env("INVENTORY_INTERVAL", str(agent.get("inventory_interval", 3600)))),
         log_level=_env("LOG_LEVEL", logging_cfg.get("level", "INFO")) or "INFO",
         tls_verify=str(_env("TLS_VERIFY", str(tls.get("verify", True)))).lower() not in {"0", "false", "no"},
         tls_ca_file=_env("TLS_CA_FILE", tls.get("ca_file", "")) or "",

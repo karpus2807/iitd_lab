@@ -148,7 +148,7 @@ def _read_hwmon_temp_c(device: Path, card: Path) -> float | None:
     return best
 
 
-def _read_hwmon_power_w(device: Path, card: Path) -> float | None:
+def _read_hwmon_power_w(device: Path, card: Path, *, allow_sample: bool = True) -> float | None:
     for hw in _hwmon_roots(device, card):
         for name in ("power1_average", "power1_input", "power2_average", "power2_input"):
             path = hw / name
@@ -160,7 +160,9 @@ def _read_hwmon_power_w(device: Path, card: Path) -> float | None:
             if raw > 10_000:  # microwatts
                 return round(raw / 1_000_000.0, 3)
             return float(raw)
-        # energy counters: sample twice → watts
+        # energy counters: sample twice → watts (skip on inventory — blocks the agent)
+        if not allow_sample:
+            continue
         energy = hw / "energy1_input"
         if energy.exists():
             a = read_int(str(energy))
@@ -386,8 +388,12 @@ def _thermal_zone_gpu_temp_c() -> float | None:
     return best
 
 
-def iter_drm_gpus() -> list[dict[str, Any]]:
-    """Return one dict per physical DRM card (skip connectors like card0-HDMI-A-1)."""
+def iter_drm_gpus(*, include_live: bool = True) -> list[dict[str, Any]]:
+    """Return one dict per physical DRM card (skip connectors like card0-HDMI-A-1).
+
+    include_live=False: inventory identity only (no util sampling sleeps / intel_gpu_top).
+    Live temp/util/power belong in metrics, not the hourly HW inventory scan.
+    """
     rows: list[dict[str, Any]] = []
     for card in sorted(Path("/sys/class/drm").glob("card[0-9]")):
         if not card.name[4:].isdigit():
@@ -404,33 +410,32 @@ def iter_drm_gpus() -> list[dict[str, Any]]:
             model = read_text(str(device / attr))
             if model:
                 break
-        rows.append(
-            {
-                "card": card.name,
-                "pci_bus": pci,
-                "vendor": vendor,
-                "driver_module": driver,
-                "vram_bytes": vram_total,
-                "vram_used_bytes": vram_used,
-                "temperature_c": _read_hwmon_temp_c(device, card),
-                "power_w": _read_hwmon_power_w(device, card),
-                "graphics_clock_mhz": _read_graphics_clock_mhz(card, device),
-                "memory_clock_mhz": _read_memory_clock_mhz(device),
-                "utilization_pct": _sample_engine_util_pct(card, device),
-                "model": model,
-                "driver_bound": bool(driver),
-            }
-        )
-    # Fill util/temp gaps with optional tools / thermal zones (once per scan).
-    need_util = any(r.get("utilization_pct") is None for r in rows)
-    need_temp = any(r.get("temperature_c") is None for r in rows)
-    intel_util = _intel_gpu_top_util_pct() if need_util else None
-    zone_temp = _thermal_zone_gpu_temp_c() if need_temp else None
-    for r in rows:
-        if r.get("utilization_pct") is None and intel_util is not None and (r.get("vendor") or "").lower() == "intel":
-            r["utilization_pct"] = intel_util
-        if r.get("temperature_c") is None and zone_temp is not None:
-            r["temperature_c"] = zone_temp
+        row: dict[str, Any] = {
+            "card": card.name,
+            "pci_bus": pci,
+            "vendor": vendor,
+            "driver_module": driver,
+            "vram_bytes": vram_total,
+            "vram_used_bytes": vram_used if include_live else None,
+            "temperature_c": _read_hwmon_temp_c(device, card) if include_live else None,
+            "power_w": _read_hwmon_power_w(device, card, allow_sample=include_live) if include_live else None,
+            "graphics_clock_mhz": _read_graphics_clock_mhz(card, device) if include_live else None,
+            "memory_clock_mhz": _read_memory_clock_mhz(device) if include_live else None,
+            "utilization_pct": _sample_engine_util_pct(card, device) if include_live else None,
+            "model": model,
+            "driver_bound": bool(driver),
+        }
+        rows.append(row)
+    if include_live:
+        need_util = any(r.get("utilization_pct") is None for r in rows)
+        need_temp = any(r.get("temperature_c") is None for r in rows)
+        intel_util = _intel_gpu_top_util_pct() if need_util else None
+        zone_temp = _thermal_zone_gpu_temp_c() if need_temp else None
+        for r in rows:
+            if r.get("utilization_pct") is None and intel_util is not None and (r.get("vendor") or "").lower() == "intel":
+                r["utilization_pct"] = intel_util
+            if r.get("temperature_c") is None and zone_temp is not None:
+                r["temperature_c"] = zone_temp
     return rows
 
 
@@ -468,9 +473,14 @@ def compute_telemetry_pct(gpu: dict[str, Any]) -> float:
     return round(100.0 * sum(1 for c in checks if c) / len(checks), 1)
 
 
-def enrich_linux_gpu(gpu: dict[str, Any], drm_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Merge DRM sysfs telemetry into a GPU inventory dict."""
-    drm_rows = drm_rows if drm_rows is not None else iter_drm_gpus()
+def enrich_linux_gpu(
+    gpu: dict[str, Any],
+    drm_rows: list[dict[str, Any]] | None = None,
+    *,
+    include_live: bool = False,
+) -> dict[str, Any]:
+    """Merge DRM sysfs into a GPU inventory dict (identity by default; live optional)."""
+    drm_rows = drm_rows if drm_rows is not None else iter_drm_gpus(include_live=include_live)
     pci = normalize_pci_bus(gpu.get("pci_bus"))
     match = None
     if pci:

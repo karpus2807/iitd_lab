@@ -64,6 +64,9 @@ async def test_agent_register_heartbeat_inventory_offline(client: AsyncClient, a
     )
     assert reg.status_code == 200, reg.text
     creds = reg.json()
+    assert creds["heartbeat_interval"] == 60
+    assert creds["metric_interval"] == 180
+    assert creds["inventory_interval"] == 3600
     agent_headers = {"Authorization": f"Bearer {creds['agent_id']}:{creds['agent_secret']}"}
 
     hb = await client.post(
@@ -72,7 +75,11 @@ async def test_agent_register_heartbeat_inventory_offline(client: AsyncClient, a
         json={"agent_version": "1.0.0", "hostname": "LAB-PC-042", "ip_addresses": ["10.0.1.42"], "status": "healthy"},
     )
     assert hb.status_code == 200, hb.text
-    assert hb.json()["status"] == "ONLINE"
+    body = hb.json()
+    assert body["status"] == "ONLINE"
+    assert body["heartbeat_interval"] == 60
+    assert body["metric_interval"] == 180
+    assert body["inventory_interval"] == 3600
 
     inv1 = InventoryPayload(
         identity={"hostname": "LAB-PC-042", "os_name": "Linux", "architecture": "x86_64", "system_uuid": "sys-uuid-042"},
