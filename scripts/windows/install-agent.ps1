@@ -431,8 +431,16 @@ try {
   }
 
   Write-Host "Installing LabWatch agent to $InstallDir"
+  # Prefer Windows Service; remove any leftover scheduled task from older installs.
   Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue |
     Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+  $oldSvc = Join-Path $InstallDir "LabWatchAgentService.exe"
+  if (Test-Path -LiteralPath $oldSvc) {
+    try { & $oldSvc stop 2>$null | Out-Null } catch {}
+    try { & $oldSvc uninstall 2>$null | Out-Null } catch {}
+  }
+  try { Stop-Service -Name "LabWatchAgent" -Force -ErrorAction SilentlyContinue } catch {}
+  try { sc.exe delete LabWatchAgent | Out-Null } catch {}
 
   $wheelsDir = Join-Path $agentSrc "wheels"
   $wheelFiles = @()
@@ -573,39 +581,93 @@ level = "INFO"
 
   Disable-LabWatchSleepAndNicPowerSave
 
-  # Paths under "Program Files\LabWatch Agent" need careful quoting or Task Scheduler
-  # starts then immediately exits / never leaves Ready — operator then Start-ScheduledTask by hand.
-  $pyArg = ('"{0}" run' -f $runPy)
-  $action = New-ScheduledTaskAction -Execute $py -Argument $pyArg -WorkingDirectory $InstallDir
-  $triggerBoot = New-ScheduledTaskTrigger -AtStartup
-  # Also fire shortly after install so the agent is up without a reboot.
-  $triggerNow = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(15))
-  try { $triggerNow.EndBoundary = (Get-Date).AddHours(1).ToString("s") } catch {}
-  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-  $settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -RestartCount 5 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -StartWhenAvailable `
-    -MultipleInstances IgnoreNew
-  try { $settings.DisallowStartIfOnBatteries = $false } catch {}
-  try { $settings.StopIfGoingOnBatteries = $false } catch {}
-  try { $settings.Hidden = $true } catch {}
+  # Real Windows service via WinSW (bundled). Task Scheduler was unreliable after reboot/update.
+  $winswSrc = Join-Path $agentSrc "vendor\winsw\WinSW.NET461.exe"
+  if (-not (Test-Path -LiteralPath $winswSrc)) {
+    # Fallback: same host may serve /winsw.exe (optional) or scripts/windows/vendor on hobbit checkout.
+    $cand = @(
+      (Join-Path $PSScriptRoot "vendor\WinSW.NET461.exe"),
+      (Join-Path $InstallDir "vendor\winsw\WinSW.NET461.exe")
+    )
+    foreach ($c in $cand) {
+      if (Test-Path -LiteralPath $c) { $winswSrc = $c; break }
+    }
+  }
+  if (-not (Test-Path -LiteralPath $winswSrc)) {
+    throw "WinSW wrapper missing (vendor/winsw/WinSW.NET461.exe). Re-download agent pack from LabWatch server."
+  }
 
-  Register-ScheduledTask `
-    -TaskName "LabWatchAgent" `
-    -Action $action `
-    -Trigger @($triggerBoot, $triggerNow) `
-    -Principal $principal `
-    -Settings $settings `
-    -Force | Out-Null
-  try { Enable-ScheduledTask -TaskName "LabWatchAgent" | Out-Null } catch {}
+  $svcExe = Join-Path $InstallDir "LabWatchAgentService.exe"
+  $svcXml = Join-Path $InstallDir "LabWatchAgentService.xml"
+  Copy-Item -Force -LiteralPath $winswSrc -Destination $svcExe
+
+  # Escape XML special chars in paths.
+  function Escape-Xml([string]$s) {
+    return (($s -replace '&', '&amp;') -replace '<', '&lt;') -replace '>', '&gt;'
+  }
+  $exeXml = Escape-Xml $py
+  $argXml = Escape-Xml ('"{0}" run' -f $runPy)
+  $wdXml = Escape-Xml $InstallDir
+  $cfgXml = Escape-Xml $ConfigPath
+  $stateXml = Escape-Xml $StateDir
+  $xml = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<service>
+  <id>LabWatchAgent</id>
+  <name>LabWatch Agent</name>
+  <description>LabWatch inventory and heartbeat agent (auto-restart)</description>
+  <executable>$exeXml</executable>
+  <arguments>$argXml</arguments>
+  <workingdirectory>$wdXml</workingdirectory>
+  <logpath>$wdXml</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>4</keepFiles>
+  </log>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="15 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>25 sec</stoptimeout>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <env name="LABWATCH_CONFIG" value="$cfgXml"/>
+  <env name="LABWATCH_STATE_DIR" value="$stateXml"/>
+  <env name="HTTP_PROXY" value=""/>
+  <env name="HTTPS_PROXY" value=""/>
+  <env name="http_proxy" value=""/>
+  <env name="https_proxy" value=""/>
+  <env name="NO_PROXY" value="*"/>
+  <env name="no_proxy" value="*"/>
+</service>
+"@
+  Write-Utf8NoBom $svcXml $xml
+
+  Write-Host "Installing Windows service LabWatchAgent..."
+  try { & $svcExe stop 2>$null | Out-Null } catch {}
+  try { & $svcExe uninstall 2>$null | Out-Null } catch {}
+  $installOut = & $svcExe install 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+    # WinSW may return non-zero if already present; try again after sc delete.
+    try { sc.exe delete LabWatchAgent | Out-Null } catch {}
+    Start-Sleep -Seconds 1
+    $installOut = & $svcExe install 2>&1 | Out-String
+  }
+  if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+    Write-Host $installOut
+    throw "Failed to install LabWatchAgent Windows service (needs .NET Framework 4.6.1+)."
+  }
+
+  # SCM recovery: restart on crash even if WinSW onfailure is skipped.
+  try {
+    sc.exe config LabWatchAgent start= delayed-auto | Out-Null
+    sc.exe failure LabWatchAgent reset= 86400 actions= restart/5000/restart/15000/restart/30000 | Out-Null
+    sc.exe failureflag LabWatchAgent 1 | Out-Null
+  } catch {}
 
   function Test-LabWatchAgentRunning {
-    $t = Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue
-    if ($t -and $t.State -eq "Running") { return $true }
+    $svc = Get-Service -Name "LabWatchAgent" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq "Running") { return $true }
     $needle = "*" + $InstallDir + "*run.py*"
     $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
       $_.CommandLine -and (
@@ -618,15 +680,16 @@ level = "INFO"
   }
 
   $started = $false
-  for ($i = 0; $i -lt 6; $i++) {
-    try { Start-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction Stop } catch {
-      try { schtasks /Run /TN "LabWatchAgent" | Out-Null } catch {}
+  for ($i = 0; $i -lt 8; $i++) {
+    try { Start-Service -Name "LabWatchAgent" -ErrorAction Stop } catch {
+      try { & $svcExe start 2>$null | Out-Null } catch {}
+      try { sc.exe start LabWatchAgent | Out-Null } catch {}
     }
     Start-Sleep -Seconds 3
     if (Test-LabWatchAgentRunning) { $started = $true; break }
   }
   if (-not $started) {
-    Write-Host "WARN: Scheduled task did not stay Running — starting agent process directly."
+    Write-Host "WARN: Service did not stay Running — starting agent process directly."
     try {
       Start-Process -FilePath $py -ArgumentList @($runPy, "run") -WorkingDirectory $InstallDir -WindowStyle Hidden
       Start-Sleep -Seconds 3
@@ -636,16 +699,17 @@ level = "INFO"
     }
   }
 
-  $task = Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue
+  $svc = Get-Service -Name "LabWatchAgent" -ErrorAction SilentlyContinue
   Write-Host "Installed $InventoryId ($($lab.name)) -> $ServerUrl"
-  if ($task) {
-    Write-Host ("Scheduled task: {0}" -f $task.State)
+  if ($svc) {
+    Write-Host ("Windows service LabWatchAgent: {0} (StartType={1})" -f $svc.Status, $svc.StartType)
   }
   if ($started) {
-    Write-Host "OK: LabWatch agent is running."
+    Write-Host "OK: LabWatch agent is running as a Windows service (auto-restart on failure/update)."
   } else {
     Write-Host "WARN: Agent may not be running. Start manually:"
-    Write-Host '  Start-ScheduledTask -TaskName "LabWatchAgent"'
+    Write-Host '  Start-Service LabWatchAgent'
+    Write-Host ("  or: & '{0}' start" -f $svcExe)
   }
   Write-Host "Open LabWatch -> Machines to confirm this PC."
 } finally {

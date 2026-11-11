@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.2.11](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.11)
+**Latest release:** [v1.2.12](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.12)
 
 ## Requirements
 
@@ -65,7 +65,9 @@ Select-String -Path $env:TEMP\labwatch-install.ps1 -Pattern "ConvertTo-ObjectArr
 powershell -ExecutionPolicy Bypass -File $env:TEMP\labwatch-install.ps1
 ```
 
-Agent pack comes from the same server (`/agent-pack.tgz`). Login → machine ID → lab number.
+Agent pack comes from the same server (`/agent-pack.tgz`). Login → machine ID → pet name → lab number.
+
+Windows agents install as a real **Windows service** (`LabWatchAgent`, WinSW) — auto-start at boot, auto-restart after crash/update (replaces the old scheduled task).
 
 **Windows — optional GitHub** (only if GitHub works; always latest release):
 

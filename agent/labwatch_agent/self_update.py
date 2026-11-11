@@ -29,7 +29,8 @@ logger = logging.getLogger("labwatch.agent")
 _VERSION_RE = re.compile(r'__version__\s*=\s*["\']([^"\']+)["\']')
 BACKUP_NAME = "labwatch_agent.prev"
 NEXT_NAME = "labwatch_agent.next"
-TASK_NAME = "LabWatchAgent"
+TASK_NAME = "LabWatchAgent"  # legacy scheduled task name (pre-1.2.12)
+SERVICE_NAME = "LabWatchAgent"  # Windows service (WinSW) preferred since 1.2.12
 UNIT_NAME = "labwatch-agent"
 
 
@@ -384,11 +385,12 @@ def _schedule_restart_linux(prefix: Path, backup: Path) -> None:
 
 
 def _schedule_restart_windows(prefix: Path, backup: Path) -> None:
-    """Stop task → swap staged next package → start task → rollback if dead."""
+    """Stop service/task → swap staged next package → start service → rollback if dead."""
     prefix_ps = str(prefix).replace("'", "''")
     backup_ps = str(backup).replace("'", "''")
     next_ps = str(prefix / NEXT_NAME).replace("'", "''")
     current_ps = str(prefix / "labwatch_agent").replace("'", "''")
+    svc = SERVICE_NAME
     task = TASK_NAME
     script_path = prefix / "labwatch-apply-update.ps1"
     script = textwrap.dedent(
@@ -398,13 +400,39 @@ def _schedule_restart_windows(prefix: Path, backup: Path) -> None:
         $backup = '{backup_ps}'
         $next = '{next_ps}'
         $current = '{current_ps}'
+        $svc = '{svc}'
         $task = '{task}'
+        $svcExe = Join-Path $prefix 'LabWatchAgentService.exe'
         $log = Join-Path $prefix 'update-restart.log'
         function Log([string]$m) {{
           $line = (Get-Date -Format o) + ' ' + $m
           Add-Content -LiteralPath $log -Value $line -ErrorAction SilentlyContinue
         }}
+        function Has-Service {{
+          return [bool](Get-Service -Name $svc -ErrorAction SilentlyContinue)
+        }}
+        function Stop-Agent {{
+          if (Has-Service) {{
+            try {{ Stop-Service -Name $svc -Force -ErrorAction Stop; Log 'Stop-Service ok'; return }}
+            catch {{ Log ('Stop-Service failed: ' + $_) }}
+            try {{ if (Test-Path -LiteralPath $svcExe) {{ & $svcExe stop 2>$null | Out-Null; Log 'winsw stop' }} }} catch {{}}
+            try {{ sc.exe stop $svc | Out-Null }} catch {{}}
+          }}
+          try {{ Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue }} catch {{}}
+        }}
         function Start-Agent {{
+          if (Has-Service) {{
+            try {{ Start-Service -Name $svc -ErrorAction Stop; Log 'Start-Service ok'; return $true }}
+            catch {{ Log ('Start-Service failed: ' + $_) }}
+            try {{
+              if (Test-Path -LiteralPath $svcExe) {{
+                & $svcExe start 2>$null | Out-Null
+                Log 'winsw start'
+                return $true
+              }}
+            }} catch {{ Log ('winsw start failed: ' + $_) }}
+            try {{ sc.exe start $svc | Out-Null; Log 'sc start'; return $true }} catch {{ Log ('sc start failed: ' + $_) }}
+          }}
           try {{ Start-ScheduledTask -TaskName $task -ErrorAction Stop; Log 'Start-ScheduledTask ok'; return $true }}
           catch {{
             Log ('Start-ScheduledTask failed: ' + $_)
@@ -425,12 +453,14 @@ def _schedule_restart_windows(prefix: Path, backup: Path) -> None:
             }})
         }}
         function Agent-Alive {{
+          $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+          if ($s -and $s.Status -eq 'Running') {{ return $true }}
           $t = Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
           $procs = Agent-Procs
           return (($t -and $t.State -eq 'Running') -or $procs.Count -gt 0)
         }}
         function Start-AgentDirect {{
-          # Last resort if the scheduled task will not launch.
+          # Last resort if the service/task will not launch.
           $py = Join-Path $prefix 'venv\\Scripts\\python.exe'
           $run = Join-Path $prefix 'run.py'
           if (-not (Test-Path -LiteralPath $py) -or -not (Test-Path -LiteralPath $run)) {{
@@ -446,7 +476,7 @@ def _schedule_restart_windows(prefix: Path, backup: Path) -> None:
         }}
         Log 'watchdog start'
         Start-Sleep -Seconds 3
-        try {{ Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue }} catch {{}}
+        Stop-Agent
         for ($i = 0; $i -lt 45; $i++) {{
           $procs = Agent-Procs
           if ($procs.Count -eq 0) {{ break }}
@@ -473,7 +503,7 @@ def _schedule_restart_windows(prefix: Path, backup: Path) -> None:
           }}
         }}
         if (-not $ok) {{
-          Log 'scheduled task did not stay up — trying direct python run.py'
+          Log 'service/task did not stay up — trying direct python run.py'
           Start-AgentDirect
           Start-Sleep -Seconds 8
           if (Agent-Alive) {{ $ok = $true }}
@@ -487,7 +517,7 @@ def _schedule_restart_windows(prefix: Path, backup: Path) -> None:
           if (Test-Path -LiteralPath $next) {{
             Remove-Item -LiteralPath $next -Recurse -Force -ErrorAction SilentlyContinue
           }}
-          try {{ Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue }} catch {{}}
+          Stop-Agent
           Start-Sleep -Seconds 1
           [void](Start-Agent)
           Start-Sleep -Seconds 3

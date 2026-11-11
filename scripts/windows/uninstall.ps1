@@ -8,9 +8,20 @@ param(
 $ErrorActionPreference = "Stop"
 Write-Host "Uninstalling LabWatch agent..."
 
+$InstallDir = Join-Path $env:ProgramFiles "LabWatch Agent"
+$svcExe = Join-Path $InstallDir "LabWatchAgentService.exe"
+
+# Prefer WinSW uninstall; also clear legacy scheduled task.
+if (Test-Path -LiteralPath $svcExe) {
+  try { & $svcExe stop 2>$null | Out-Null } catch {}
+  try { & $svcExe uninstall 2>$null | Out-Null } catch {}
+}
+try { Stop-Service -Name "LabWatchAgent" -Force -ErrorAction SilentlyContinue } catch {}
+try { sc.exe delete LabWatchAgent | Out-Null } catch {}
+
 Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force (Join-Path $env:ProgramFiles "LabWatch Agent") -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
 
 if ($WipeData) {
   Remove-Item -Recurse -Force (Join-Path $env:ProgramData "LabWatch") -ErrorAction SilentlyContinue

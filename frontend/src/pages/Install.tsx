@@ -146,15 +146,15 @@ function fallbackInfo(base: string): InstallInfo {
         clear_installer: 'Remove-Item $env:TEMP\\labwatch-install.ps1 -ErrorAction SilentlyContinue',
         download: `Invoke-WebRequest -Uri ${base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1`,
         install: 'powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1',
-        status: 'Get-ScheduledTask -TaskName LabWatchAgent',
+        status: 'Get-Service -Name LabWatchAgent | Format-List Name, Status, StartType',
         fix_venv:
           'Remove-Item -Recurse -Force "$env:ProgramFiles\\LabWatch Agent\\venv","$env:ProgramFiles\\LabWatch Agent\\python" -ErrorAction SilentlyContinue',
         restart_task:
-          'Start-ScheduledTask -TaskName "LabWatchAgent"; Get-ScheduledTask -TaskName "LabWatchAgent" | Select-Object TaskName, State',
+          'Restart-Service -Name LabWatchAgent -Force; Get-Service -Name LabWatchAgent | Format-List Name, Status, StartType',
         github_download: `Invoke-WebRequest -Uri ${github} -OutFile $env:TEMP\\labwatch-install.ps1`,
         github_install: 'powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1 -FromGitHub',
         uninstall_task:
-          'Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue',
+          '$exe = Join-Path $env:ProgramFiles "LabWatch Agent\\LabWatchAgentService.exe"; if (Test-Path $exe) { & $exe stop; & $exe uninstall }; Stop-Service LabWatchAgent -Force -ErrorAction SilentlyContinue; sc.exe delete LabWatchAgent; Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue',
         uninstall_wipe:
           'Remove-Item -Recurse -Force "$env:ProgramFiles\\LabWatch Agent","$env:ProgramData\\LabWatch" -ErrorAction SilentlyContinue',
       },

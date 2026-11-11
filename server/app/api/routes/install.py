@@ -22,6 +22,7 @@ router = APIRouter(tags=["install"])
 DISPLAY_MONITOR_MIN = "1.2.6"
 KEEP_AWAKE_MIN = "1.2.7"  # sleep/hibernate off + NIC/Wi-Fi no power-save
 LINUX_UPDATE_FIX_MIN = "1.2.9"  # systemd-run + EXIT trap so stop never leaves agent dead
+WINDOWS_SERVICE_MIN = "1.2.12"  # WinSW Windows service (replaces unreliable scheduled task)
 REMOTE_UPDATE_MIN = "1.1.40"
 SAFE_UPDATE_MIN = "1.2.3"  # stage→swap→rollback self-update
 
@@ -76,20 +77,24 @@ def _install_commands(base: str, github_ps1: str) -> dict:
             "clear_installer": "Remove-Item $env:TEMP\\labwatch-install.ps1 -ErrorAction SilentlyContinue",
             "download": f"Invoke-WebRequest -Uri {base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1",
             "install": "powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1",
-            "status": "Get-ScheduledTask -TaskName LabWatchAgent",
+            "status": "Get-Service -Name LabWatchAgent | Format-List Name, Status, StartType",
             "fix_venv": (
                 'Remove-Item -Recurse -Force "$env:ProgramFiles\\LabWatch Agent\\venv",'
                 '"$env:ProgramFiles\\LabWatch Agent\\python" -ErrorAction SilentlyContinue'
             ),
             "restart_task": (
-                'Start-ScheduledTask -TaskName "LabWatchAgent"; '
-                'Get-ScheduledTask -TaskName "LabWatchAgent" | Select-Object TaskName, State'
+                'Restart-Service -Name LabWatchAgent -Force; '
+                "Get-Service -Name LabWatchAgent | Format-List Name, Status, StartType"
             ),
             "github_download": f"Invoke-WebRequest -Uri {github_ps1} -OutFile $env:TEMP\\labwatch-install.ps1",
             "github_install": (
                 "powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1 -FromGitHub"
             ),
             "uninstall_task": (
+                '$exe = Join-Path $env:ProgramFiles "LabWatch Agent\\LabWatchAgentService.exe"; '
+                "if (Test-Path $exe) { & $exe stop; & $exe uninstall }; "
+                "Stop-Service LabWatchAgent -Force -ErrorAction SilentlyContinue; "
+                "sc.exe delete LabWatchAgent; "
                 'Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue; '
                 'Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue'
             ),
@@ -134,17 +139,20 @@ async def install_info(request: Request):
             "display_monitor_min": DISPLAY_MONITOR_MIN,
             "keep_awake_min": KEEP_AWAKE_MIN,
             "linux_update_fix_min": LINUX_UPDATE_FIX_MIN,
+            "windows_service_min": WINDOWS_SERVICE_MIN,
             "safe_update_min": SAFE_UPDATE_MIN,
             "remote_update_min": REMOTE_UPDATE_MIN,
             "summary": (
                 f"Current pack {agent_ver}. Push from Admin → Agents when online "
-                f"(remote ≥{REMOTE_UPDATE_MIN}; Linux update fix ≥{LINUX_UPDATE_FIX_MIN})."
+                f"(remote ≥{REMOTE_UPDATE_MIN}; Linux update fix ≥{LINUX_UPDATE_FIX_MIN}; "
+                f"Windows service ≥{WINDOWS_SERVICE_MIN})."
             ),
         },
         "notes": [
             "If download looks like HTML / proxy.cgi Error → use curl --noproxy '*' (campus proxy must not touch hobbit).",
             "get-pip / Python 3.8 error → Clear broken venv, then install again.",
-            "Linux offline after update → Start service (or Force-swap). Windows → Restart task.",
+            "Linux offline after update → Start service (or Force-swap).",
+            f"Windows: reinstall once (≥{WINDOWS_SERVICE_MIN}) to switch from Task Scheduler to Windows service LabWatchAgent (auto-restart).",
         ],
         "commands": _install_commands(base, github_ps1),
     }
@@ -208,6 +216,13 @@ async def agent_pack():
         optional = agent / "requirements-optional-linux.txt"
         if optional.is_file():
             tar.add(optional, arcname="requirements-optional-linux.txt")
+        # WinSW wrapper so Windows agents run as a real service (not Task Scheduler).
+        winsw = agent / "vendor" / "winsw" / "WinSW.NET461.exe"
+        if winsw.is_file():
+            tar.add(winsw, arcname="vendor/winsw/WinSW.NET461.exe")
+            winsw_lic = agent / "vendor" / "winsw" / "LICENSE.txt"
+            if winsw_lic.is_file():
+                tar.add(winsw_lic, arcname="vendor/winsw/LICENSE.txt")
         wheel_count = _add_wheels(tar, wheels)
         if wheel_count == 0:
             # Marker so installers can give a clear error instead of hitting PyPI.
