@@ -2,6 +2,8 @@ from app.enums import EventType
 from app.schemas.inventory import (
     CPUInfo,
     DiskInfo,
+    DisplayInfo,
+    DisplaysInfo,
     GPUInfo,
     InventoryPayload,
     MemoryInfo,
@@ -213,3 +215,66 @@ def test_disk_empty_scrape_is_not_removal():
         collection_notes=["storage collector failed; partial data returned."],
     )
     assert not any(e.event_type == EventType.DISK_REMOVED.value for e in diff_inventory(before, after_notes))
+
+
+def test_display_removed_and_added():
+    before = InventoryPayload(
+        displays=DisplaysInfo(
+            displays=[
+                DisplayInfo(
+                    name="DP-1",
+                    manufacturer="Dell",
+                    model="P2419H",
+                    serial_number="CN0ABC",
+                    size_inches=24.0,
+                    connector="DP-1",
+                )
+            ]
+        )
+    )
+    after = InventoryPayload(
+        displays=DisplaysInfo(
+            displays=[
+                DisplayInfo(
+                    name="HDMI-1",
+                    manufacturer="Samsung",
+                    model="S24R35",
+                    serial_number="H1XYZ",
+                    size_inches=24.0,
+                    connector="HDMI-1",
+                )
+            ]
+        )
+    )
+    events = diff_inventory(before, after)
+    types = {e.event_type for e in events}
+    assert EventType.DISPLAY_REMOVED.value in types
+    assert EventType.DISPLAY_ADDED.value in types
+    removed = [e for e in events if e.event_type == EventType.DISPLAY_REMOVED.value][0]
+    assert removed.severity == "CRITICAL"
+    assert "Dell" in removed.summary or "P2419H" in removed.summary
+
+
+def test_display_empty_scrape_is_not_removal():
+    before = InventoryPayload(
+        displays=DisplaysInfo(
+            displays=[DisplayInfo(name="DP-1", manufacturer="Dell", serial_number="CN0ABC", size_inches=24.0)]
+        )
+    )
+    after = InventoryPayload(displays=DisplaysInfo(displays=[]))
+    assert not any(e.event_type == EventType.DISPLAY_REMOVED.value for e in diff_inventory(before, after))
+
+
+def test_display_size_change():
+    before = InventoryPayload(
+        displays=DisplaysInfo(
+            displays=[DisplayInfo(name="DP-1", serial_number="CN0ABC", manufacturer="Dell", size_inches=24.0)]
+        )
+    )
+    after = InventoryPayload(
+        displays=DisplaysInfo(
+            displays=[DisplayInfo(name="DP-1", serial_number="CN0ABC", manufacturer="Dell", size_inches=27.0)]
+        )
+    )
+    events = diff_inventory(before, after)
+    assert any(e.event_type == EventType.DISPLAY_CHANGED.value for e in events)

@@ -48,6 +48,47 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, $enc)
 }
 
+function Disable-LabWatchSleepAndNicPowerSave {
+  # Lab PCs must not sleep/hibernate or let Wi-Fi/NIC enter power-save
+  # (agent would go offline / miss heartbeats).
+  Write-Host "Disabling sleep/hibernate and NIC/Wi-Fi power saving..."
+  $ErrorActionPreferencePrev = $ErrorActionPreference
+  $ErrorActionPreference = "SilentlyContinue"
+  try {
+    powercfg /hibernate off | Out-Null
+    powercfg /change standby-timeout-ac 0 | Out-Null
+    powercfg /change standby-timeout-dc 0 | Out-Null
+    powercfg /change hibernate-timeout-ac 0 | Out-Null
+    powercfg /change hibernate-timeout-dc 0 | Out-Null
+    powercfg /change monitor-timeout-ac 0 | Out-Null
+    powercfg /change monitor-timeout-dc 0 | Out-Null
+    # Wireless Adapter Settings -> Power Saving Mode = Maximum Performance (0)
+    powercfg /setacvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-a69c-8b3fa74bd683 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 | Out-Null
+    powercfg /setdcvalueindex SCHEME_CURRENT 19cbb8fa-5279-450e-a69c-8b3fa74bd683 12bbebe6-58d6-4636-95bb-3217ef867c1a 0 | Out-Null
+    # PCI Express Link State Power Management = Off
+    powercfg /setacvalueindex SCHEME_CURRENT 501a4d13-42af-446a-9c2d-43ad520aa2a1 ee12f906-d277-404b-b6da-e5fa1a576df5 0 | Out-Null
+    powercfg /setdcvalueindex SCHEME_CURRENT 501a4d13-42af-446a-9c2d-43ad520aa2a1 ee12f906-d277-404b-b6da-e5fa1a576df5 0 | Out-Null
+    # USB selective suspend = Disabled
+    powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 | Out-Null
+    powercfg /setdcvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 | Out-Null
+    powercfg /setactive SCHEME_CURRENT | Out-Null
+
+    Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
+      try { Disable-NetAdapterPowerManagement -Name $_.Name -ErrorAction SilentlyContinue | Out-Null } catch {}
+    }
+
+    # Persist "allow computer to turn off this device" = off via registry for all NICs.
+    Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}" -ErrorAction SilentlyContinue |
+      Where-Object { $_.PSChildName -match '^\d{4}$' } |
+      ForEach-Object {
+        try { Set-ItemProperty -Path $_.PSPath -Name "PnPCapabilities" -Value 24 -Type DWord -Force -ErrorAction SilentlyContinue } catch {}
+      }
+  } finally {
+    $ErrorActionPreference = $ErrorActionPreferencePrev
+  }
+  Write-Host "OK: sleep/hibernate off; NIC/Wi-Fi power-save disabled."
+}
+
 function Invoke-DirectWebRequest {
   # Bypass campus proxy for LabWatch host downloads.
   param([string]$Uri, [string]$OutFile, [int]$TimeoutSec = 120)
@@ -90,7 +131,22 @@ function Invoke-LwJson {
   }
 }
 
-function Find-PythonExe {
+function Test-Python310 {
+  param([string]$Exe)
+  if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) { return $false }
+  try {
+    $out = & $Exe -c "import sys; assert sys.version_info >= (3, 10); print(sys.executable)" 2>$null
+    if (-not $out) { return $false }
+    $path = ([string]$out).Trim()
+    if ($path -match '\\WindowsApps\\') { return $false }
+    return (Test-Path -LiteralPath $path)
+  } catch {
+    return $false
+  }
+}
+
+function Find-SystemPython310 {
+  # Optional convenience only — never required. System default Python is never changed.
   $trials = @(
     @{ File = "py"; Args = @("-3") },
     @{ File = "python"; Args = @() },
@@ -108,6 +164,59 @@ function Find-PythonExe {
     } catch { }
   }
   return $null
+}
+
+function Install-BundledPython {
+  # LabWatch CPython 3.12 under InstallDir\python — does not touch system Python / PATH.
+  Write-Host "Downloading LabWatch bundled CPython 3.12 (system Python left unchanged)..."
+  New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+  $tmp = Join-Path $env:TEMP ("labwatch-python-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+  try {
+    $tgz = Join-Path $tmp "python-runtime.tgz"
+    $url = "$ServerUrl/python-runtime.tgz?arch=windows-x86_64"
+    Write-Host "  $url"
+    Invoke-DirectWebRequest -Uri $url -OutFile $tgz -TimeoutSec 300
+    $dest = Join-Path $InstallDir "python"
+    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if (-not $tar) { throw "tar.exe not found. Windows 10 (1803+) and Windows 11 include it." }
+    & $tar.Source -xzf $tgz -C $tmp
+    if ($LASTEXITCODE -ne 0) { throw "tar failed to extract python-runtime.tgz (exit $LASTEXITCODE)" }
+    $srcPy = Join-Path $tmp "python"
+    if (Test-Path -LiteralPath $srcPy) {
+      Copy-Item -Path (Join-Path $srcPy "*") -Destination $dest -Recurse -Force
+    } else {
+      Get-ChildItem -LiteralPath $tmp -Force | Where-Object { $_.Name -ne "python-runtime.tgz" } | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination $dest -Recurse -Force
+      }
+    }
+    foreach ($rel in @("python.exe", "python\python.exe", "bin\python.exe")) {
+      $cand = Join-Path $dest $rel
+      if (Test-Python310 $cand) { return $cand }
+    }
+    throw "Bundled Python unpack failed under $dest"
+  } finally {
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Ensure-LabWatchPython {
+  Write-Host "Host system Python is left unchanged. Agent uses LabWatch CPython under $InstallDir\python when needed."
+  foreach ($rel in @("python\python.exe", "python\bin\python.exe")) {
+    $cand = Join-Path $InstallDir $rel
+    if (Test-Python310 $cand) {
+      Write-Host "Reusing LabWatch bundled Python: $cand"
+      return $cand
+    }
+  }
+  $sys = Find-SystemPython310
+  if ($sys) {
+    Write-Host "Using system Python 3.10+: $sys"
+    return $sys
+  }
+  return Install-BundledPython
 }
 
 function ConvertTo-ObjectArray {
@@ -175,17 +284,6 @@ function Get-AgentSourceFromGitHub([string]$DestRoot) {
   return (Join-Path $root "agent")
 }
 
-$pythonExe = Find-PythonExe
-if (-not $pythonExe) {
-  throw @"
-Python 3.10+ is required and must be on PATH.
-1) Download https://www.python.org/downloads/windows/
-2) Enable 'Add python.exe to PATH'
-3) Close this window, open a NEW Admin PowerShell, re-run the installer.
-Do not use the Microsoft Store python stub.
-"@
-}
-Write-Host "Using Python: $pythonExe"
 Write-Host ""
 Write-Host "LabWatch Windows install"
 Write-Host "  Server : $ServerUrl"
@@ -196,6 +294,13 @@ if ($FromGitHub) {
 }
 Write-Host "Same as Linux: login -> machine ID -> lab. Token is automatic."
 Write-Host "Multiple PCs can use the same admin/operator login."
+Write-Host "Any host Python is OK — system default Python will not be changed."
+
+$pythonExe = Ensure-LabWatchPython
+if (-not $pythonExe) {
+  throw "Could not install LabWatch bundled CPython 3.12. Check $ServerUrl/python-runtime.tgz?arch=windows-x86_64"
+}
+Write-Host "Using Python for agent: $pythonExe"
 
 $Username = Read-Host "Username"
 $Secure = Read-Host "Password (nothing will appear)" -AsSecureString
@@ -331,9 +436,15 @@ try {
 
   $venvDir = Join-Path $InstallDir "venv"
   if (Test-Path -LiteralPath $venvDir) { Remove-Item -LiteralPath $venvDir -Recurse -Force }
-  & $pythonExe -m venv $venvDir
+  Write-Host "Creating fresh agent venv with $(& $pythonExe -V 2>&1)…"
+  & $pythonExe -m venv --clear $venvDir
   $py = Join-Path $venvDir "Scripts\python.exe"
   if (-not (Test-Path -LiteralPath $py)) { throw "venv python missing at $py" }
+  $verOk = & $py -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Agent venv is not Python 3.10+ ($(& $py -V 2>&1)). Delete '$venvDir' and re-run."
+  }
+  Write-Host "Agent venv Python: $(& $py -V 2>&1)"
 
   function Invoke-Pip {
     param([Parameter(Mandatory = $true)][string[]]$PipArgs)
@@ -450,8 +561,16 @@ level = "INFO"
     throw "Machine registration failed. Check that $ServerUrl is reachable from this PC."
   }
 
-  $action = New-ScheduledTaskAction -Execute $py -Argument "`"$runPy`" run" -WorkingDirectory $InstallDir
-  $trigger = New-ScheduledTaskTrigger -AtStartup
+  Disable-LabWatchSleepAndNicPowerSave
+
+  # Paths under "Program Files\LabWatch Agent" need careful quoting or Task Scheduler
+  # starts then immediately exits / never leaves Ready — operator then Start-ScheduledTask by hand.
+  $pyArg = ('"{0}" run' -f $runPy)
+  $action = New-ScheduledTaskAction -Execute $py -Argument $pyArg -WorkingDirectory $InstallDir
+  $triggerBoot = New-ScheduledTaskTrigger -AtStartup
+  # Also fire shortly after install so the agent is up without a reboot.
+  $triggerNow = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(15))
+  try { $triggerNow.EndBoundary = (Get-Date).AddHours(1).ToString("s") } catch {}
   $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
   $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -459,14 +578,65 @@ level = "INFO"
     -RestartCount 5 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -StartWhenAvailable
-  Register-ScheduledTask -TaskName "LabWatchAgent" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-  Start-ScheduledTask -TaskName "LabWatchAgent"
-  Start-Sleep -Seconds 2
-  $task = Get-ScheduledTask -TaskName "LabWatchAgent"
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew
+  try { $settings.DisallowStartIfOnBatteries = $false } catch {}
+  try { $settings.StopIfGoingOnBatteries = $false } catch {}
+  try { $settings.Hidden = $true } catch {}
 
+  Register-ScheduledTask `
+    -TaskName "LabWatchAgent" `
+    -Action $action `
+    -Trigger @($triggerBoot, $triggerNow) `
+    -Principal $principal `
+    -Settings $settings `
+    -Force | Out-Null
+  try { Enable-ScheduledTask -TaskName "LabWatchAgent" | Out-Null } catch {}
+
+  function Test-LabWatchAgentRunning {
+    $t = Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue
+    if ($t -and $t.State -eq "Running") { return $true }
+    $needle = "*" + $InstallDir + "*run.py*"
+    $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $_.CommandLine -and (
+        $_.CommandLine -like "*LabWatch*run.py*" -or
+        $_.CommandLine -like $needle -or
+        ($_.Name -match "python" -and $_.CommandLine -like ("*" + $InstallDir + "*"))
+      )
+    })
+    return ($procs.Count -gt 0)
+  }
+
+  $started = $false
+  for ($i = 0; $i -lt 6; $i++) {
+    try { Start-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction Stop } catch {
+      try { schtasks /Run /TN "LabWatchAgent" | Out-Null } catch {}
+    }
+    Start-Sleep -Seconds 3
+    if (Test-LabWatchAgentRunning) { $started = $true; break }
+  }
+  if (-not $started) {
+    Write-Host "WARN: Scheduled task did not stay Running — starting agent process directly."
+    try {
+      Start-Process -FilePath $py -ArgumentList @($runPy, "run") -WorkingDirectory $InstallDir -WindowStyle Hidden
+      Start-Sleep -Seconds 3
+      $started = Test-LabWatchAgentRunning
+    } catch {
+      Write-Host ("WARN: direct start failed: " + $_)
+    }
+  }
+
+  $task = Get-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue
   Write-Host "Installed $InventoryId ($($lab.name)) -> $ServerUrl"
-  Write-Host ("Scheduled task: {0}" -f $task.State)
+  if ($task) {
+    Write-Host ("Scheduled task: {0}" -f $task.State)
+  }
+  if ($started) {
+    Write-Host "OK: LabWatch agent is running."
+  } else {
+    Write-Host "WARN: Agent may not be running. Start manually:"
+    Write-Host '  Start-ScheduledTask -TaskName "LabWatchAgent"'
+  }
   Write-Host "Open LabWatch -> Machines to confirm this PC."
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

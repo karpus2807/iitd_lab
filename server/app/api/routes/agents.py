@@ -30,6 +30,7 @@ from app.schemas.inventory import (
     note_log_level,
 )
 from app.security import hash_token, identity_fingerprint, new_secret, token_matches, verify_password
+from app.services.agent_pack import version_tuple
 from app.services.heartbeat import apply_heartbeat, apply_reported_addresses
 from app.services.inventory import persist_inventory
 from app.services.public_url import hostname_server_url, normalize_inventory_id
@@ -37,6 +38,39 @@ from app.models import GpuMetricSample, MetricSample
 
 logger = logging.getLogger("labwatch.agents")
 router = APIRouter(prefix="/api/agents", tags=["agents"])
+
+_UPDATE_PENDING = frozenset(
+    {"queued", "sent", "running", "downloading", "applying", "restarting"}
+)
+
+
+def _finalize_update_if_running_target(agent: Agent, reported_version: str) -> None:
+    """Mark self-update ok only when the live process reports ≥ target version.
+
+    Also clears false \"ok\" when an older agent process is still running after a
+    claimed update (heartbeat version < target).
+    """
+    st = (agent.update_status or "").strip().lower()
+    ver = (reported_version or "").strip()
+    target = (agent.update_target_version or "").strip()
+    if not ver:
+        return
+    try:
+        if target and st in _UPDATE_PENDING and version_tuple(ver) >= version_tuple(target):
+            agent.update_status = "ok"
+            agent.update_message = f"updated to {ver}"[:512]
+            agent.agent_version = ver[:32]
+            return
+        # Staged-ack \"ok\" with new version, then live process still old → lie.
+        if target and st == "ok" and version_tuple(ver) < version_tuple(target):
+            agent.update_status = "error"
+            agent.update_message = (
+                f"update did not stick — still running {ver} (wanted {target}); "
+                "Linux: start service or Install F4 force-swap"
+            )[:512]
+            agent.agent_version = ver[:32]
+    except Exception:
+        return
 
 
 def _clip(value: str | None, limit: int) -> str | None:
@@ -321,6 +355,8 @@ async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
     if body.ip_addresses:
         apply_reported_addresses(machine, body.ip_addresses, db)
     await apply_heartbeat(db, machine, agent, healthy=body.status == "healthy")
+    # Finalize self-update only after the restarted process reports the new version.
+    _finalize_update_if_running_target(agent, body.agent_version or "")
     if body.collector_errors:
         for err in body.collector_errors:
             db.add(
@@ -356,18 +392,33 @@ async def heartbeat(body: HeartbeatPayload, db: DbDep, agent: CurrentAgent):
 async def ack_command(body: CommandAck, db: DbDep, agent: CurrentAgent):
     if not agent.update_command_id or body.id != agent.update_command_id:
         return {"ok": True, "ignored": True}
+    # Any ack means the agent process is alive (download/apply can block heartbeats).
+    now = utcnow()
+    agent.last_heartbeat_at = now
+    machine = await db.get(Machine, agent.machine_id)
+    if machine:
+        machine.last_seen_at = now
+        if machine.status == MachineStatus.OFFLINE.value:
+            from app.services.alerts import record_status_event
+
+            await record_status_event(db, machine, MachineStatus.ONLINE.value)
+            machine.status = MachineStatus.ONLINE.value
     status_norm = (body.status or "").strip().lower()
     if status_norm in {"ok", "success", "done"}:
         agent.update_status = "ok"
         if body.agent_version:
             agent.agent_version = body.agent_version[:32]
         agent.update_message = (body.message or "updated")[:512]
-    elif status_norm in {"running", "progress", "downloading", "applying", "sent"}:
-        # Intermediate progress — keep command open until ok/error.
-        mapped = status_norm if status_norm in {"downloading", "applying", "sent"} else "running"
+    elif status_norm in {"running", "progress", "downloading", "applying", "sent", "restarting"}:
+        # Intermediate progress — keep command open until ok/error (or heartbeat finalize).
+        if status_norm in {"downloading", "applying", "sent", "restarting"}:
+            mapped = status_norm
+        else:
+            mapped = "running"
         agent.update_status = mapped
         agent.update_message = (body.message or mapped)[:512]
-        if body.agent_version:
+        # While restarting, keep reporting the *running* version (pre-swap), not staged.
+        if body.agent_version and mapped != "restarting":
             agent.agent_version = body.agent_version[:32]
     else:
         agent.update_status = "error"

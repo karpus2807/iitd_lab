@@ -1,17 +1,11 @@
-# Bundled CPython for any host Python
+# Bundled CPython (system Python never changed)
 
-LabWatch agent needs CPython **3.10+** for its wheels. The **host default Python is never changed**.
+Downloaded by `scripts/linux/prefetch-python-runtime.sh`.
 
-- Host may have Python 2, 3.5–3.9, 3.10+, or none.
-- Linux installer downloads this standalone CPython 3.12 into `/opt/labwatch-agent/python` only.
-- It does **not** run `update-alternatives`, does **not** replace `/usr/bin/python3`, and does **not** alter the user’s default `python` / `python3`.
+- `linux-x86_64.tgz` / `linux-aarch64.tgz` / `windows-x86_64.tgz`
+- Astral python-build-standalone CPython 3.12.10 (tag 20250409)
+- Served as `GET /python-runtime.tgz?arch=x86_64|aarch64|windows-x86_64`
+- Unpacks under `/opt/labwatch-agent/python` (Linux) or
+  `%ProgramFiles%\LabWatch Agent\python` (Windows)
 
-## Prefetch (LabWatch server / hobbit)
-
-```bash
-./scripts/linux/prefetch-python-runtime.sh
-sudo docker compose up -d --force-recreate --no-deps api
-```
-
-Creates (gitignored): `linux-x86_64.tgz`, `linux-aarch64.tgz`  
-Served as `GET /python-runtime.tgz?arch=x86_64|aarch64`.
+Do not commit `.tgz` files to git. Prefetch on hobbit after deploy.

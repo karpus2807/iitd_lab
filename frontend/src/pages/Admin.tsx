@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react'
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ago, api } from '../api'
 import { currentUser } from '../api'
@@ -520,23 +520,39 @@ function Agents() {
     void load()
   }, [])
 
-  const filtered = rows.filter((a) => {
+  const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    if (!needle) return true
-    const hay = [a.hostname, a.inventory_id, a.agent_id, a.version, a.status, a.token_prefix, a.token_label]
-      .map((x) => String(x || '').toLowerCase())
-      .join(' ')
-    return hay.includes(needle)
-  })
+    const list = rows.filter((a) => {
+      if (!needle) return true
+      const hay = [a.hostname, a.inventory_id, a.agent_id, a.version, a.status, a.token_prefix, a.token_label]
+        .map((x) => String(x || '').toLowerCase())
+        .join(' ')
+      return hay.includes(needle)
+    })
+    // Stable visual order — API poll must not reshuffle rows / progress bars.
+    return [...list].sort((a, b) => {
+      const h = String(a.hostname || '').localeCompare(String(b.hostname || ''), undefined, { sensitivity: 'base' })
+      if (h) return h
+      const inv = String(a.inventory_id || '').localeCompare(String(b.inventory_id || ''))
+      if (inv) return inv
+      return String(a.id).localeCompare(String(b.id))
+    })
+  }, [rows, q])
   const selectedIds = filtered.filter((a) => selected[a.id]).map((a) => a.id)
   const allFilteredSelected = filtered.length > 0 && filtered.every((a) => selected[a.id])
 
   const trackSet = useMemo(() => new Set(trackIds), [trackIds])
+  const progressFloorRef = useRef<Record<string, number>>({})
 
   // Progress panel + per-row meters: ONLY agents queued in this browser action.
   const tracked = useMemo(() => {
     if (!trackIds.length) return []
-    return rows.filter((a) => trackSet.has(a.id))
+    const list = rows.filter((a) => trackSet.has(a.id))
+    return [...list].sort((a, b) => {
+      const h = String(a.hostname || '').localeCompare(String(b.hostname || ''), undefined, { sensitivity: 'base' })
+      if (h) return h
+      return String(a.id).localeCompare(String(b.id))
+    })
   }, [rows, trackIds, trackSet])
 
   const batchProgress = useMemo(() => {
@@ -545,15 +561,26 @@ function Agents() {
     const failed = tracked.filter((a) => a.update_failed || (a.update_status || '').toLowerCase() === 'error')
     const ok = tracked.filter((a) => (a.update_status || '').toLowerCase() === 'ok')
     const pcts = tracked.map((a) => {
-      if (typeof a.update_progress === 'number') return a.update_progress
-      const st = (a.update_status || '').toLowerCase()
-      if (st === 'ok') return 100
-      if (st === 'error' || st === 'cancelled') return 0
-      if (st === 'applying') return 85
-      if (st === 'running' || st === 'downloading') return 55
-      if (st === 'sent') return 35
-      if (st === 'queued') return 12
-      return 0
+      let pct = 0
+      if (typeof a.update_progress === 'number') pct = a.update_progress
+      else {
+        const st = (a.update_status || '').toLowerCase()
+        if (st === 'ok') pct = 100
+        else if (st === 'error' || st === 'cancelled') pct = 0
+        else if (st === 'restarting') pct = 92
+        else if (st === 'applying') pct = 85
+        else if (st === 'running' || st === 'downloading') pct = 55
+        else if (st === 'sent') pct = 35
+        else if (st === 'queued') pct = 12
+      }
+      // Monotonic per-agent floor so poll jitter does not yank the bar backward.
+      const prev = progressFloorRef.current[a.id] || 0
+      if (pct >= prev || pct === 0 || pct === 100) {
+        progressFloorRef.current[a.id] = pct
+      } else {
+        pct = prev
+      }
+      return pct
     })
     const progress = Math.round(pcts.reduce((s, n) => s + n, 0) / pcts.length)
     const lines = tracked.map((a) => {
@@ -645,6 +672,7 @@ function Agents() {
       const queued = (r.queued || []) as string[]
       const n = queued.length
       const skipped = r.skipped || []
+      progressFloorRef.current = {}
       setTrackIds(queued)
       setSessionLog(
         [
@@ -720,6 +748,7 @@ function Agents() {
             className="btn secondary"
             style={{ marginTop: 8 }}
             onClick={() => {
+              progressFloorRef.current = {}
               setTrackIds([])
               setSessionLog('')
               setNotice('')

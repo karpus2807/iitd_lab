@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     Bios,
     CpuInventory,
+    DisplayDevice,
     Filesystem,
     GpuDevice,
     HardwareEvent,
@@ -298,6 +299,28 @@ async def _replace_normalized(db: AsyncSession, machine_id: UUID, payload: Inven
                 device=_clip(fs.device, 120),
                 total_bytes=fs.total_bytes,
                 used_bytes=fs.used_bytes,
+            )
+        )
+
+    await db.execute(delete(DisplayDevice).where(DisplayDevice.machine_id == machine_id))
+    for disp in payload.displays.displays:
+        db.add(
+            DisplayDevice(
+                machine_id=machine_id,
+                name=_clip(disp.name, 120) or "",
+                manufacturer=_clip(disp.manufacturer, 120),
+                model=_clip(disp.model, 255),
+                serial_number=_clip(disp.serial_number, 120),
+                product_code=_clip(disp.product_code, 64),
+                connection=_clip(disp.connection, 64),
+                connector=_clip(disp.connector, 64),
+                width_px=disp.width_px,
+                height_px=disp.height_px,
+                size_inches=disp.size_inches,
+                refresh_hz=disp.refresh_hz,
+                year_week=_clip(disp.year_week, 32),
+                connected=bool(disp.connected),
+                extra=disp.extra or {},
             )
         )
 

@@ -55,6 +55,20 @@ DEFAULT_RULES = [
         "description": "A disk disappeared from inventory",
     },
     {
+        "name": "Display removed",
+        "rule_type": "EVENT",
+        "event_type": EventType.DISPLAY_REMOVED.value,
+        "severity": AlertSeverity.CRITICAL.value,
+        "description": "A monitor/display was disconnected or removed",
+    },
+    {
+        "name": "Display added",
+        "rule_type": "EVENT",
+        "event_type": EventType.DISPLAY_ADDED.value,
+        "severity": AlertSeverity.WARNING.value,
+        "description": "A new monitor/display appeared",
+    },
+    {
         "name": "CPU changed",
         "rule_type": "EVENT",
         "event_type": EventType.CPU_CHANGED.value,

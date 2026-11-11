@@ -4,7 +4,7 @@ import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'rec
 import { ago, api, bytes, currentUser, isBlank } from '../api'
 import { StatusBadge } from '../Layout'
 
-const TABS = ['Overview', 'CPU', 'Memory', 'GPU', 'Storage', 'Network', 'Motherboard', 'History', 'Metrics', 'Events', 'Logs'] as const
+const TABS = ['Overview', 'CPU', 'Memory', 'GPU', 'Storage', 'Displays', 'Network', 'Motherboard', 'History', 'Metrics', 'Events', 'Logs'] as const
 const RANGES = [
   ['1h', '1 hour'],
   ['6h', '6 hours'],
@@ -223,6 +223,7 @@ export default function MachineDetail() {
               <Kv label="RAM layout" value={socMem ? 'Soldered / unified' : mem?.slot_count} />
               <Kv label="GPUs" value={machine.gpu_count} />
               <Kv label="Disks" value={hw?.storage?.disks?.length} />
+              <Kv label="Displays" value={hw?.displays?.length} />
             </div>
             {canManage && (
               <div className="field" style={{ marginTop: 16 }}>
@@ -446,6 +447,51 @@ export default function MachineDetail() {
               <Meter value={f.total_bytes ? (100 * f.used_bytes) / f.total_bytes : null} />
             </div>
           ))}
+        </div>
+      )}
+
+      {tab === 'Displays' && (
+        <div className="card">
+          <h3 className="section-title">Connected monitors</h3>
+          <p className="muted" style={{ marginBottom: 12 }}>
+            Manufacturer, serial / service tag, and size come from EDID (Linux) or WmiMonitor* (Windows).
+            Disconnects raise a DISPLAY_REMOVED alert on the next inventory cycle.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Manufacturer</th>
+                <th>Model</th>
+                <th>Serial / service tag</th>
+                <th>Size</th>
+                <th>Resolution</th>
+                <th>Refresh</th>
+                <th>Connection</th>
+                <th>Connector</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(hw?.displays || []).map((d: any) => (
+                <tr key={(d.serial_number || '') + (d.connector || d.name || '') + (d.product_code || '')}>
+                  <td>{isBlank(d.manufacturer) ? '—' : d.manufacturer}</td>
+                  <td>{isBlank(d.model) ? '—' : d.model}</td>
+                  <td className="mono">{isBlank(d.serial_number) ? '—' : d.serial_number}</td>
+                  <td>{d.size_inches != null ? `${d.size_inches}"` : '—'}</td>
+                  <td>
+                    {d.width_px && d.height_px ? `${d.width_px}×${d.height_px}` : '—'}
+                  </td>
+                  <td>{d.refresh_hz != null ? `${d.refresh_hz} Hz` : '—'}</td>
+                  <td>{isBlank(d.connection) ? '—' : d.connection}</td>
+                  <td className="mono">{isBlank(d.connector) ? (d.name || '—') : d.connector}</td>
+                  <td>{d.connected === false ? 'disconnected' : 'connected'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {(!hw?.displays || hw.displays.length === 0) && (
+            <div className="muted" style={{ marginTop: 12 }}>No connected displays reported.</div>
+          )}
         </div>
       )}
 

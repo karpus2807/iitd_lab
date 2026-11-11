@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Prefetch Astral python-build-standalone (install_only_stripped) for lab PCs
-# that ship only Python 2 / 3.5–3.7 (e.g. Ubuntu 16.04 / 18.04).
-# Run on the LabWatch server (hobbit), then recreate api so /python-runtime.tgz works.
+# Prefetch Astral python-build-standalone for lab PCs (any host Python).
+# Agent always can use this runtime; system default Python is never changed.
+# Run on LabWatch server (hobbit), then recreate api so /python-runtime.tgz works.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,25 +27,28 @@ _fetch() {
   ls -lh "$dest"
 }
 
-# Ubuntu 16.04+ x86_64 (glibc 2.23 ≥ manylinux2014 / PBS gnu builds)
 _fetch x86_64 "x86_64-unknown-linux-gnu" "linux-x86_64.tgz"
-# aarch64 lab boards / Jetson-class hosts on newer Ubuntu; still useful
 _fetch aarch64 "aarch64-unknown-linux-gnu" "linux-aarch64.tgz" || {
   echo "WARN: aarch64 runtime fetch failed (optional)."
   rm -f linux-aarch64.tgz.partial
 }
+_fetch windows-x86_64 "x86_64-pc-windows-msvc" "windows-x86_64.tgz" || {
+  echo "WARN: windows-x86_64 runtime fetch failed (optional)."
+  rm -f windows-x86_64.tgz.partial
+}
 
 cat > README.md <<EOF
-# Bundled CPython for old lab OS
+# Bundled CPython (system Python never changed)
 
 Downloaded by \`scripts/linux/prefetch-python-runtime.sh\`.
 
-- \`linux-x86_64.tgz\` / \`linux-aarch64.tgz\` — Astral python-build-standalone
-  CPython ${PY_VER} (tag ${TAG}), install_only_stripped.
-- Served as \`GET /python-runtime.tgz?arch=x86_64|aarch64\`.
-- Installer unpacks to \`/opt/labwatch-agent/python\` when the host has no Python 3.8+.
+- \`linux-x86_64.tgz\` / \`linux-aarch64.tgz\` / \`windows-x86_64.tgz\`
+- Astral python-build-standalone CPython ${PY_VER} (tag ${TAG})
+- Served as \`GET /python-runtime.tgz?arch=x86_64|aarch64|windows-x86_64\`
+- Unpacks under \`/opt/labwatch-agent/python\` (Linux) or
+  \`%ProgramFiles%\\LabWatch Agent\\python\` (Windows)
 
-Do not commit these \`.tgz\` files to git (large binaries). Prefetch on hobbit after deploy.
+Do not commit \`.tgz\` files to git. Prefetch on hobbit after deploy.
 EOF
 
 echo "Done. Recreate api: sudo docker compose up -d --force-recreate --no-deps api"

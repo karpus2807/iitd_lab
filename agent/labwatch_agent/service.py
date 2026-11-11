@@ -17,6 +17,7 @@ from labwatch_agent import __version__
 from labwatch_agent.client import AgentAuthError, AgentClient
 from labwatch_agent.collectors import collect_inventory, collect_metrics
 from labwatch_agent.config import AgentConfig, load_config, read_state, write_state
+from labwatch_agent.keep_awake import apply_keep_awake
 from labwatch_agent.netaddr import collect_host_addresses
 from labwatch_agent.queue import EventQueue, QueueLogHandler
 from labwatch_agent.self_update import apply_pack, schedule_restart
@@ -154,15 +155,31 @@ def _handle_commands(client: AgentClient, commands: list) -> bool:
             except Exception:
                 pass
             new_ver = apply_pack(pack, target_version=target)
-            client.ack_command(cmd_id, "ok", f"updated to {new_ver}", new_ver)
-            logger.info("Self-update applied (%s); scheduling restart", new_ver)
+            # Do NOT ack "ok" yet — live tree still old until watchdog swaps + restarts.
+            # Heartbeat with the new __version__ finalizes status on the server.
+            try:
+                client.ack_command(
+                    cmd_id,
+                    "restarting",
+                    f"staged {new_ver}; restarting to swap",
+                    __version__,
+                )
+            except Exception:
+                pass
+            logger.info("Self-update staged (%s); scheduling swap+restart with rollback", new_ver)
             schedule_restart()
             _STOP = True
             stop = True
         except Exception as exc:
-            logger.exception("Self-update failed: %s", exc)
+            # Live package untouched — keep running previous version and continue inventory/heartbeat.
+            logger.exception("Self-update failed; keeping current agent %s: %s", __version__, exc)
             try:
-                client.ack_command(cmd_id, "error", str(exc)[:500], __version__)
+                client.ack_command(
+                    cmd_id,
+                    "error",
+                    f"update failed; rolled back / still on {__version__}: {str(exc)[:400]}",
+                    __version__,
+                )
             except Exception:
                 pass
     return stop
@@ -202,37 +219,14 @@ def run(cfg: AgentConfig) -> int:
     logger.info("LabWatch agent %s starting tools=%s", __version__, tools)
     if missing:
         logger.warning("Missing collector tools (fields will be incomplete): %s", ", ".join(missing))
+    # Defer keep-awake until after first heartbeat so install/start is not delayed.
+    last_keep_awake = 0.0
 
     while not _STOP:
         now = time.time()
         enrolled = bool(state.get("agent_id") and state.get("agent_secret"))
         try:
-            if last_inv == 0 or now - last_inv >= jitter(cfg.inventory_interval) or not enrolled:
-                try:
-                    inventory, errors = collect_inventory(_agent_uuid(cfg, state))
-                    identity = inventory.get("identity") or identity
-                    state = _ensure_registered(cfg, client, state, identity)
-                    client.inventory(inventory)
-                    last_inv = now
-                    logger.info("Inventory submitted")
-                    for note in inventory.get("collection_notes") or []:
-                        _log_collector_note(note)
-                    for err in errors:
-                        logger.error("%s", err)
-                except AgentAuthError:
-                    state = _clear_creds(cfg, state)
-                    client.agent_id = ""
-                    client.secret = ""
-                    last_inv = 0
-                except Exception as exc:
-                    logger.warning("Inventory sync failed: %s", exc)
-                    try:
-                        if not (state.get("agent_id") and state.get("agent_secret")):
-                            state = _ensure_registered(cfg, client, state, identity or _fallback_identity())
-                    except Exception as reg_exc:
-                        logger.warning("Register failed: %s", reg_exc)
-
-            enrolled = bool(state.get("agent_id") and state.get("agent_secret"))
+            # Heartbeat FIRST — never starve liveness behind slow inventory/WMI.
             if enrolled and now - last_hb >= jitter(cfg.heartbeat_interval):
                 try:
                     addrs = collect_host_addresses()
@@ -248,6 +242,9 @@ def run(cfg: AgentConfig) -> int:
                         }
                     )
                     last_hb = now
+                    if last_keep_awake == 0.0:
+                        apply_keep_awake()
+                        last_keep_awake = time.time()
                     if _handle_commands(client, hb.get("commands") or []):
                         break
                 except AgentAuthError:
@@ -274,6 +271,35 @@ def run(cfg: AgentConfig) -> int:
                 except Exception as exc:
                     logger.warning("Metrics sync failed: %s", exc)
 
+            # Inventory last (can take minutes on some Windows/Linux hosts).
+            need_inv = last_inv == 0 or now - last_inv >= jitter(cfg.inventory_interval) or not enrolled
+            # If heartbeat is due soon, skip inventory this tick so we don't miss it.
+            hb_due_soon = enrolled and (now - last_hb) >= max(1.0, cfg.heartbeat_interval * 0.7)
+            if need_inv and not hb_due_soon:
+                try:
+                    inventory, errors = collect_inventory(_agent_uuid(cfg, state))
+                    identity = inventory.get("identity") or identity
+                    state = _ensure_registered(cfg, client, state, identity)
+                    client.inventory(inventory)
+                    last_inv = now
+                    logger.info("Inventory submitted")
+                    for note in inventory.get("collection_notes") or []:
+                        _log_collector_note(note)
+                    for err in errors:
+                        logger.error("%s", err)
+                except AgentAuthError:
+                    state = _clear_creds(cfg, state)
+                    client.agent_id = ""
+                    client.secret = ""
+                    last_inv = 0
+                except Exception as exc:
+                    logger.warning("Inventory sync failed: %s", exc)
+                    try:
+                        if not (state.get("agent_id") and state.get("agent_secret")):
+                            state = _ensure_registered(cfg, client, state, identity or _fallback_identity())
+                    except Exception as reg_exc:
+                        logger.warning("Register failed: %s", reg_exc)
+
             if enrolled:
                 try:
                     _flush_queue(client, queue)
@@ -284,6 +310,11 @@ def run(cfg: AgentConfig) -> int:
                     last_inv = 0
                 except Exception as exc:
                     logger.warning("Log ship failed: %s", exc)
+
+            # Wi-Fi / NIC power-save can reset after driver sleep — refresh hourly.
+            if last_keep_awake and now - last_keep_awake >= 3600:
+                apply_keep_awake()
+                last_keep_awake = now
         except SystemExit:
             raise
         except Exception as exc:

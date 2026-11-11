@@ -157,6 +157,28 @@ class StorageInfo(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class DisplayInfo(BaseModel):
+    name: str = ""
+    manufacturer: str | None = None
+    model: str | None = None
+    serial_number: str | None = None
+    product_code: str | None = None
+    connection: str | None = None
+    connector: str | None = None
+    width_px: int | None = None
+    height_px: int | None = None
+    size_inches: float | None = None
+    refresh_hz: float | None = None
+    year_week: str | None = None
+    connected: bool = True
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class DisplaysInfo(BaseModel):
+    displays: list[DisplayInfo] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class NicInfo(BaseModel):
     name: str
     mac: str | None = None
@@ -202,6 +224,7 @@ class InventoryPayload(BaseModel):
     gpus: list[GPUInfo] = Field(default_factory=list)
     pcie: PCIeInfo = Field(default_factory=PCIeInfo)
     storage: StorageInfo = Field(default_factory=StorageInfo)
+    displays: DisplaysInfo = Field(default_factory=DisplaysInfo)
     network: NetworkInfo = Field(default_factory=NetworkInfo)
     motherboard: MotherboardInfo = Field(default_factory=MotherboardInfo)
     bios: BIOSInfo = Field(default_factory=BIOSInfo)

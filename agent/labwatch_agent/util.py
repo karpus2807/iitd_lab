@@ -24,6 +24,7 @@ def probe_host_tools() -> dict[str, bool]:
         "lshw": bool(which("lshw")),
         "ip": bool(which("ip")),
         "lscpu": bool(which("lscpu")),
+        "xrandr": bool(which("xrandr")),
     }
 
 

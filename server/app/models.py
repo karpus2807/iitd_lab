@@ -299,6 +299,31 @@ class StorageDevice(Base, TimestampMixin):
     extra: Mapped[dict] = mapped_column(json_column(), default=dict)
 
 
+class DisplayDevice(Base, TimestampMixin):
+    """Connected monitor / display panel (EDID / WmiMonitor*)."""
+
+    __tablename__ = "display_devices"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    machine_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("machines.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), default="")
+    manufacturer: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    product_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    connection: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    connector: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    width_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height_px: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    size_inches: Mapped[float | None] = mapped_column(nullable=True)
+    refresh_hz: Mapped[float | None] = mapped_column(nullable=True)
+    year_week: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    connected: Mapped[bool] = mapped_column(Boolean, default=True)
+    extra: Mapped[dict] = mapped_column(json_column(), default=dict)
+
+
 class Filesystem(Base):
     __tablename__ = "filesystems"
 

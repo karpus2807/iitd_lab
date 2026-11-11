@@ -58,10 +58,19 @@ async def apply_heartbeat(db: AsyncSession, machine: Machine, agent: Agent, heal
     await touch_token_last_used(db, getattr(agent, "registration_token_id", None))
 
 
+# Self-update download/apply can block the agent loop for several minutes.
+# Do not flap OFFLINE while the agent is clearly mid-update (acks still arrive).
+_UPDATE_LIVENESS = frozenset(
+    {"queued", "sent", "running", "downloading", "applying", "restarting"}
+)
+
+
 async def reconcile_machine_status(db: AsyncSession) -> None:
     settings = get_settings()
     now = utcnow()
     offline_after = timedelta(seconds=settings.offline_after_seconds)
+    # Pack download on campus often exceeds the normal offline window.
+    update_offline_after = timedelta(seconds=max(settings.offline_after_seconds, 900))
     agents = (await db.execute(select(Agent).where(Agent.status == AgentStatus.ACTIVE.value))).scalars().all()
     for agent in agents:
         machine = await db.get(Machine, agent.machine_id)
@@ -72,7 +81,9 @@ async def reconcile_machine_status(db: AsyncSession) -> None:
                 machine.status = MachineStatus.NEVER_CONNECTED.value
             continue
         age = now - agent.last_heartbeat_at
-        if age > offline_after:
+        st = (agent.update_status or "").strip().lower()
+        limit = update_offline_after if st in _UPDATE_LIVENESS else offline_after
+        if age > limit:
             if machine.status != MachineStatus.OFFLINE.value:
                 await record_status_event(db, machine, MachineStatus.OFFLINE.value)
                 machine.status = MachineStatus.OFFLINE.value

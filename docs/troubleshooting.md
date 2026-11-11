@@ -71,8 +71,9 @@ cd ~/iitd_lab
 sudo docker compose up -d --force-recreate --no-deps api web
 ```
 
-If the lab PC has no Python 3.10+ (Ubuntu 16/18 with 3.5/3.6, or Python 2 only), the
-installer pulls LabWatch’s bundled CPython from `/python-runtime.tgz`. Prefetch that
+If the lab PC has no Python 3.10+ (Ubuntu 16/18 with 3.5/3.6, Python 2 only, or
+Windows without a PATH 3.10+), the installer pulls LabWatch’s bundled CPython from
+`/python-runtime.tgz` (`?arch=x86_64|aarch64|windows-x86_64`). Prefetch that
 on the server once:
 
 ```bash

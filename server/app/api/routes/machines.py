@@ -12,6 +12,7 @@ from app.models import (
     Alert,
     Bios,
     CpuInventory,
+    DisplayDevice,
     Filesystem,
     GpuDevice,
     GpuMetricSample,
@@ -226,6 +227,9 @@ async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:
     pcie_slots = (await db.execute(select(PcieSlot).where(PcieSlot.machine_id == machine_id))).scalars().all()
     disks = (await db.execute(select(StorageDevice).where(StorageDevice.machine_id == machine_id))).scalars().all()
     fs = (await db.execute(select(Filesystem).where(Filesystem.machine_id == machine_id))).scalars().all()
+    displays = (
+        await db.execute(select(DisplayDevice).where(DisplayDevice.machine_id == machine_id).order_by(DisplayDevice.name))
+    ).scalars().all()
     nics = (await db.execute(select(NetworkInterface).where(NetworkInterface.machine_id == machine_id))).scalars().all()
     mb = await db.get(Motherboard, machine_id)
     bios = await db.get(Bios, machine_id)
@@ -358,6 +362,25 @@ async def _hardware_dict(db: AsyncSession, machine_id: UUID) -> dict:
                 for f in fs
             ],
         },
+        "displays": [
+            {
+                "name": d.name,
+                "manufacturer": present(d.manufacturer),
+                "model": present(d.model),
+                "serial_number": present(d.serial_number),
+                "product_code": present(d.product_code),
+                "connection": present(d.connection),
+                "connector": present(d.connector),
+                "width_px": d.width_px,
+                "height_px": d.height_px,
+                "size_inches": d.size_inches,
+                "refresh_hz": d.refresh_hz,
+                "year_week": present(d.year_week),
+                "connected": d.connected,
+                "extra": d.extra or {},
+            }
+            for d in displays
+        ],
         "network": [
             {
                 "name": n.name,

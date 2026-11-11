@@ -20,13 +20,16 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 REMOTE_UPDATE_MIN = (1, 1, 40)
 
 
-_UPDATE_ACTIVE = frozenset({"queued", "sent", "running", "downloading", "applying"})
+_UPDATE_ACTIVE = frozenset(
+    {"queued", "sent", "running", "downloading", "applying", "restarting"}
+)
 _UPDATE_PROGRESS = {
     "queued": 12,
     "sent": 35,
     "downloading": 55,
     "running": 70,
     "applying": 85,
+    "restarting": 92,
     "ok": 100,
     "error": 0,
     "cancelled": 0,
@@ -269,7 +272,14 @@ async def list_agents(db: DbDep, admin: AdminUser):
     # Compare to shipped agent pack — not LabWatch UI/API VERSION.
     pack = agent_pack_version()
     pack_t = _version_tuple(pack)
-    rows = (await db.execute(select(Agent, Machine).join(Machine, Agent.machine_id == Machine.id))).all()
+    # Stable order — unsorted select jumps rows (and progress UI) on every poll.
+    rows = (
+        await db.execute(
+            select(Agent, Machine)
+            .join(Machine, Agent.machine_id == Machine.id)
+            .order_by(Machine.hostname.asc(), Machine.inventory_id.asc(), Agent.id.asc())
+        )
+    ).all()
     # Drop timed-out in-flight updates so a leftover fleet queue does not look live.
     _expire_stale_updates([a for a, _m in rows])
     await db.commit()
@@ -286,9 +296,25 @@ async def list_agents(db: DbDep, admin: AdminUser):
         ver_t = _version_tuple(ver) if ver else (0, 0, 0)
         update_available = bool(ver) and ver_t < pack_t
         up_to_date = bool(ver) and ver_t >= pack_t
-        display_status = a.update_status or ""
+        display_status = (a.update_status or "").strip()
+        display_message = (a.update_message or "").strip()
+        target = (a.update_target_version or "").strip()
+        # False success: DB says ok/updated but live agent_version still behind.
+        if (
+            display_status.lower() == "ok"
+            and target
+            and ver
+            and _version_tuple(ver) < _version_tuple(target)
+        ):
+            display_status = "error"
+            display_message = (
+                f"update did not stick — still running {ver} (wanted {target})"
+            )
+            a.update_status = "error"
+            a.update_message = display_message[:512]
         if up_to_date and display_status.lower() == "ok":
             display_status = ""
+            display_message = ""
         tid = str(a.registration_token_id) if a.registration_token_id else None
         tprefix, tlabel = token_meta.get(tid or "", ("", ""))
         agents.append(
@@ -307,7 +333,7 @@ async def list_agents(db: DbDep, admin: AdminUser):
                 "last_heartbeat_at": a.last_heartbeat_at,
                 "approved": m.approved,
                 "update_status": display_status,
-                "update_message": (a.update_message or "") if display_status else "",
+                "update_message": display_message if display_status else "",
                 "update_target_version": a.update_target_version or "",
                 "update_requested_at": a.update_requested_at,
                 "update_progress": _update_progress(display_status),

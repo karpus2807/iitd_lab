@@ -25,9 +25,72 @@ $out = [ordered]@{
   disks = @(Get-CimInstance Win32_DiskDrive | Select-Object DeviceID, Model, SerialNumber, Size, InterfaceType, MediaType, Status)
   nics = @(Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -eq $true } | Select-Object Name, MACAddress, Speed, NetEnabled, AdapterType, PNPDeviceID, NetConnectionStatus)
   niccfg = @(Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.MACAddress } | Select-Object Description, MACAddress, IPAddress)
-  video = @(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion, PNPDeviceID, VideoProcessor, CurrentRefreshRate, Status, AdapterCompatibility, DriverDate)
+  video = @(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion, PNPDeviceID, VideoProcessor, CurrentRefreshRate, CurrentHorizontalResolution, CurrentVerticalResolution, Status, AdapterCompatibility, DriverDate)
 }
 $out | ConvertTo-Json -Compress -Depth 6
+"""
+
+# WMI monitor identity — run via temp .ps1 (-File). Keep simple: no Generic.List.
+# Registry EDID is read in Python via winreg (more reliable than PS for scheduled tasks).
+MONITOR_SCRIPT = r"""
+$ErrorActionPreference = 'Continue'
+function Decode-U16($arr) {
+  if ($null -eq $arr) { return '' }
+  $chars = New-Object System.Collections.ArrayList
+  foreach ($n in @($arr)) {
+    try { $v = [int]$n } catch { continue }
+    if ($v -eq 0) { break }
+    if ($v -ge 32 -and $v -le 126) { [void]$chars.Add([char]$v) }
+  }
+  return (-join $chars).Trim()
+}
+try {
+  $monitors = @()
+  $paramMap = @{}
+  $connMap = @{}
+  foreach ($p in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams -ErrorAction SilentlyContinue)) {
+    if ($p.InstanceName) { $paramMap[[string]$p.InstanceName] = $p }
+  }
+  foreach ($c in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams -ErrorAction SilentlyContinue)) {
+    if ($c.InstanceName) { $connMap[[string]$c.InstanceName] = $c }
+  }
+  foreach ($m in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -ErrorAction SilentlyContinue)) {
+    if ($m.Active -eq $false) { continue }
+    $iname = [string]$m.InstanceName
+    $p = $paramMap[$iname]
+    $c = $connMap[$iname]
+    $monitors += [pscustomobject]@{
+      source = 'wmi'
+      instance_name = $iname
+      active = $true
+      manufacturer_code = Decode-U16 $m.ManufacturerName
+      product_code = Decode-U16 $m.ProductCodeID
+      serial_number = Decode-U16 $m.SerialNumberID
+      friendly_name = Decode-U16 $m.UserFriendlyName
+      week = $m.WeekOfManufacture
+      year = $m.YearOfManufacture
+      width_cm = $(if ($p) { $p.MaxHorizontalImageSize } else { $null })
+      height_cm = $(if ($p) { $p.MaxVerticalImageSize } else { $null })
+      video_output_technology = $(if ($c) { $c.VideoOutputTechnology } else { $null })
+    }
+  }
+  $video = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+    Select-Object Name, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate, PNPDeviceID)
+  $payload = [pscustomobject]@{
+    monitors = @($monitors)
+    edids = @()
+    video = @($video)
+    error = $null
+  }
+  $payload | ConvertTo-Json -Compress -Depth 6
+} catch {
+  [pscustomobject]@{
+    monitors = @()
+    edids = @()
+    video = @()
+    error = $_.Exception.Message
+  } | ConvertTo-Json -Compress -Depth 4
+}
 """
 
 
@@ -40,6 +103,190 @@ def _cim() -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
 
+
+def _read_registry_edids() -> list[dict[str, Any]]:
+    """Read monitor EDID blobs from HKLM Enum\\DISPLAY via winreg (no PowerShell)."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    edids: list[dict[str, Any]] = []
+    base = r"SYSTEM\CurrentControlSet\Enum\DISPLAY"
+    try:
+        display_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+    except OSError:
+        return []
+
+    try:
+        hw_idx = 0
+        while True:
+            try:
+                hw_id = winreg.EnumKey(display_key, hw_idx)
+            except OSError:
+                break
+            hw_idx += 1
+            # Skip generic placeholders that never carry a real EDID.
+            if hw_id.upper() in {"DEFAULT_MONITOR", "GENERIC_MONITOR"}:
+                pass  # still try — some systems store EDID under these
+            try:
+                hw_key = winreg.OpenKey(display_key, hw_id)
+            except OSError:
+                continue
+            try:
+                inst_idx = 0
+                while True:
+                    try:
+                        inst_id = winreg.EnumKey(hw_key, inst_idx)
+                    except OSError:
+                        break
+                    inst_idx += 1
+                    if inst_id in {"Control", "Properties", "Device Parameters"}:
+                        continue
+                    try:
+                        dp = winreg.OpenKey(hw_key, inst_id + r"\Device Parameters")
+                    except OSError:
+                        continue
+                    try:
+                        raw, _regtype = winreg.QueryValueEx(dp, "EDID")
+                    except OSError:
+                        raw = None
+                    finally:
+                        winreg.CloseKey(dp)
+                    if not isinstance(raw, (bytes, bytearray)) or len(raw) < 128:
+                        continue
+                    edids.append(
+                        {
+                            "source": "registry",
+                            "display_hw_id": hw_id,
+                            "instance_id": inst_id,
+                            "edid_hex": bytes(raw[:128]).hex(),
+                        }
+                    )
+            finally:
+                winreg.CloseKey(hw_key)
+    finally:
+        winreg.CloseKey(display_key)
+    return edids
+
+
+def _run_monitor_ps() -> dict[str, Any]:
+    """Run MONITOR_SCRIPT via a temp .ps1 file (-File is reliable for scheduled tasks)."""
+    import tempfile
+    from pathlib import Path
+
+    path = None
+    try:
+        fd, path = tempfile.mkstemp(prefix="labwatch-monitors-", suffix=".ps1")
+        os.close(fd)
+        # UTF-8 BOM so Windows PowerShell 5.1 parses the file correctly.
+        Path(path).write_text(MONITOR_SCRIPT, encoding="utf-8-sig")
+        code, out, err = run_cmd(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                path,
+            ],
+            timeout=60,
+        )
+        if not out.strip():
+            return {
+                "monitors": [],
+                "edids": [],
+                "video": [],
+                "error": (err or f"powershell exit {code}, empty stdout")[:300],
+            }
+        # Strip UTF-8 BOM / junk before first '{'
+        text = out.strip()
+        if text.startswith("\ufeff"):
+            text = text.lstrip("\ufeff")
+        brace = text.find("{")
+        if brace > 0:
+            text = text[brace:]
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return {
+                "monitors": [],
+                "edids": [],
+                "video": [],
+                "error": f"monitor JSON parse failed: {(err or text)[:200]}",
+            }
+        if not isinstance(data, dict):
+            return {"monitors": [], "edids": [], "video": [], "error": "monitor JSON not an object"}
+        return data
+    except Exception as exc:
+        return {"monitors": [], "edids": [], "video": [], "error": f"monitor ps failed: {exc}"[:300]}
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def collect_monitor_raw() -> dict[str, Any]:
+    """Windows monitors via winreg EDID (primary) + cached CIM video resolution.
+
+    PowerShell WmiMonitor* is optional enrichment only — lab agents previously
+    returned empty when ``powershell -Command`` failed, which also skipped
+    registry EDID that lived inside that same script. Reading HKLM via winreg
+    avoids a second PowerShell process during inventory.
+    """
+    notes_err: list[str] = []
+    edids = _read_registry_edids()
+    monitors: list[dict[str, Any]] = []
+    video: list[dict[str, Any]] = []
+
+    # Resolution / refresh from the already-fetched CIM blob (no extra PS).
+    try:
+        cim_video = _cached_cim().get("video") or []
+        if isinstance(cim_video, dict):
+            cim_video = [cim_video]
+        video = list(cim_video)
+    except Exception as exc:
+        notes_err.append(f"cim video: {exc}")
+
+    # Optional WMI identity (manufacturer/serial already come from EDID).
+    # Only attempt when registry found nothing — avoid AV/policy killing inventory.
+    if not edids:
+        ps = _run_monitor_ps()
+        if ps.get("error"):
+            notes_err.append(str(ps["error"]))
+        monitors = ps.get("monitors") or []
+        if isinstance(monitors, dict):
+            monitors = [monitors]
+        ps_edids = ps.get("edids") or []
+        if isinstance(ps_edids, dict):
+            ps_edids = [ps_edids]
+        edids.extend(ps_edids)
+        if not video:
+            ps_video = ps.get("video") or []
+            if isinstance(ps_video, dict):
+                ps_video = [ps_video]
+            video = list(ps_video)
+
+    out: dict[str, Any] = {
+        "monitors": list(monitors),
+        "edids": edids,
+        "video": list(video),
+        "registry_edid_count": len(edids),
+    }
+    if not edids and not monitors:
+        out["error"] = (
+            "; ".join(notes_err)
+            if notes_err
+            else "no EDID in HKLM\\…\\Enum\\DISPLAY and WmiMonitorID empty"
+        )[:300]
+    elif notes_err:
+        out["error"] = "partial: " + "; ".join(notes_err)[:200]
+    return out
 
 def collect_os_windows() -> dict[str, Any]:
     import time

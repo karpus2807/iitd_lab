@@ -15,7 +15,10 @@ Do not invent missing data. Unsupported fields are hidden; missing sensors show 
 | NVIDIA GPU | `nvidia-smi`, Jetson sysfs | `nvidia-smi` |
 | Other GPU | `lspci` name | `Win32_VideoController` |
 | Disks | `lsblk`, `smartctl` | `Win32_DiskDrive` |
+| Displays | DRM sysfs EDID (`/sys/class/drm/*/edid`) | Dedicated PS: `WmiMonitor*` (decoded) + registry `Enum\\DISPLAY\\…\\EDID` |
 | Board / BIOS | dmidecode, sysfs DMI | CIM |
 | Network | psutil | psutil + CIM |
 
-Changes (`RAM_REMOVED`, `GPU_CHANGED`, …) become events. VMs are flagged; virtual DIMM maps are not treated as physical.
+Changes (`RAM_REMOVED`, `GPU_CHANGED`, `DISPLAY_REMOVED`, …) become events. VMs are flagged; virtual DIMM maps are not treated as physical.
+
+**Displays** report manufacturer, serial/service tag, diagonal inches, resolution, refresh, and connector (HDMI/DP/…). Re-collected every inventory cycle (~5 min). Unplug → `DISPLAY_REMOVED` (critical alert).

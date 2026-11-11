@@ -53,6 +53,7 @@ def _notes_blob(payload: InventoryPayload) -> str:
     parts.extend(payload.collection_notes or [])
     parts.extend(payload.memory.notes or [])
     parts.extend(payload.storage.notes or [])
+    parts.extend(payload.displays.notes or [])
     parts.extend(payload.network.notes or [])
     parts.extend(payload.cpu.notes or [])
     parts.extend(payload.pcie.notes or [])
@@ -177,6 +178,36 @@ def _disk_public(disk) -> dict[str, Any]:
     }
 
 
+def _display_key(disp) -> str:
+    if _clean(disp.serial_number):
+        return f"serial:{str(disp.serial_number).lower()}"
+    extra = disp.extra or {}
+    instance = _clean(extra.get("instance_name")) if isinstance(extra, dict) else None
+    if instance:
+        return f"instance:{str(instance).lower()}"
+    if _clean(disp.connector):
+        return f"connector:{str(disp.connector).lower()}"
+    if _clean(disp.name) and _clean(disp.model):
+        return f"name:{str(disp.name).lower()}:{str(disp.model).lower()}"
+    return f"name:{disp.name}:{disp.product_code}:{disp.size_inches}"
+
+
+def _display_public(disp) -> dict[str, Any]:
+    return {
+        "name": disp.name,
+        "manufacturer": disp.manufacturer,
+        "model": disp.model,
+        "serial_number": disp.serial_number,
+        "product_code": disp.product_code,
+        "connection": disp.connection,
+        "connector": disp.connector,
+        "size_inches": disp.size_inches,
+        "width_px": disp.width_px,
+        "height_px": disp.height_px,
+        "connected": disp.connected,
+    }
+
+
 def _nic_key(nic) -> str:
     if _clean(nic.mac):
         return f"mac:{str(nic.mac).lower()}"
@@ -193,6 +224,9 @@ HARDWARE_EVENT_SEVERITY = {
     EventType.DISK_REMOVED.value: AlertSeverity.CRITICAL.value,
     EventType.DISK_ADDED.value: AlertSeverity.WARNING.value,
     EventType.DISK_CHANGED.value: AlertSeverity.WARNING.value,
+    EventType.DISPLAY_REMOVED.value: AlertSeverity.CRITICAL.value,
+    EventType.DISPLAY_ADDED.value: AlertSeverity.WARNING.value,
+    EventType.DISPLAY_CHANGED.value: AlertSeverity.WARNING.value,
     EventType.CPU_CHANGED.value: AlertSeverity.CRITICAL.value,
     EventType.MOTHERBOARD_CHANGED.value: AlertSeverity.CRITICAL.value,
     EventType.BIOS_CHANGED.value: AlertSeverity.INFO.value,
@@ -419,6 +453,66 @@ def _diff_disks(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]
     return events
 
 
+def _diff_displays(old: InventoryPayload, new: InventoryPayload) -> list[DiffEvent]:
+    # N→0 empty scrape (headless session / DRM flake) — never treat as full unplug.
+    if old.displays.displays and not new.displays.displays:
+        return []
+    if not old.displays.displays and new.displays.displays and _notes_suggest_incomplete(old):
+        return []
+    events: list[DiffEvent] = []
+    old_map = {_display_key(d): d for d in old.displays.displays}
+    new_map = {_display_key(d): d for d in new.displays.displays}
+
+    for key, before in old_map.items():
+        after = new_map.get(key)
+        if after is None:
+            label = before.model or before.name or before.serial_number or "unknown"
+            events.append(
+                _event(
+                    EventType.DISPLAY_REMOVED,
+                    f"display.{before.connector or before.name or before.serial_number}",
+                    _display_public(before),
+                    {"state": "MISSING"},
+                    f"Display removed ({label})",
+                )
+            )
+            continue
+        fields = [
+            ("manufacturer", "manufacturer"),
+            ("model", "model"),
+            ("serial_number", "serial"),
+            ("product_code", "product code"),
+            ("size_inches", "size"),
+            ("connection", "connection"),
+            ("width_px", "width"),
+            ("height_px", "height"),
+        ]
+        changes = [label for field, label in fields if _changed(getattr(before, field), getattr(after, field))]
+        if changes:
+            events.append(
+                _event(
+                    EventType.DISPLAY_CHANGED,
+                    f"display.{after.connector or after.name}",
+                    _display_public(before),
+                    _display_public(after),
+                    f"Display changed ({after.model or after.name}): {', '.join(changes)}",
+                )
+            )
+    for key, after in new_map.items():
+        if key not in old_map:
+            label = after.model or after.name or after.serial_number or "unknown"
+            events.append(
+                _event(
+                    EventType.DISPLAY_ADDED,
+                    f"display.{after.connector or after.name or after.serial_number}",
+                    None,
+                    _display_public(after),
+                    f"Display added ({label})",
+                )
+            )
+    return events
+
+
 def _scalar_change(event_type: EventType, path: str, label: str, old_val: Any, new_val: Any) -> DiffEvent | None:
     if old_val is None and new_val is None:
         return None
@@ -515,6 +609,7 @@ def diff_inventory(previous: InventoryPayload | None, current: InventoryPayload)
     events.extend(_diff_memory(previous, current))
     events.extend(_diff_gpus(previous, current))
     events.extend(_diff_disks(previous, current))
+    events.extend(_diff_displays(previous, current))
     events.extend(_diff_cpu(previous, current))
     events.extend(_diff_board(previous, current))
     events.extend(_diff_nics(previous, current))

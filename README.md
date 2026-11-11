@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.2.2](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.2)
+**Latest release:** [v1.2.10](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.10)
 
 ## Requirements
 
@@ -15,12 +15,14 @@ Hosts are matched by hardware IDs, not IP. Linux and Windows.
 | **Windows** | Windows 10 (1803+) / Windows 11 |
 | **Agent runtime** | LabWatch brings **CPython 3.12** when needed |
 
-**Host Python can be anything** (Python 2, 3.5, 3.8, 3.10, or missing). The Linux
-installer does **not** require you to upgrade system Python — if the host is below
-3.10 it downloads LabWatch’s bundled CPython 3.12 from `/python-runtime.tgz` into
-`/opt/labwatch-agent/python` and installs the agent there. System Python is left alone.
+**Host Python can be anything** (Python 2, 3.5, 3.8, 3.10, missing, or broken Store stub).
+Linux and Windows installers do **not** require upgrading system Python — if the host
+is below 3.10 they download LabWatch’s bundled CPython 3.12 from `/python-runtime.tgz`
+into `/opt/labwatch-agent/python` (Linux) or `%ProgramFiles%\LabWatch Agent\python`
+(Windows). System default Python / PATH is left alone.
 
-Server-side (once): `./scripts/linux/prefetch-python-runtime.sh` then recreate `api`.
+Server-side (once): `./scripts/linux/prefetch-python-runtime.sh` then recreate `api`
+(needs `linux-*.tgz` and `windows-x86_64.tgz`).
 
 ## Agent install (lab PC)
 
@@ -29,6 +31,14 @@ In the portal: **Install** (copy-paste commands). Always use **port 8080**. Comm
 **Linux**
 
 ```bash
+curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
+sudo bash /tmp/labwatch-install.sh
+```
+
+If install fails with **Python 3.8 / get-pip / “minimum … 3.10”** (stale venv), clear and retry — same commands are on the portal **Install** page:
+
+```bash
+sudo rm -rf /opt/labwatch-agent/venv /opt/labwatch-agent/python
 curl -fsSL http://hobbit2.cse.iitd.ac.in:8080/install-agent.sh -o /tmp/labwatch-install.sh
 sudo bash /tmp/labwatch-install.sh
 ```

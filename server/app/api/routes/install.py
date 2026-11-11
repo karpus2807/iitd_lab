@@ -9,10 +9,21 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, Response
 
+from app import __version__ as server_version
+from app.config import get_settings
+from app.services.agent_pack import agent_pack_version, clear_agent_pack_version_cache
 from app.services.public_url import hostname_server_url
 from app.services.updates import repo_dir
 
 router = APIRouter(tags=["install"])
+
+# Single source of truth for the portal Install page (no frontend rebuild for notes/versions).
+# Bump feature_min / notes here when shipping agent capabilities.
+DISPLAY_MONITOR_MIN = "1.2.6"
+KEEP_AWAKE_MIN = "1.2.7"  # sleep/hibernate off + NIC/Wi-Fi no power-save
+LINUX_UPDATE_FIX_MIN = "1.2.9"  # systemd-run + EXIT trap so stop never leaves agent dead
+REMOTE_UPDATE_MIN = "1.1.40"
+SAFE_UPDATE_MIN = "1.2.3"  # stage→swap→rollback self-update
 
 
 def _linux_script_path() -> Path:
@@ -26,6 +37,117 @@ def _windows_script_path() -> Path:
 def _bake_server_url(path: Path, request: Request) -> str:
     server = hostname_server_url(request)
     return path.read_text(encoding="utf-8").replace("__SERVER_URL__", server)
+
+
+def _install_commands(base: str, github_ps1: str) -> dict:
+    return {
+        "linux": {
+            # --noproxy: campus HTTP_PROXY must not intercept hobbit (returns proxy.cgi HTML).
+            "download": (
+                f"curl -fsSL --noproxy '*' {base}/install-agent.sh -o /tmp/labwatch-install.sh "
+                f"&& head -1 /tmp/labwatch-install.sh | grep -q '^#!'"
+            ),
+            "install": "sudo bash /tmp/labwatch-install.sh",
+            "status": "labwatch-agent status",
+            "fix_venv": "sudo rm -rf /opt/labwatch-agent/venv /opt/labwatch-agent/python",
+            "restart": "sudo systemctl start labwatch-agent; systemctl is-active labwatch-agent",
+            # Multi-line: every privileged step uses sudo (root owns /opt/labwatch-agent).
+            "force_update": (
+                f"sudo systemctl stop labwatch-agent\n"
+                f"curl -fsSL --noproxy '*' {base}/agent-pack.tgz -o /tmp/labwatch-agent-pack.tgz\n"
+                f"rm -rf /tmp/labwatch-pack && mkdir -p /tmp/labwatch-pack\n"
+                f"tar -xzf /tmp/labwatch-agent-pack.tgz -C /tmp/labwatch-pack\n"
+                f"sudo rm -rf /opt/labwatch-agent/labwatch_agent "
+                f"/opt/labwatch-agent/labwatch_agent.next /opt/labwatch-agent/labwatch_agent.prev\n"
+                f"sudo cp -a /tmp/labwatch-pack/labwatch_agent /opt/labwatch-agent/\n"
+                f"sudo systemctl start labwatch-agent\n"
+                f"sleep 1\n"
+                f"labwatch-agent version\n"
+                f"systemctl is-active labwatch-agent"
+            ),
+            "uninstall_stop": "sudo systemctl disable --now labwatch-agent",
+            "uninstall_unit": (
+                "sudo rm -f /etc/systemd/system/labwatch-agent.service /usr/local/bin/labwatch-agent"
+                " && sudo systemctl daemon-reload"
+            ),
+            "uninstall_wipe": "sudo rm -rf /opt/labwatch-agent /etc/labwatch-agent /var/lib/labwatch-agent",
+        },
+        "windows": {
+            "clear_installer": "Remove-Item $env:TEMP\\labwatch-install.ps1 -ErrorAction SilentlyContinue",
+            "download": f"Invoke-WebRequest -Uri {base}/install-agent.ps1 -OutFile $env:TEMP\\labwatch-install.ps1",
+            "install": "powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1",
+            "status": "Get-ScheduledTask -TaskName LabWatchAgent",
+            "fix_venv": (
+                'Remove-Item -Recurse -Force "$env:ProgramFiles\\LabWatch Agent\\venv",'
+                '"$env:ProgramFiles\\LabWatch Agent\\python" -ErrorAction SilentlyContinue'
+            ),
+            "restart_task": (
+                'Start-ScheduledTask -TaskName "LabWatchAgent"; '
+                'Get-ScheduledTask -TaskName "LabWatchAgent" | Select-Object TaskName, State'
+            ),
+            "github_download": f"Invoke-WebRequest -Uri {github_ps1} -OutFile $env:TEMP\\labwatch-install.ps1",
+            "github_install": (
+                "powershell -ExecutionPolicy Bypass -File $env:TEMP\\labwatch-install.ps1 -FromGitHub"
+            ),
+            "uninstall_task": (
+                'Stop-ScheduledTask -TaskName "LabWatchAgent" -ErrorAction SilentlyContinue; '
+                'Unregister-ScheduledTask -TaskName "LabWatchAgent" -Confirm:$false -ErrorAction SilentlyContinue'
+            ),
+            "uninstall_wipe": (
+                'Remove-Item -Recurse -Force "$env:ProgramFiles\\LabWatch Agent",'
+                '"$env:ProgramData\\LabWatch" -ErrorAction SilentlyContinue'
+            ),
+        },
+    }
+
+
+@router.get("/api/install/info")
+async def install_info(request: Request):
+    """Live install metadata for the portal — versions/notes come from the server, not the UI build."""
+    clear_agent_pack_version_cache()
+    settings = get_settings()
+    base = hostname_server_url(request).rstrip("/")
+    repo = (settings.github_repo or "karpus2807/iitd_lab").strip()
+    github_ps1 = f"https://github.com/{repo}/releases/latest/download/install-agent.ps1"
+    agent_ver = agent_pack_version()
+    runtime_dir = repo_dir() / "agent" / "python-runtime"
+    return {
+        "server_url": base,
+        "server_version": server_version,
+        "agent_version": agent_ver,
+        "github_repo": repo,
+        "github_install_ps1": github_ps1,
+        "requirements": {
+            "linux_os": "Ubuntu 16.04+ (or similar glibc hosts)",
+            "windows_os": "Windows 10 (1803+) / Windows 11",
+            "host_python": "Any (Python 2 / 3.5–3.9 / missing) — left unchanged",
+            "agent_python": "LabWatch bundles CPython 3.12 under the agent prefix when host < 3.10",
+        },
+        "runtimes": {
+            "linux_x86_64": (runtime_dir / "linux-x86_64.tgz").is_file(),
+            "linux_aarch64": (runtime_dir / "linux-aarch64.tgz").is_file(),
+            "windows_x86_64": (runtime_dir / "windows-x86_64.tgz").is_file(),
+        },
+        "features": [],
+        "existing_agents": {
+            "need_update_for_displays": True,
+            "display_monitor_min": DISPLAY_MONITOR_MIN,
+            "keep_awake_min": KEEP_AWAKE_MIN,
+            "linux_update_fix_min": LINUX_UPDATE_FIX_MIN,
+            "safe_update_min": SAFE_UPDATE_MIN,
+            "remote_update_min": REMOTE_UPDATE_MIN,
+            "summary": (
+                f"Current pack {agent_ver}. Push from Admin → Agents when online "
+                f"(remote ≥{REMOTE_UPDATE_MIN}; Linux update fix ≥{LINUX_UPDATE_FIX_MIN})."
+            ),
+        },
+        "notes": [
+            "If download looks like HTML / proxy.cgi Error → use curl --noproxy '*' (campus proxy must not touch hobbit).",
+            "get-pip / Python 3.8 error → Clear broken venv, then install again.",
+            "Linux offline after update → Start service (or Force-swap). Windows → Restart task.",
+        ],
+        "commands": _install_commands(base, github_ps1),
+    }
 
 
 @router.get("/install-agent.sh")
@@ -106,18 +228,20 @@ async def agent_pack():
 
 @router.get("/python-runtime.tgz")
 async def python_runtime(arch: str = "x86_64"):
-    """Standalone CPython for Ubuntu 16.04+ hosts without Python 3.8+.
+    """Standalone CPython 3.12 for Linux/Windows agents (host default Python unchanged).
 
     Prefetch on the server: ``./scripts/linux/prefetch-python-runtime.sh``
     """
     key = (arch or "x86_64").strip().lower().replace("amd64", "x86_64").replace("arm64", "aarch64")
-    if key in {"x86_64", "x64", "amd64"}:
+    if key in {"x86_64", "x64", "linux", "linux-x86_64"}:
         fname = "linux-x86_64.tgz"
-    elif key in {"aarch64", "arm64"}:
+    elif key in {"aarch64", "arm64", "linux-aarch64"}:
         fname = "linux-aarch64.tgz"
+    elif key in {"windows-x86_64", "win_amd64", "win64", "windows", "win"}:
+        fname = "windows-x86_64.tgz"
     else:
         return PlainTextResponse(
-            f"unsupported arch={arch!r}; use x86_64 or aarch64\n",
+            f"unsupported arch={arch!r}; use x86_64, aarch64, or windows-x86_64\n",
             status_code=400,
         )
     path = repo_dir() / "agent" / "python-runtime" / fname
@@ -127,11 +251,12 @@ async def python_runtime(arch: str = "x86_64"):
             status_code=404,
         )
     data = path.read_bytes()
+    label = fname.replace(".tgz", "")
     return Response(
         content=data,
         media_type="application/gzip",
         headers={
             "Content-Disposition": f'attachment; filename="{fname}"',
-            "X-LabWatch-Python-Runtime-Arch": fname.replace("linux-", "").replace(".tgz", ""),
+            "X-LabWatch-Python-Runtime-Arch": label,
         },
     )

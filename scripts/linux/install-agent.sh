@@ -24,7 +24,7 @@ export NO_PROXY="${SERVER_HOST},localhost,127.0.0.1"
 export no_proxy="${NO_PROXY}"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Run as root: curl -fsSL ${SERVER_URL}/install-agent.sh | sudo bash"
+  echo "Run as root: curl -fsSL --noproxy '*' ${SERVER_URL}/install-agent.sh | sudo bash"
   exit 1
 fi
 
@@ -58,7 +58,8 @@ _ask() {
   if [[ -z "$TTY" ]]; then
     _say "No terminal attached (curl | sudo bash needs a real TTY)."
     _say "Save the script first:"
-    _say "  curl -fsSL ${SERVER_URL}/install-agent.sh -o /tmp/labwatch-install.sh"
+    _say "  curl -fsSL --noproxy '*' ${SERVER_URL}/install-agent.sh -o /tmp/labwatch-install.sh"
+    _say "  head -1 /tmp/labwatch-install.sh   # must be #!/usr/bin/env bash"
     _say "  sudo bash /tmp/labwatch-install.sh"
     _say "Or set LABWATCH_USER, LABWATCH_PASSWORD, LABWATCH_INVENTORY_ID, LABWATCH_LAB,"
     _say "and LABWATCH_PROXY_USER / LABWATCH_PROXY_PASSWORD when campus proxy is required."
@@ -266,7 +267,7 @@ _pkg_install() {
 _check_os_supported() {
   # LabWatch agents: Ubuntu 16.04+ (and similar glibc hosts). Older Ubuntu rejected.
   if [[ ! -f /etc/os-release ]]; then
-    echo "OS: unknown (no /etc/os-release) — continuing; need Python 3.10+ or bundled runtime."
+    echo "OS: unknown (no /etc/os-release) — continuing; any host Python is OK (bundled 3.12 if needed)."
     return 0
   fi
   # shellcheck disable=SC1091
@@ -453,14 +454,21 @@ _bootstrap_bundled_python() {
 
 _ensure_python() {
   # Goal: install works no matter what Python the host has (2.x, 3.5, 3.8, none…).
-  # Agent always runs on CPython >=3.10 — preferably LabWatch's own 3.12 bundle.
+  # Prefer LabWatch's own CPython 3.12 under PREFIX/python — never use host 3.8 for the agent.
   local found host_py
   host_py="$(_host_python_summary)"
-  echo "Host Python: ${host_py} — left unchanged. Agent uses its own CPython under ${PREFIX}/python when needed." >&2
+  echo "Host Python: ${host_py} — left unchanged. Agent uses LabWatch CPython under ${PREFIX}/python." >&2
 
   found="$(_pick_python 1 < <(_candidate_bundled) || true)"
   if [[ -n "$found" ]]; then
     echo "Reusing LabWatch bundled runtime: $found" >&2
+    echo "$found"
+    return 0
+  fi
+
+  # Download bundled 3.12 first (Ubuntu 20.04 default python3 is 3.8 — must not be used).
+  found="$(_bootstrap_bundled_python || true)"
+  if [[ -n "$found" ]]; then
     echo "$found"
     return 0
   fi
@@ -474,13 +482,6 @@ _ensure_python() {
   found="$(_pick_python 0 < <(_candidate_system) || true)"
   if [[ -n "$found" ]]; then
     echo "Using system Python 3.10+: $found" >&2
-    echo "$found"
-    return 0
-  fi
-
-  # Prefer bundled download over apt — works on Ubuntu 16/18 where distro python is 3.5/3.6/3.8.
-  found="$(_bootstrap_bundled_python || true)"
-  if [[ -n "$found" ]]; then
     echo "$found"
     return 0
   fi
@@ -761,7 +762,27 @@ if [[ ! -d "$WHEELS_DIR" ]] || ! compgen -G "$WHEELS_DIR"/*.whl >/dev/null; then
   exit 1
 fi
 
-"$PYTHON_BIN" -m venv --without-pip "$PREFIX/venv" 2>/dev/null || "$PYTHON_BIN" -m venv "$PREFIX/venv"
+# Always wipe venv — a leftover 3.8 venv from a failed install makes get-pip.py fail
+# ("minimum supported Python version is 3.10") even when PYTHON_BIN is 3.12.
+echo "Creating fresh agent venv with $($PYTHON_BIN -V 2>&1)…"
+rm -rf "$PREFIX/venv"
+if ! "$PYTHON_BIN" -m venv --without-pip --clear "$PREFIX/venv" 2>/dev/null; then
+  rm -rf "$PREFIX/venv"
+  "$PYTHON_BIN" -m venv --clear "$PREFIX/venv"
+fi
+if [[ ! -x "$PREFIX/venv/bin/python" ]]; then
+  echo "ERROR: venv python missing at $PREFIX/venv/bin/python"
+  exit 1
+fi
+if ! "$PREFIX/venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo "ERROR: agent venv is still on $($PREFIX/venv/bin/python -V 2>&1) — need 3.10+."
+  echo "Removing broken venv and LabWatch python; re-run installer after:"
+  echo "  sudo rm -rf $PREFIX/venv $PREFIX/python"
+  rm -rf "$PREFIX/venv"
+  exit 1
+fi
+echo "Agent venv Python: $($PREFIX/venv/bin/python -V 2>&1)"
+
 if [[ ! -x "$PREFIX/venv/bin/pip" ]]; then
   if [[ -f "$WHEELS_DIR/get-pip.py" ]]; then
     "$PREFIX/venv/bin/python" "$WHEELS_DIR/get-pip.py" --no-index --find-links="$WHEELS_DIR"
@@ -896,6 +917,8 @@ Environment=all_proxy=
 Environment=NO_PROXY=${SERVER_HOST},localhost,127.0.0.1
 Environment=no_proxy=${SERVER_HOST},localhost,127.0.0.1
 ExecStart=${PREFIX}/venv/bin/python ${PREFIX}/run.py run
+# Only kill the main process on stop — update watchdogs must survive (also use systemd-run).
+KillMode=process
 Restart=always
 RestartSec=5
 User=root
@@ -904,6 +927,70 @@ Nice=10
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Keep lab PCs awake and networking out of power-save so the agent stays reachable.
+_harden_power_and_network() {
+  _say "Disabling sleep/hibernate and NIC/Wi-Fi power saving…"
+  for unit in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+    systemctl mask "$unit" >/dev/null 2>&1 || true
+  done
+  mkdir -p /etc/systemd/logind.conf.d
+  cat > /etc/systemd/logind.conf.d/99-labwatch-no-idle.conf <<'EOF'
+[Login]
+IdleAction=ignore
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+EOF
+  # Reload logind if present (ignore failure on containers / old systemd).
+  systemctl reload systemd-logind 2>/dev/null || true
+
+  if [[ -d /etc/NetworkManager ]]; then
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > /etc/NetworkManager/conf.d/99-labwatch-wifi-powersave.conf <<'EOF'
+[connection]
+wifi.powersave = 2
+EOF
+    systemctl reload NetworkManager 2>/dev/null || true
+  fi
+
+  # Runtime: Wi-Fi power_save off + disable EEE on wired NICs.
+  if [[ -d /sys/class/net ]]; then
+    for iface in /sys/class/net/*; do
+      name="$(basename "$iface")"
+      [[ "$name" == "lo" ]] && continue
+      if [[ -d "$iface/wireless" ]]; then
+        iw dev "$name" set power_save off 2>/dev/null || iwconfig "$name" power off 2>/dev/null || true
+      else
+        ethtool --set-eee "$name" eee off 2>/dev/null || true
+        # Disable NIC wake-on-lan autoneg quirks that drop link on some lab switches — leave WOL as-is.
+      fi
+    done
+  fi
+
+  # Drop-in unit: re-apply Wi-Fi powersave off after boot / resume.
+  cat > /etc/systemd/system/labwatch-keep-awake.service <<'EOF'
+[Unit]
+Description=LabWatch keep network awake (no Wi-Fi power save)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for i in /sys/class/net/*; do n=$(basename "$i"); [[ $n == lo ]] && continue; if [[ -d $i/wireless ]]; then iw dev "$n" set power_save off 2>/dev/null || iwconfig "$n" power off 2>/dev/null || true; else ethtool --set-eee "$n" eee off 2>/dev/null || true; fi; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now labwatch-keep-awake.service >/dev/null 2>&1 || true
+  _say "OK: sleep/hibernate masked; Wi-Fi/NIC power-save disabled."
+}
+
+_harden_power_and_network
 
 systemctl daemon-reload
 systemctl enable labwatch-agent

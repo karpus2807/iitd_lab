@@ -7,6 +7,7 @@ from typing import Any
 
 from labwatch_agent.collectors import linux as linux_col
 from labwatch_agent.collectors import windows as win_col
+from labwatch_agent.collectors.displays import collect_displays_linux, collect_displays_windows
 from labwatch_agent.collectors.linux import collect_identity, collect_network
 
 
@@ -48,6 +49,11 @@ def collect_inventory(agent_uuid: str) -> tuple[dict[str, Any], list[str]]:
             gpus, gpu_notes = [], [str(exc)]
         pcie = safe("pcie", win_col.collect_pcie_windows, {"topology_status": "UNKNOWN", "slots": [], "topology_note": "Physical slot topology not exposed by firmware/OS"})
         storage = safe("storage", win_col.collect_storage_windows, {"disks": [], "filesystems": [], "notes": []})
+        displays = safe(
+            "displays",
+            collect_displays_windows,
+            {"displays": [], "notes": ["displays collector failed"]},
+        )
         notes.extend(cpu_notes + mem_notes + gpu_notes)
     elif os.name == "posix":
         osinfo = safe("os", linux_col.linux_os, {"name": "Linux"})
@@ -69,6 +75,11 @@ def collect_inventory(agent_uuid: str) -> tuple[dict[str, Any], list[str]]:
             gpus, gpu_notes = [], [str(exc)]
         pcie = safe("pcie", linux_col.collect_pcie_linux, {"topology_status": "UNKNOWN", "slots": [], "topology_note": "Physical slot topology not exposed by firmware/OS"})
         storage = safe("storage", linux_col.collect_storage_linux, {"disks": [], "filesystems": [], "notes": []})
+        displays = safe(
+            "displays",
+            collect_displays_linux,
+            {"displays": [], "notes": ["displays collector failed"]},
+        )
         notes.extend(cpu_notes + mem_notes + gpu_notes)
     else:
         raise RuntimeError(f"Unsupported OS: {os.name}. LabWatch agent supports Linux and Windows (macOS later).")
@@ -84,6 +95,7 @@ def collect_inventory(agent_uuid: str) -> tuple[dict[str, Any], list[str]]:
         "gpus": gpus,
         "pcie": pcie,
         "storage": storage,
+        "displays": displays if os.name in {"nt", "posix"} else {"displays": [], "notes": []},
         "network": {"hostname": net.get("hostname"), "interfaces": net.get("interfaces", []), "notes": net.get("notes", [])},
         "motherboard": system.get("motherboard") or {},
         "bios": system.get("bios") or {},
