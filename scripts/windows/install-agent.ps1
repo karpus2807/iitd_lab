@@ -314,12 +314,15 @@ if (-not $Username -or -not $Password) { throw "Username and password are requir
 Write-Host "Password received. Asking for machine ID next..."
 
 $ExistingId = ""
+$ExistingPetName = ""
 $ExistingLabId = ""
 $ExistingLabName = ""
 if (Test-Path -LiteralPath $ConfigPath) {
-  Write-Host "Existing LabWatch agent found. Enter keeps the current machine ID and lab."
+  Write-Host "Existing LabWatch agent found. Enter keeps the current machine ID, pet name, and lab."
   $m = Select-String -Path $ConfigPath -Pattern '^\s*inventory_id\s*=\s*"([^"]+)"' | Select-Object -First 1
   if ($m) { $ExistingId = $m.Matches[0].Groups[1].Value.Trim() }
+  $m = Select-String -Path $ConfigPath -Pattern '^\s*pet_name\s*=\s*"([^"]*)"' | Select-Object -First 1
+  if ($m) { $ExistingPetName = $m.Matches[0].Groups[1].Value.Trim() }
   $m = Select-String -Path $ConfigPath -Pattern '^\s*lab_id\s*=\s*"([^"]+)"' | Select-Object -First 1
   if ($m) { $ExistingLabId = $m.Matches[0].Groups[1].Value.Trim() }
   $m = Select-String -Path $ConfigPath -Pattern '^\s*lab\s*=\s*"([^"]+)"' | Select-Object -First 1
@@ -329,6 +332,9 @@ $hint = if ($ExistingId) { $ExistingId } else { "example 12345/2012/12" }
 $InventoryId = Read-Host "Machine ID [$hint]"
 if (-not $InventoryId) { $InventoryId = $ExistingId }
 if (-not $InventoryId) { throw "Username, password, and machine ID are required." }
+$petHint = if ($ExistingPetName) { $ExistingPetName } else { "optional" }
+$PetName = Read-Host "Pet name [$petHint]"
+if (-not $PetName) { $PetName = $ExistingPetName }
 
 Write-Host "Logging in to LabWatch (direct, no campus proxy)..."
 $login = Invoke-LwJson -Method POST -Path "/api/auth/login" -Body @{ username = $Username; password = $Password }
@@ -396,12 +402,14 @@ if ($choice) {
 }
 
 Write-Host "Enrolling $InventoryId..."
-$enroll = Invoke-LwJson -Method POST -Path "/api/agents/enroll" -Body @{
+$enrollBody = @{
   username     = $Username
   password     = $Password
   inventory_id = $InventoryId
   lab_id       = [string]$lab.id
 }
+if ($PetName) { $enrollBody.pet_name = $PetName }
+$enroll = Invoke-LwJson -Method POST -Path "/api/agents/enroll" -Body $enrollBody
 $Password = $null
 $Username = $null
 $Token = [string]$enroll.registration_token
@@ -530,11 +538,13 @@ if __name__ == "__main__":
   Write-Utf8NoBom (Join-Path $site.Trim() "labwatch.pth") $InstallDir
 
   $labToml = ([string]$lab.name).Replace('\', '\\').Replace('"', '\"')
+  $petToml = ([string]$PetName).Replace('\', '\\').Replace('"', '\"')
   $configText = @"
 [server]
 url = "$ServerUrl"
 registration_token = "$Token"
 inventory_id = "$InventoryId"
+pet_name = "$petToml"
 lab_id = "$([string]$lab.id)"
 lab = "$labToml"
 

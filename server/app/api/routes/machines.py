@@ -86,17 +86,23 @@ async def list_machines(
             or_(
                 func.lower(Machine.hostname).like(like),
                 func.lower(Machine.display_name).like(like),
+                func.lower(func.coalesce(Machine.pet_name, "")).like(like),
                 func.lower(func.coalesce(Machine.inventory_id, "")).like(like),
                 func.lower(func.coalesce(Machine.current_ip, "")).like(like),
             )
         )
-    stmt = stmt.order_by(Machine.hostname.asc())
+    stmt = stmt.order_by(
+        func.lower(func.coalesce(Machine.pet_name, "")).asc(),
+        func.lower(func.coalesce(Machine.inventory_id, "")).asc(),
+        Machine.hostname.asc(),
+    )
     rows = (await db.execute(stmt)).all()
     return [
         MachineListItem(
             id=m.id,
             hostname=m.hostname,
             display_name=m.display_name,
+            pet_name=m.pet_name or "",
             inventory_id=m.inventory_id,
             lab_id=m.lab_id,
             lab_name=lab_name,
@@ -128,6 +134,7 @@ async def get_machine(machine_id: UUID, db: DbDep, user: CurrentUser):
         "id": str(machine.id),
         "hostname": machine.hostname,
         "display_name": machine.display_name,
+        "pet_name": machine.pet_name or "",
         "inventory_id": machine.inventory_id,
         "lab_id": str(machine.lab_id) if machine.lab_id else None,
         "lab_name": lab.name if lab else None,
@@ -166,8 +173,10 @@ async def update_machine(machine_id: UUID, body: MachineUpdate, db: DbDep, user:
     if not machine:
         raise HTTPException(404, "Machine not found")
     data = body.model_dump(exclude_unset=True)
-    if "display_name" in data:
-        machine.display_name = data["display_name"]
+    if "display_name" in data and data["display_name"] is not None:
+        machine.display_name = (data["display_name"] or "")[:255]
+    if "pet_name" in data:
+        machine.pet_name = (data["pet_name"] or "").strip()[:255]
     if "inventory_id" in data and data["inventory_id"] is not None:
         from app.services.public_url import normalize_inventory_id
 

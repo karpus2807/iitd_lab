@@ -61,7 +61,15 @@ class AgentClient:
             logger.warning("Server request failed: %s", exc)
             raise
 
-    def register(self, registration_token: str, identity: dict[str, Any], agent_uuid: str, version: str, inventory_id: str = "") -> dict[str, Any]:
+    def register(
+        self,
+        registration_token: str,
+        identity: dict[str, Any],
+        agent_uuid: str,
+        version: str,
+        inventory_id: str = "",
+        pet_name: str = "",
+    ) -> dict[str, Any]:
         payload = {
             "registration_token": registration_token,
             "identity": identity,
@@ -70,6 +78,8 @@ class AgentClient:
         }
         if inventory_id:
             payload["inventory_id"] = inventory_id
+        if pet_name:
+            payload["pet_name"] = pet_name
         r = self._request("POST", "/api/agents/register", json=payload)
         r.raise_for_status()
         data = r.json()

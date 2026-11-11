@@ -463,8 +463,11 @@ function Tokens() {
                   {open && agents.map((a: any) => (
                     <tr key={`${t.id}-${a.agent_id || a.machine_id}`} style={{ background: 'rgba(0,0,0,0.03)' }}>
                       <td colSpan={8} style={{ fontSize: 13, paddingLeft: 24 }}>
+                        {a.pet_name ? <strong>{a.pet_name}</strong> : null}
+                        {a.pet_name ? <span className="muted"> · </span> : null}
                         <strong>{a.hostname || '—'}</strong>
                         <span className="mono muted"> · {a.inventory_id || 'no Inv.ID'}</span>
+                        <span className="mono muted"> · LAN {a.lan_ip || '—'} · WAN {a.wan_ip || '—'}</span>
                         <span className="muted"> · {a.status || '—'}</span>
                         <span className="muted"> · last HB {a.last_heartbeat_at ? ago(a.last_heartbeat_at) : 'never'}</span>
                       </td>
@@ -524,13 +527,18 @@ function Agents() {
     const needle = q.trim().toLowerCase()
     const list = rows.filter((a) => {
       if (!needle) return true
-      const hay = [a.hostname, a.inventory_id, a.agent_id, a.version, a.status, a.token_prefix, a.token_label]
+      const hay = [
+        a.pet_name, a.hostname, a.inventory_id, a.lan_ip, a.wan_ip,
+        a.agent_id, a.version, a.status, a.token_prefix, a.token_label,
+      ]
         .map((x) => String(x || '').toLowerCase())
         .join(' ')
       return hay.includes(needle)
     })
     // Stable visual order — API poll must not reshuffle rows / progress bars.
     return [...list].sort((a, b) => {
+      const p = String(a.pet_name || '').localeCompare(String(b.pet_name || ''), undefined, { sensitivity: 'base' })
+      if (p) return p
       const h = String(a.hostname || '').localeCompare(String(b.hostname || ''), undefined, { sensitivity: 'base' })
       if (h) return h
       const inv = String(a.inventory_id || '').localeCompare(String(b.inventory_id || ''))
@@ -703,7 +711,7 @@ function Agents() {
       <div className="card" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
         <input
           style={{ flex: '1 1 220px', minWidth: 180 }}
-          placeholder="Search host or Inv.ID…"
+          placeholder="Search pet name, host, Inv.ID or IP…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -783,8 +791,11 @@ function Agents() {
                   aria-label="Select all"
                 />
               </th>
+              <th>Pet name</th>
               <th>Host</th>
               <th>Inv.ID</th>
+              <th>LAN IP</th>
+              <th>WAN IP</th>
               <th>Token</th>
               <th>Agent ID</th>
               <th>Ver</th>
@@ -818,11 +829,14 @@ function Agents() {
                         else delete next[a.id]
                         return next
                       })}
-                      aria-label={`Select ${a.hostname}`}
+                      aria-label={`Select ${a.pet_name || a.hostname}`}
                     />
                   </td>
+                  <td>{a.pet_name || <span className="muted">—</span>}</td>
                   <td>{a.hostname}</td>
                   <td className="mono">{a.inventory_id || '—'}</td>
+                  <td className="mono">{a.lan_ip || '—'}</td>
+                  <td className="mono">{a.wan_ip || '—'}</td>
                   <td className="mono" title={a.token_label || ''}>
                     {a.token_prefix || <span className="muted">—</span>}
                   </td>
@@ -897,7 +911,7 @@ function Agents() {
               )
             })}
             {!filtered.length && (
-              <tr><td colSpan={9} className="muted" style={{ padding: 16 }}>No agents match.</td></tr>
+              <tr><td colSpan={12} className="muted" style={{ padding: 16 }}>No agents match.</td></tr>
             )}
           </tbody>
         </table>

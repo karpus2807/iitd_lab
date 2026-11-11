@@ -541,10 +541,15 @@ INVENTORY_ID="${LABWATCH_INVENTORY_ID:-${2:-}}"
 LAB_ID="${LABWATCH_LAB_ID:-}"
 LAB_NAME="${LABWATCH_LAB:-}"
 EXISTING_INVENTORY="$(_toml_get "${CONFIG_DIR}/config.toml" inventory_id)"
+EXISTING_PET_NAME="$(_toml_get "${CONFIG_DIR}/config.toml" pet_name)"
 EXISTING_LAB_ID="${LAB_ID:-$(_toml_get "${CONFIG_DIR}/config.toml" lab_id)}"
 EXISTING_LAB_NAME="${LAB_NAME:-$(_toml_get "${CONFIG_DIR}/config.toml" lab)}"
+PET_NAME="${LABWATCH_PET_NAME:-}"
 if [[ -z "$INVENTORY_ID" && -n "$EXISTING_INVENTORY" ]]; then
   INVENTORY_ID="$EXISTING_INVENTORY"
+fi
+if [[ -z "$PET_NAME" && -n "$EXISTING_PET_NAME" ]]; then
+  PET_NAME="$EXISTING_PET_NAME"
 fi
 
 _say ""
@@ -568,6 +573,13 @@ if [[ -z "${LABWATCH_INVENTORY_ID:-}" && -z "${2:-}" ]]; then
   _ask "Machine ID [${EXISTING_INVENTORY:-example 12345/2012/12}]: " || exit 1
   if [[ -n "$REPLY_TTY" ]]; then
     INVENTORY_ID="$REPLY_TTY"
+  fi
+fi
+
+if [[ -z "${LABWATCH_PET_NAME:-}" ]]; then
+  _ask "Pet name [${EXISTING_PET_NAME:-optional}]: " || exit 1
+  if [[ -n "$REPLY_TTY" ]]; then
+    PET_NAME="$REPLY_TTY"
   fi
 fi
 
@@ -697,13 +709,16 @@ fi
 
 echo "Logging in to ${SERVER_URL} and enrolling ${INVENTORY_ID}…"
 ENROLL_JSON="$(
-  SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" LAB_ID="$LAB_ID" $PYTHON_BIN - <<'PY'
+  SERVER_URL="$SERVER_URL" USERNAME="$USERNAME" PASSWORD="$PASSWORD" INVENTORY_ID="$INVENTORY_ID" PET_NAME="$PET_NAME" LAB_ID="$LAB_ID" $PYTHON_BIN - <<'PY'
 import json, os, urllib.error, urllib.request
 payload = {
     "username": os.environ["USERNAME"],
     "password": os.environ["PASSWORD"],
     "inventory_id": os.environ["INVENTORY_ID"],
 }
+pet = (os.environ.get("PET_NAME") or "").strip()
+if pet:
+    payload["pet_name"] = pet
 lab_id = os.environ.get("LAB_ID") or ""
 if lab_id.strip():
     payload["lab_id"] = lab_id.strip()
@@ -858,11 +873,13 @@ mkdir -p "$PY_SITE"
 echo "$PREFIX" > "$PY_SITE/labwatch.pth"
 
 LAB_TOML="$(printf '%s' "$LAB_NAME" | $PYTHON_BIN -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+PET_TOML="$(printf '%s' "$PET_NAME" | $PYTHON_BIN -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [server]
 url = "${SERVER_URL}"
 registration_token = "${TOKEN}"
 inventory_id = "${INVENTORY_ID}"
+pet_name = ${PET_TOML}
 lab_id = "${LAB_ID}"
 lab = ${LAB_TOML}
 

@@ -98,12 +98,14 @@ class RegisterRequest(BaseModel):
     agent_uuid: str = Field(min_length=8)
     agent_version: str = ""
     inventory_id: str | None = None
+    pet_name: str | None = None  # optional friendly name from installer
 
 
 class EnrollRequest(BaseModel):
     username: str
     password: str
     inventory_id: str
+    pet_name: str | None = None  # optional; applied on register via agent config
     lab: str | None = None
     lab_id: UUID | None = None
 
@@ -254,10 +256,12 @@ async def register_agent(body: RegisterRequest, db: DbDep):
             if lab is None:
                 lab = (await db.execute(select(Lab).order_by(Lab.created_at.asc()))).scalars().first()
             lab_id = lab.id if lab else None
+        pet = (body.pet_name or "").strip()
         machine = Machine(
             lab_id=lab_id,
             hostname=identity.hostname,
             display_name=inventory_id or identity.hostname,
+            pet_name=pet[:255] if pet else "",
             inventory_id=inventory_id,
             os_name=identity.os_name,
             os_version=identity.os_version,
@@ -328,6 +332,9 @@ async def register_agent(body: RegisterRequest, db: DbDep):
             raise HTTPException(409, f"Machine ID {inventory_id} is already in use")
         machine.inventory_id = inventory_id
         machine.display_name = inventory_id
+    pet = (body.pet_name or "").strip()
+    if pet:
+        machine.pet_name = pet[:255]
     machine.approved = machine.approved or not settings.require_agent_approval
     await db.commit()
     return RegisterResponse(

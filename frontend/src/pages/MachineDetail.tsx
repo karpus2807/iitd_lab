@@ -103,11 +103,16 @@ export default function MachineDetail() {
   const [logLevel, setLogLevel] = useState('ALL')
   const [logQuery, setLogQuery] = useState('')
   const [busy, setBusy] = useState('')
+  const [petDraft, setPetDraft] = useState('')
+  const [petBusy, setPetBusy] = useState(false)
   const canManage = ['ADMIN', 'OPERATOR'].includes(currentUser()?.role || '')
 
   useEffect(() => {
     if (!id) return
-    api(`/api/machines/${id}`).then(setMachine)
+    api(`/api/machines/${id}`).then((m) => {
+      setMachine(m)
+      setPetDraft(m.pet_name || '')
+    })
     api(`/api/machines/${id}/hardware`).then(setHw)
     api(`/api/machines/${id}/events`).then(setEvents)
     api('/api/labs').then(setLabs)
@@ -179,6 +184,7 @@ export default function MachineDetail() {
         <div>
           <h2>{machine.inventory_id || machine.display_name || machine.hostname}</h2>
           <p>
+            {machine.pet_name ? `${machine.pet_name} · ` : ''}
             {machine.hostname}
             {machine.lab_name ? ` · ${machine.lab_name}` : ' · Unassigned'} · {machine.os_name}
             {machine.is_virtual ? ' · Virtual machine' : ' · Physical machine'}
@@ -203,6 +209,7 @@ export default function MachineDetail() {
           <div className="card">
             <h3 className="section-title">Identity</h3>
             <div className="kv">
+              <Kv label="Pet name" value={machine.pet_name || '—'} />
               <Kv label="Hostname" value={machine.hostname} />
               <Kv label="Current IP" value={machine.current_ip} />
               <Kv label="All IPs" value={(machine.current_ips || []).join(', ') || machine.current_ip} />
@@ -214,6 +221,43 @@ export default function MachineDetail() {
               <Kv label="Agent" value={`${machine.agent?.status || ''} ${machine.agent?.version || ''}`.trim()} />
               <Kv label="Virtualization" value={machine.is_virtual ? machine.virtualization : 'Physical'} />
             </div>
+            {canManage && (
+              <div className="field" style={{ marginTop: 16 }}>
+                <label>Pet name</label>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input
+                    value={petDraft}
+                    placeholder="optional friendly name"
+                    onChange={(e) => setPetDraft(e.target.value)}
+                    style={{ flex: 1, minWidth: 160 }}
+                  />
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={petBusy}
+                    onClick={async () => {
+                      setErr('')
+                      setPetBusy(true)
+                      try {
+                        await api(`/api/machines/${machine.id}`, {
+                          method: 'PATCH',
+                          body: JSON.stringify({ pet_name: petDraft.trim() }),
+                        })
+                        const m = await api(`/api/machines/${machine.id}`)
+                        setMachine(m)
+                        setPetDraft(m.pet_name || '')
+                      } catch (e) {
+                        setErr(e instanceof Error ? e.message : 'Could not save pet name')
+                      } finally {
+                        setPetBusy(false)
+                      }
+                    }}
+                  >
+                    {petBusy ? 'Saving…' : 'Save pet name'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           <div className="card">
             <h3 className="section-title">Snapshot</h3>

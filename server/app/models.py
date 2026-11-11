@@ -74,6 +74,7 @@ class Machine(Base, TimestampMixin):
     )
     hostname: Mapped[str] = mapped_column(String(255), default="", index=True)
     display_name: Mapped[str] = mapped_column(String(255), default="")
+    pet_name: Mapped[str] = mapped_column(String(255), default="")  # user-chosen friendly name
     inventory_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
     os_name: Mapped[str] = mapped_column(String(120), default="")
     os_version: Mapped[str] = mapped_column(String(255), default="")

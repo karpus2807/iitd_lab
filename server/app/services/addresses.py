@@ -49,3 +49,28 @@ def primary_ip(ips: list[str]) -> str | None:
         if group:
             return group[0]
     return None
+
+
+def lan_wan_ips(ips: Iterable[str] | None, fallback: str | None = None) -> tuple[str | None, str | None]:
+    """First private IPv4 (LAN) and first public IPv4 (WAN). Ignores link-local / loopback."""
+    cleaned = normalize_ips(list(ips or []) + ([fallback] if fallback else []))
+    lan: str | None = None
+    wan: str | None = None
+    for ip in cleaned:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if addr.version != 4:
+            continue
+        if addr.is_loopback or addr.is_unspecified or addr.is_multicast or addr.is_link_local:
+            continue
+        if addr.is_private:
+            if lan is None:
+                lan = ip
+        else:
+            if wan is None:
+                wan = ip
+        if lan and wan:
+            break
+    return lan, wan

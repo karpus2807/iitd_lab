@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ago, api, currentUser } from '../api'
 import { StatusBadge } from '../Layout'
@@ -9,6 +9,8 @@ export default function Machines() {
   const [labs, setLabs] = useState<any[]>([])
   const [err, setErr] = useState('')
   const [page, setPage] = useState(1)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editPet, setEditPet] = useState('')
   const [params, setParams] = useSearchParams()
   const nav = useNavigate()
   const role = currentUser()?.role
@@ -79,17 +81,37 @@ export default function Machines() {
     }
   }
 
+  function startEditPet(m: any, e: MouseEvent) {
+    e.stopPropagation()
+    setEditingId(m.id)
+    setEditPet(m.pet_name || '')
+  }
+
+  async function savePet(machineId: string) {
+    setErr('')
+    try {
+      await api(`/api/machines/${machineId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ pet_name: editPet.trim() }),
+      })
+      setEditingId(null)
+      loadRows()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not save pet name')
+    }
+  }
+
   return (
     <>
       <div className="topbar">
         <div>
           <h2>Machines</h2>
-          <p>{rows.length} matching hosts{canManage ? ' · change Lab in the list to move a host, or Remove to delete it from the server' : ''}</p>
+          <p>{rows.length} matching hosts{canManage ? ' · edit Pet name, change Lab, or Remove' : ''}</p>
         </div>
       </div>
       {err && <p className="err">{err}</p>}
       <div className="toolbar">
-        <input placeholder="Search machine ID, hostname or IP" value={q} onChange={(e) => set('q', e.target.value)} />
+        <input placeholder="Search pet name, machine ID, hostname or IP" value={q} onChange={(e) => set('q', e.target.value)} />
         <select value={lab} onChange={(e) => set('lab', e.target.value)}>
           <option value="">All labs</option>
           {labs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
@@ -118,12 +140,40 @@ export default function Machines() {
         <table>
           <thead>
             <tr>
-              <th>Machine ID</th><th>Lab</th><th>Status</th><th>OS</th><th>IP</th><th>GPUs</th><th>Seen</th>{canManage ? <th></th> : null}
+              <th>Pet name</th><th>Machine ID</th><th>Lab</th><th>Status</th><th>OS</th><th>IP</th><th>GPUs</th><th>Seen</th>{canManage ? <th></th> : null}
             </tr>
           </thead>
           <tbody>
             {pageRows.map((m) => (
               <tr key={m.id} className="clickable" onClick={() => nav(`/machines/${m.id}`)}>
+                <td onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+                  {canManage && editingId === m.id ? (
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        autoFocus
+                        value={editPet}
+                        placeholder="optional"
+                        onChange={(e) => setEditPet(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void savePet(m.id)
+                          if (e.key === 'Escape') setEditingId(null)
+                        }}
+                        style={{ minWidth: 120, maxWidth: 200 }}
+                      />
+                      <button className="btn" type="button" onClick={() => void savePet(m.id)}>Save</button>
+                      <button className="btn" type="button" onClick={() => setEditingId(null)}>Cancel</button>
+                    </span>
+                  ) : (
+                    <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                      <span>{m.pet_name || <span className="muted">—</span>}</span>
+                      {canManage && (
+                        <button className="btn" type="button" style={{ padding: '2px 8px', fontSize: 12 }} onClick={(e) => startEditPet(m, e)}>
+                          Edit
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </td>
                 <td>
                   <Link to={`/machines/${m.id}`}><strong>{m.inventory_id || m.display_name || m.hostname}</strong></Link>
                   {m.inventory_id && m.hostname ? <div className="muted">{m.hostname}</div> : null}
@@ -156,7 +206,7 @@ export default function Machines() {
               </tr>
             ))}
             {!pageRows.length && (
-              <tr><td colSpan={canManage ? 8 : 7} className="muted" style={{ padding: 16 }}>No matching machines.</td></tr>
+              <tr><td colSpan={canManage ? 9 : 8} className="muted" style={{ padding: 16 }}>No matching machines.</td></tr>
             )}
           </tbody>
         </table>

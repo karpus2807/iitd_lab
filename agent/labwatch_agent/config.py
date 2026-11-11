@@ -26,6 +26,7 @@ class AgentConfig:
     tls_verify: bool = True
     tls_ca_file: str = ""
     inventory_id: str = ""
+    pet_name: str = ""  # user-chosen friendly name (portal column)
     state_dir: str = ""
     config_path: str = ""
 
@@ -68,6 +69,7 @@ def load_config(path: str | None = None) -> AgentConfig:
         tls_verify=str(_env("TLS_VERIFY", str(tls.get("verify", True)))).lower() not in {"0", "false", "no"},
         tls_ca_file=_env("TLS_CA_FILE", tls.get("ca_file", "")) or "",
         inventory_id=_env("INVENTORY_ID", server.get("inventory_id", "")) or "",
+        pet_name=_env("PET_NAME", server.get("pet_name", "")) or "",
         state_dir=_env("LABWATCH_STATE_DIR", str(state_dir)) or str(state_dir),
         config_path=str(cfg_path),
     )

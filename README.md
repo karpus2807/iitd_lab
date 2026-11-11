@@ -5,7 +5,7 @@ Lab PC monitoring: hardware inventory, live metrics, alerts, history.
 Hosts are matched by hardware IDs, not IP. Linux and Windows.
 
 **Live server:** http://hobbit2.cse.iitd.ac.in:8080  
-**Latest release:** [v1.2.10](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.10)
+**Latest release:** [v1.2.11](https://github.com/karpus2807/iitd_lab/releases/tag/v1.2.11)
 
 ## Requirements
 

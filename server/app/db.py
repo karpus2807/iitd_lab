@@ -95,6 +95,7 @@ async def init_models() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_machine_address_columns)
         await conn.run_sync(ensure_machine_inventory_column)
+        await conn.run_sync(ensure_machine_pet_name_column)
         await conn.run_sync(ensure_lab_columns)
         await conn.run_sync(ensure_hardware_column_types)
         await conn.run_sync(ensure_memory_extra_column)
@@ -146,6 +147,17 @@ def ensure_machine_inventory_column(sync_conn) -> None:
         sync_conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_machines_inventory_id ON machines (inventory_id)"))
     except Exception:
         pass
+
+
+def ensure_machine_pet_name_column(sync_conn) -> None:
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    if "machines" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("machines")}
+    if "pet_name" not in existing:
+        sync_conn.execute(text("ALTER TABLE machines ADD COLUMN pet_name VARCHAR(255) DEFAULT ''"))
 
 
 def ensure_lab_columns(sync_conn) -> None:

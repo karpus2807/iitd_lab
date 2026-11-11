@@ -12,6 +12,7 @@ from app.enums import AgentStatus
 from app.models import Agent, Lab, Machine, NotificationChannelConfig, RefreshToken, RegistrationToken, User, utcnow
 from app.schemas.api import RegistrationTokenCreate, UserCreate, UserOut, UserUpdate
 from app.security import hash_password, hash_token, new_secret
+from app.services.addresses import lan_wan_ips
 from app.services.agent_pack import agent_pack_version, version_tuple as _version_tuple
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -194,13 +195,17 @@ async def list_tokens(db: DbDep, admin: AdminUser):
         ).all()
         for agent, machine in linked:
             tid = str(agent.registration_token_id)
+            lan, wan = lan_wan_ips(machine.current_ips or [], machine.current_ip)
             agents_by_token.setdefault(tid, []).append(
                 {
                     "agent_id": str(agent.id),
                     "agent_public_id": agent.agent_public_id,
                     "machine_id": str(machine.id),
                     "hostname": machine.hostname or "",
+                    "pet_name": machine.pet_name or "",
                     "inventory_id": machine.inventory_id or "",
+                    "lan_ip": lan or "",
+                    "wan_ip": wan or "",
                     "status": agent.status,
                     "last_heartbeat_at": agent.last_heartbeat_at,
                 }
@@ -277,7 +282,12 @@ async def list_agents(db: DbDep, admin: AdminUser):
         await db.execute(
             select(Agent, Machine)
             .join(Machine, Agent.machine_id == Machine.id)
-            .order_by(Machine.hostname.asc(), Machine.inventory_id.asc(), Agent.id.asc())
+            .order_by(
+                Machine.pet_name.asc(),
+                Machine.hostname.asc(),
+                Machine.inventory_id.asc(),
+                Agent.id.asc(),
+            )
         )
     ).all()
     # Drop timed-out in-flight updates so a leftover fleet queue does not look live.
@@ -317,13 +327,17 @@ async def list_agents(db: DbDep, admin: AdminUser):
             display_message = ""
         tid = str(a.registration_token_id) if a.registration_token_id else None
         tprefix, tlabel = token_meta.get(tid or "", ("", ""))
+        lan, wan = lan_wan_ips(m.current_ips or [], m.current_ip)
         agents.append(
             {
                 "id": str(a.id),
                 "agent_id": a.agent_public_id,
                 "machine_id": str(m.id),
                 "hostname": m.hostname,
+                "pet_name": m.pet_name or "",
                 "inventory_id": m.inventory_id or "",
+                "lan_ip": lan or "",
+                "wan_ip": wan or "",
                 "registration_token_id": tid,
                 "token_prefix": tprefix,
                 "token_label": tlabel,
