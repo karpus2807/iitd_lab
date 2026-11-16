@@ -361,12 +361,21 @@ def ensure_inventory_assign_meta_columns(sync_conn) -> None:
 
 
 def ensure_inventory_assignments_table(sync_conn) -> None:
-    """Create inventory_assignments (M:N) and backfill from legacy item.assigned_scholar_id."""
+    """Create inventory_assignments (M:N) and backfill from legacy item.assigned_scholar_id.
+
+    Must be safe on existing Hobbit Postgres data:
+    - ``create_all`` may already have created the table with NOT NULL timestamps
+    - legacy rows often have ``assigned_at`` NULL → never copy NULL into created_at
+    - ``assigned_scholar_id`` was never an FK → skip orphans that would violate scholars FK
+    """
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
     from sqlalchemy import inspect, text
 
     insp = inspect(sync_conn)
     tables = set(insp.get_table_names())
-    if "inventory_items" not in tables:
+    if "inventory_items" not in tables or "scholars" not in tables:
         return
     dialect = sync_conn.dialect.name
     if "inventory_assignments" not in tables:
@@ -385,8 +394,8 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
                         verify_doc_path VARCHAR(512) DEFAULT '',
                         revoked_at TIMESTAMPTZ,
                         revoked_by VARCHAR(80) DEFAULT '',
-                        created_at TIMESTAMPTZ,
-                        updated_at TIMESTAMPTZ
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
                     )
                     """
                 )
@@ -406,8 +415,8 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
                         verify_doc_path VARCHAR(512) DEFAULT '',
                         revoked_at DATETIME,
                         revoked_by VARCHAR(80) DEFAULT '',
-                        created_at DATETIME,
-                        updated_at DATETIME,
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL,
                         FOREIGN KEY(inventory_item_id) REFERENCES inventory_items(id) ON DELETE CASCADE,
                         FOREIGN KEY(scholar_id) REFERENCES scholars(id) ON DELETE CASCADE
                     )
@@ -425,17 +434,20 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
         )
 
     # Backfill active rows from legacy single-scholar columns (once per item/scholar pair).
+    # Only rows whose scholar still exists — assigned_scholar_id was never enforced as FK.
     rows = sync_conn.execute(
         text(
             """
-            SELECT id, assigned_scholar_id, assigned_at, assigned_by,
-                   assign_verify_method, assign_verify_doc_path
-            FROM inventory_items
-            WHERE assigned_scholar_id IS NOT NULL
-              AND (assign_verify_method IS NULL OR assign_verify_method != 'owner')
+            SELECT i.id, i.assigned_scholar_id, i.assigned_at, i.assigned_by,
+                   i.assign_verify_method, i.assign_verify_doc_path
+            FROM inventory_items i
+            INNER JOIN scholars s ON s.id = i.assigned_scholar_id
+            WHERE i.assigned_scholar_id IS NOT NULL
+              AND (i.assign_verify_method IS NULL OR i.assign_verify_method != 'owner')
             """
         )
     ).fetchall()
+    now = datetime.now(timezone.utc)
     for row in rows:
         item_id, scholar_id, assigned_at, assigned_by, method, doc = row
         if not scholar_id:
@@ -452,9 +464,10 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
         ).fetchone()
         if exists:
             continue
-        from uuid import uuid4
 
         new_id = uuid4()
+        # create_all / ORM columns are NOT NULL — never insert NULL timestamps.
+        ts = assigned_at or now
         sync_conn.execute(
             text(
                 """
@@ -477,8 +490,8 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
                 "assigned_by": assigned_by or "",
                 "verify_method": method or "",
                 "verify_doc_path": doc or "",
-                "created_at": assigned_at,
-                "updated_at": assigned_at,
+                "created_at": ts,
+                "updated_at": ts,
             },
         )
 
