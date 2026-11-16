@@ -310,3 +310,102 @@ async def test_inventory_batch_assign_and_multi_revoke(client: AsyncClient, auth
     )
     assert revoked.status_code == 200
     assert revoked.json()["total"] >= 3
+
+
+@pytest.mark.asyncio
+async def test_inventory_multi_scholar_assign_and_pdf(client: AsyncClient, auth_headers: dict):
+    """One IC can be held by multiple scholars; Assigned tab exposes PDF per assignment."""
+    import json
+
+    lab = (
+        await client.post(
+            "/api/labs",
+            headers=auth_headers,
+            json={
+                "name": "Multi Assign Lab",
+                "room": "9",
+                "incharge": "Multi Owner",
+                "email": "multiowner@example.com",
+            },
+        )
+    ).json()
+    inv = await client.post(
+        "/api/inventory",
+        headers=auth_headers,
+        json={
+            "ic_no": "IRD/MULTI/1",
+            "item_name": "Shared Workstation",
+            "inventory_location": lab["name"],
+        },
+    )
+    assert inv.status_code == 200, inv.text
+    item_id = inv.json()["id"]
+
+    scholars = []
+    for i, name in enumerate(("Alpha Scholar", "Beta Scholar"), start=1):
+        s = await client.post(
+            "/api/scholars",
+            headers=auth_headers,
+            data={
+                "lab_id": str(lab["id"]),
+                "full_name": name,
+                "scholar_id": f"MULTI-{i}",
+                "bio_id": str(100 + i),
+                "email": f"multi{i}@example.com",
+                "system_required": "false",
+                "inventory_kind": "none",
+                "require_otp": "false",
+            },
+        )
+        assert s.status_code == 200, s.text
+        scholars.append(s.json())
+
+    pdf = b"%PDF-1.4\nmulti assign proof\n%%EOF\n"
+    done = await client.post(
+        "/api/inventory/assign",
+        headers=auth_headers,
+        data={
+            "item_id": item_id,
+            "scholar_ids": json.dumps([scholars[0]["id"], scholars[1]["id"]]),
+            "verify_method": "document",
+        },
+        files={"document": ("proof.pdf", pdf, "application/pdf")},
+    )
+    assert done.status_code == 200, done.text
+    body = done.json()
+    assert body["pending_otp"] is False
+    assert body["assignment_count"] == 2
+    assert body["scholar_count"] == 2
+    assert "more" in (body["item"].get("assigned_to") or "").lower() or "Alpha" in body["item"]["assigned_to"]
+    assert len(body["item"].get("assignees") or []) == 2
+
+    records = await client.get(
+        "/api/inventory/assigned-records",
+        headers=auth_headers,
+        params={"q": "IRD/MULTI/1", "verify_method": "document"},
+    )
+    assert records.status_code == 200, records.text
+    rows = records.json()["items"]
+    assert len(rows) >= 2
+    assert {r["scholar"]["scholar_id"] for r in rows if r["ic_no"] == "IRD/MULTI/1"} >= {"MULTI-1", "MULTI-2"}
+    for r in rows:
+        if r["ic_no"] != "IRD/MULTI/1":
+            continue
+        assert r["has_verify_doc"] is True
+        assert r["assignment_id"]
+        doc = await client.get(
+            f"/api/inventory/assignments/{r['assignment_id']}/verify-doc",
+            headers=auth_headers,
+        )
+        assert doc.status_code == 200, doc.text
+        assert doc.headers.get("content-type", "").startswith("application/pdf")
+        assert doc.content.startswith(b"%PDF")
+
+    listed = await client.get(
+        "/api/inventory",
+        headers=auth_headers,
+        params={"q": "IRD/MULTI/1", "status": "active"},
+    )
+    assert listed.status_code == 200
+    item = next(x for x in listed.json()["items"] if x["ic_no"] == "IRD/MULTI/1")
+    assert len(item.get("assignees") or []) == 2

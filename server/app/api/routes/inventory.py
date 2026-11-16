@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import and_, func, or_, select
 
 from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
-from app.models import InventoryItem, Lab, Machine, Scholar, utcnow
+from app.models import InventoryAssignment, InventoryItem, Lab, Machine, Scholar, utcnow
 from app.schemas.inv_mgmt import (
+    InventoryAssigneeOut,
     InventoryBatchUpdate,
     InventoryIdsBody,
     InventoryItemCreate,
@@ -21,6 +23,7 @@ from app.schemas.inv_mgmt import (
 from app.services import email_otp
 from app.services import inv_assign
 from app.services import inv_mgmt as svc
+from app.services import inv_verify_docs as inv_docs
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
@@ -36,6 +39,7 @@ def _out(
     *,
     machine: Machine | None = None,
     lab_name: str | None = None,
+    assignees: list[dict] | None = None,
 ) -> InventoryItemOut:
     base = InventoryItemOut.model_validate(row)
     registered = machine is not None
@@ -50,12 +54,18 @@ def _out(
     inv_type_col = (base.inventory_type or "").strip()
     if not inv_type_col and registered:
         inv_type_col = "Lab"
+    raw_assignees = assignees if assignees is not None else []
+    assignee_models = [
+        a if isinstance(a, InventoryAssigneeOut) else InventoryAssigneeOut.model_validate(a)
+        for a in raw_assignees
+    ]
+    issued = bool(assignee_models) or bool(getattr(row, "assigned_scholar_id", None))
     return base.model_copy(
         update={
             "inventory_location": location,
             "inventory_type": inv_type_col,
             "registered": registered,
-            "assigned": svc.is_assigned_item(row),
+            "assigned": issued or svc.is_assigned_item(row),
             "machine_id": machine.id if machine else None,
             "machine_hostname": (machine.hostname or machine.display_name or None) if machine else None,
             "machine_lab_name": lab,
@@ -63,7 +73,9 @@ def _out(
             "assigned_at": getattr(row, "assigned_at", None),
             "assigned_by": getattr(row, "assigned_by", None) or "",
             "assign_verify_method": getattr(row, "assign_verify_method", None) or "",
-            "has_assign_verify_doc": bool(getattr(row, "assign_verify_doc_path", None) or ""),
+            "has_assign_verify_doc": bool(getattr(row, "assign_verify_doc_path", None) or "")
+            or any(a.has_verify_doc for a in assignee_models),
+            "assignees": assignee_models,
         }
     )
 
@@ -118,12 +130,17 @@ async def _machines_by_ic(db, ic_nos: list[str]) -> dict[str, tuple[Machine, str
     return out
 
 
-def _link_out(row: InventoryItem, links: dict[str, tuple[Machine, str | None]]) -> InventoryItemOut:
+def _link_out(
+    row: InventoryItem,
+    links: dict[str, tuple[Machine, str | None]],
+    assignees_by_item: dict[UUID, list[dict]] | None = None,
+) -> InventoryItemOut:
+    assignees = (assignees_by_item or {}).get(row.id, [])
     link = links.get((row.ic_no or "").strip().lower())
     if not link:
-        return _out(row)
+        return _out(row, assignees=assignees)
     machine, lab_name = link
-    return _out(row, machine=machine, lab_name=lab_name)
+    return _out(row, machine=machine, lab_name=lab_name, assignees=assignees)
 
 
 def _apply_inventory_filters(
@@ -337,7 +354,8 @@ async def list_inventory(
         await db.execute(stmt.order_by(InventoryItem.ic_no.asc()).offset(offset).limit(limit))
     ).scalars().all()
     links = await _machines_by_ic(db, [r.ic_no for r in rows])
-    items = [_link_out(r, links) for r in rows]
+    assignees_by_item = await inv_assign.list_item_assignees(db, [r.id for r in rows])
+    items = [_link_out(r, links, assignees_by_item) for r in rows]
     return InventoryListOut(items=items, total=total, status=status)
 
 
@@ -817,12 +835,52 @@ async def inventory_assigned_records(
     db: DbDep,
     user: CurrentUser,
     q: str = Query("", min_length=0),
+    lab_id: UUID | None = Query(None),
+    scholar_id: UUID | None = Query(None),
+    item_id: UUID | None = Query(None),
+    verify_method: str = Query("", min_length=0),
+    assigned_from: datetime | None = Query(None),
+    assigned_to: datetime | None = Query(None),
     limit: int = Query(25, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ):
-    """Inventory currently issued to scholars (Assign Inv page) — searchable + paged."""
-    rows, total = await inv_assign.list_issued_assignments(db, q=q, limit=limit, offset=offset)
+    """Active item↔scholar assignments (Assigned tab) — filters + paging."""
+    rows, total = await inv_assign.list_issued_assignments(
+        db,
+        q=q,
+        lab_id=lab_id,
+        scholar_id=scholar_id,
+        item_id=item_id,
+        verify_method=verify_method,
+        assigned_from=assigned_from,
+        assigned_to=assigned_to,
+        limit=limit,
+        offset=offset,
+    )
     return {"items": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/assignments/{assignment_id}/verify-doc")
+async def inventory_assignment_verify_doc(assignment_id: UUID, db: DbDep, user: CurrentUser):
+    """Download PDF proof for a document-verified assignment."""
+    asg = await db.get(InventoryAssignment, assignment_id)
+    if not asg or asg.status != "active":
+        raise HTTPException(404, "Assignment not found")
+    path = inv_docs.resolve_doc(asg.verify_doc_path or "")
+    if not path:
+        # Legacy: PDF stored under item id during older assign flow.
+        item = await db.get(InventoryItem, asg.inventory_item_id)
+        legacy = getattr(item, "assign_verify_doc_path", "") if item else ""
+        path = inv_docs.resolve_doc(legacy or "")
+    if not path:
+        raise HTTPException(404, "No inventory verification document")
+    item = await db.get(InventoryItem, asg.inventory_item_id)
+    ic = (item.ic_no if item else None) or str(assignment_id)
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=f"inv-verify-{ic}.pdf",
+    )
 
 
 @router.get("/revoked-records")
@@ -838,25 +896,74 @@ async def inventory_revoked_records(
     return {"items": rows, "total": total, "limit": limit, "offset": offset}
 
 
+def _parse_scholar_ids(scholar_ids: str | None, scholar_id: UUID | None) -> list[UUID]:
+    """Accept JSON array / comma list and/or a single scholar_id."""
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    raw = (scholar_ids or "").strip()
+    if raw:
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for x in parsed:
+                    uid = UUID(str(x))
+                    if uid not in seen:
+                        seen.add(uid)
+                        out.append(uid)
+            else:
+                uid = UUID(str(parsed))
+                out.append(uid)
+        except Exception:
+            for part in raw.replace(";", ",").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                uid = UUID(part)
+                if uid not in seen:
+                    seen.add(uid)
+                    out.append(uid)
+    if scholar_id and scholar_id not in seen:
+        out.append(scholar_id)
+    if not out:
+        raise HTTPException(400, "At least one scholar_id is required")
+    return out
+
+
 @router.post("/assign")
 async def inventory_assign_start(
     db: DbDep,
     user: OperatorUser,
     request: Request,
-    scholar_id: UUID = Form(...),
+    scholar_id: UUID | None = Form(None),
+    scholar_ids: str = Form(""),
     verify_method: str = Form("otp"),
     item_ids: str = Form(""),
     item_id: UUID | None = Form(None),
     document: UploadFile | None = File(None),
 ):
-    """Assign one or more inventory items to a scholar. OTP (scholar email) or PDF."""
+    """Assign one or more inventory items to one or more scholars (M:N). OTP or PDF.
+
+    OTP still verifies one scholar at a time (their email). PDF can cover a
+    cartesian product of selected items × scholars in one request.
+    """
     ids = _parse_item_ids(item_ids, item_id)
-    scholar = await db.get(Scholar, scholar_id)
-    if not scholar or scholar.status != "active":
-        raise HTTPException(400, "Scholar not found or not active")
+    scholar_uuid_list = _parse_scholar_ids(scholar_ids, scholar_id)
+    scholars: list[Scholar] = []
+    for sid in scholar_uuid_list:
+        scholar = await db.get(Scholar, sid)
+        if not scholar or scholar.status != "active":
+            raise HTTPException(400, f"Scholar not found or not active: {sid}")
+        scholars.append(scholar)
     method = (verify_method or "otp").strip().lower()
     if method not in {"otp", "document"}:
         raise HTTPException(400, "verify_method must be otp or document")
+    if method == "otp" and len(scholars) > 1:
+        raise HTTPException(
+            400,
+            "OTP assign supports one scholar at a time — pick one scholar, or use PDF verify for multi-scholar",
+        )
 
     items: list = []
     for iid in ids:
@@ -866,24 +973,30 @@ async def inventory_assign_start(
         items.append(item)
     ic_list = [i.ic_no for i in items]
     label = ", ".join(ic_list[:5]) + (f" (+{len(ic_list) - 5} more)" if len(ic_list) > 5 else "")
+    scholar_names = ", ".join((s.full_name or s.scholar_id or "?") for s in scholars[:5])
+    if len(scholars) > 5:
+        scholar_names += f" (+{len(scholars) - 5} more)"
 
     if method == "document":
         if not document or not document.filename:
             raise HTTPException(400, "Upload a PDF verification document")
         raw = await document.read()
-        first_rel = ""
+        pairs = 0
         for item in items:
-            try:
-                doc_rel = inv_assign.save_assign_doc(
-                    item.id, raw, document.filename, document.content_type
+            for scholar in scholars:
+                asg = await inv_assign.apply_assign_to_scholar(
+                    db, item, scholar, via="document", by=user.username, doc_path=""
                 )
-            except ValueError as exc:
-                raise HTTPException(400, str(exc)) from exc
-            if not first_rel:
-                first_rel = doc_rel
-            await inv_assign.apply_assign_to_scholar(
-                db, item, scholar, via="document", by=user.username, doc_path=doc_rel
-            )
+                try:
+                    doc_rel = inv_assign.save_assign_doc(
+                        asg.id, raw, document.filename, document.content_type
+                    )
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                asg.verify_doc_path = doc_rel
+                scholar.inv_verify_doc_path = doc_rel
+                item.assign_verify_doc_path = doc_rel
+                pairs += 1
         await write_audit(
             db,
             "inventory.assign_doc",
@@ -891,23 +1004,31 @@ async def inventory_assign_start(
             details={
                 "item_ids": [str(i.id) for i in items],
                 "ic_nos": ic_list,
-                "scholar_id": str(scholar.id),
+                "scholar_ids": [str(s.id) for s in scholars],
+                "pairs": pairs,
             },
             request=request,
         )
         await db.commit()
         links = await _machines_by_ic(db, ic_list)
-        outs = [_link_out(i, links).model_dump(mode="json") for i in items]
+        assignees_by_item = await inv_assign.list_item_assignees(db, [i.id for i in items])
+        outs = [_link_out(i, links, assignees_by_item).model_dump(mode="json") for i in items]
         return {
             "ok": True,
             "pending_otp": False,
             "verify_method": "document",
             "count": len(items),
+            "scholar_count": len(scholars),
+            "assignment_count": pairs,
             "item": outs[0],
             "items": outs,
-            "message": f"Assigned {len(items)} item(s) ({label}) to {scholar.full_name} (PDF verified).",
+            "message": (
+                f"Assigned {len(items)} item(s) ({label}) to {scholar_names} "
+                f"({pairs} assignment(s), PDF verified)."
+            ),
         }
 
+    scholar = scholars[0]
     email = (scholar.email or "").strip()
     if not email or "@" not in email:
         raise HTTPException(
@@ -916,7 +1037,7 @@ async def inventory_assign_start(
         )
     payload = {
         "item_ids": [str(i.id) for i in items],
-        "item_id": str(items[0].id),  # legacy single-field compat
+        "item_id": str(items[0].id),
         "scholar_id": str(scholar.id),
         "ic_nos": ic_list,
         "ic_no": items[0].ic_no,
@@ -1000,7 +1121,8 @@ async def inventory_assign_verify_otp(
     )
     await db.commit()
     links = await _machines_by_ic(db, [i.ic_no for i in items])
-    outs = [_link_out(i, links).model_dump(mode="json") for i in items]
+    assignees_by_item = await inv_assign.list_item_assignees(db, [i.id for i in items])
+    outs = [_link_out(i, links, assignees_by_item).model_dump(mode="json") for i in items]
     return {
         "ok": True,
         "count": len(items),
@@ -1017,20 +1139,47 @@ async def inventory_revoke_start(
     request: Request,
     item_ids: str = Form(""),
     item_id: UUID | None = Form(None),
+    assignment_ids: str = Form(""),
 ):
-    """Start revoke for one or more items: OTP to lab owner who takes inventory back."""
-    ids = _parse_item_ids(item_ids, item_id)
+    """Start revoke for items and/or specific assignment rows (OTP to lab owner)."""
+    assignment_uuid_list: list[UUID] = []
+    raw_asg = (assignment_ids or "").strip()
+    if raw_asg:
+        try:
+            import json
+            parsed = json.loads(raw_asg)
+            vals = parsed if isinstance(parsed, list) else [parsed]
+        except Exception:
+            vals = [p.strip() for p in raw_asg.replace(";", ",").split(",") if p.strip()]
+        for x in vals:
+            assignment_uuid_list.append(UUID(str(x)))
+
     items: list = []
-    for iid in ids:
-        item = await _get_or_404(db, iid)
-        if item.status != "active":
-            raise HTTPException(400, f"Cannot revoke removed inventory {item.ic_no}")
-        if not item.assigned_scholar_id:
-            raise HTTPException(
-                400,
-                f"{item.ic_no} is not issued to a scholar (already with lab owner, or never assigned)",
-            )
-        items.append(item)
+    asg_pairs: list[tuple] = []  # (assignment|None, item)
+    if assignment_uuid_list:
+        for aid in assignment_uuid_list:
+            asg = await db.get(InventoryAssignment, aid)
+            if not asg or asg.status != "active":
+                raise HTTPException(400, f"Assignment {aid} is not active")
+            item = await _get_or_404(db, asg.inventory_item_id)
+            if item.status != "active":
+                raise HTTPException(400, f"Cannot revoke removed inventory {item.ic_no}")
+            asg_pairs.append((asg, item))
+            if item not in items:
+                items.append(item)
+    else:
+        ids = _parse_item_ids(item_ids, item_id)
+        for iid in ids:
+            item = await _get_or_404(db, iid)
+            if item.status != "active":
+                raise HTTPException(400, f"Cannot revoke removed inventory {item.ic_no}")
+            if not await inv_assign.item_has_active_assignment(db, item):
+                raise HTTPException(
+                    400,
+                    f"{item.ic_no} is not issued to a scholar (already with lab owner, or never assigned)",
+                )
+            items.append(item)
+            asg_pairs.append((None, item))
 
     # All items in one revoke batch must resolve to the same lab owner email.
     labs = []
@@ -1056,6 +1205,7 @@ async def inventory_revoke_start(
     payload = {
         "item_ids": [str(i.id) for i in items],
         "item_id": str(items[0].id),
+        "assignment_ids": [str(a.id) for a, _ in asg_pairs if a is not None],
         "lab_id": str(lab0.id),
         "ic_nos": ic_list,
         "ic_no": items[0].ic_no,
@@ -1124,16 +1274,26 @@ async def inventory_revoke_verify_otp(
     lab = await db.get(Lab, UUID(str(payload["lab_id"])))
     if not lab:
         raise HTTPException(400, "Lab no longer available")
-    id_strs = payload.get("item_ids") or [payload.get("item_id")]
+    asg_ids = payload.get("assignment_ids") or []
     items = []
-    for raw_id in id_strs:
-        if not raw_id:
-            continue
-        item = await _get_or_404(db, UUID(str(raw_id)))
-        if not item.assigned_scholar_id:
-            continue
-        await inv_assign.apply_revoke_to_owner(db, item, lab, by=user.username)
-        items.append(item)
+    if asg_ids:
+        for raw_aid in asg_ids:
+            asg = await db.get(InventoryAssignment, UUID(str(raw_aid)))
+            if not asg or asg.status != "active":
+                continue
+            item = await inv_assign.apply_revoke_assignment(db, asg, lab, by=user.username)
+            if item not in items:
+                items.append(item)
+    else:
+        id_strs = payload.get("item_ids") or [payload.get("item_id")]
+        for raw_id in id_strs:
+            if not raw_id:
+                continue
+            item = await _get_or_404(db, UUID(str(raw_id)))
+            if not await inv_assign.item_has_active_assignment(db, item):
+                continue
+            await inv_assign.apply_revoke_to_owner(db, item, lab, by=user.username)
+            items.append(item)
     if not items:
         raise HTTPException(400, "No still-assigned inventory left to revoke for this OTP")
     await write_audit(
@@ -1145,7 +1305,8 @@ async def inventory_revoke_verify_otp(
     )
     await db.commit()
     links = await _machines_by_ic(db, [i.ic_no for i in items])
-    outs = [_link_out(i, links).model_dump(mode="json") for i in items]
+    assignees_by_item = await inv_assign.list_item_assignees(db, [i.id for i in items])
+    outs = [_link_out(i, links, assignees_by_item).model_dump(mode="json") for i in items]
     return {
         "ok": True,
         "count": len(items),

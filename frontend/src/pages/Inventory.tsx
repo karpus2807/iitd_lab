@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { ago, api, currentUser, downloadFile } from '../api'
 import PageBar, { PAGE_SIZE } from '../components/PageBar'
 
-type InvTab = 'dashboard' | 'active' | 'assign' | 'revoke' | 'removed'
+type InvTab = 'dashboard' | 'active' | 'assigned' | 'assign' | 'revoke' | 'removed'
 
 type InvItem = {
   id: string
@@ -20,6 +20,16 @@ type InvItem = {
   assigned_at?: string | null
   assigned_by?: string
   assign_verify_method?: string
+  has_assign_verify_doc?: boolean
+  assignees?: {
+    assignment_id: string
+    scholar_id: string
+    full_name: string
+    entry_no: string
+    assigned_at?: string | null
+    verify_method?: string
+    has_verify_doc?: boolean
+  }[]
   status: string
   removed_at?: string | null
   removed_by?: string | null
@@ -64,11 +74,14 @@ type AssigneeHit = {
 }
 
 type AssignedHit = {
+  assignment_id?: string
   item_id: string
   ic_no: string
   item_name: string
   assigned_to: string
   assigned_at?: string | null
+  verify_method?: string
+  has_verify_doc?: boolean
   scholar?: { id: string; full_name: string; scholar_id: string; bio_id: string; email: string } | null
   owner?: { lab_id: string; lab_name: string; incharge: string; email: string; phone: string } | null
 }
@@ -161,7 +174,13 @@ export default function Inventory() {
   const [assigneeQ, setAssigneeQ] = useState('')
   const [assigneeHits, setAssigneeHits] = useState<AssigneeHit[]>([])
   const [pickedScholar, setPickedScholar] = useState<AssigneeHit | null>(null)
+  const [scholarCart, setScholarCart] = useState<AssigneeHit[]>([])
   const [assignMethod, setAssignMethod] = useState<'otp' | 'document'>('otp')
+  const [assignRecLab, setAssignRecLab] = useState('')
+  const [assignRecMethod, setAssignRecMethod] = useState('')
+  const [assignRecFrom, setAssignRecFrom] = useState('')
+  const [assignRecTo, setAssignRecTo] = useState('')
+  const [labsForFilter, setLabsForFilter] = useState<{ id: string; name: string }[]>([])
   const [assignDoc, setAssignDoc] = useState<File | null>(null)
   const [otpChallengeId, setOtpChallengeId] = useState('')
   const [otpEmail, setOtpEmail] = useState('')
@@ -191,6 +210,14 @@ export default function Inventory() {
       qs.set('limit', String(PAGE_SIZE))
       qs.set('offset', String((assignRecPage - 1) * PAGE_SIZE))
       if (assignRecQ.trim()) qs.set('q', assignRecQ.trim())
+      if (assignRecLab) qs.set('lab_id', assignRecLab)
+      if (assignRecMethod) qs.set('verify_method', assignRecMethod)
+      if (assignRecFrom) qs.set('assigned_from', new Date(assignRecFrom).toISOString())
+      if (assignRecTo) {
+        const end = new Date(assignRecTo)
+        end.setHours(23, 59, 59, 999)
+        qs.set('assigned_to', end.toISOString())
+      }
       const data = await api<{ items: any[]; total: number }>(`/api/inventory/assigned-records?${qs}`)
       setAssignedRecords(data.items || [])
       setAssignRecTotal(data.total || 0)
@@ -198,7 +225,7 @@ export default function Inventory() {
       setAssignedRecords([])
       setAssignRecTotal(0)
     }
-  }, [assignRecPage, assignRecQ])
+  }, [assignRecPage, assignRecQ, assignRecLab, assignRecMethod, assignRecFrom, assignRecTo])
 
   const loadRevokeRecords = useCallback(async () => {
     try {
@@ -272,7 +299,7 @@ export default function Inventory() {
 
   useEffect(() => {
     setAssignRecPage(1)
-  }, [assignRecQ])
+  }, [assignRecQ, assignRecLab, assignRecMethod, assignRecFrom, assignRecTo])
 
   useEffect(() => {
     setRevokeRecPage(1)
@@ -306,8 +333,20 @@ export default function Inventory() {
   }, [tab, loadDashboard])
 
   useEffect(() => {
-    if (tab === 'assign') void loadAssignRecords()
+    if (tab === 'assigned' || tab === 'assign') void loadAssignRecords()
   }, [tab, loadAssignRecords])
+
+  useEffect(() => {
+    if (tab !== 'assigned' && tab !== 'dashboard') return
+    void (async () => {
+      try {
+        const labs = await api<{ id: string; name: string }[]>('/api/labs')
+        setLabsForFilter((labs || []).filter((l) => (l.name || '').toLowerCase() !== 'unassigned'))
+      } catch {
+        setLabsForFilter([])
+      }
+    })()
+  }, [tab])
 
   useEffect(() => {
     if (tab === 'revoke') void loadRevokeRecords()
@@ -369,7 +408,7 @@ export default function Inventory() {
           setRevokeHits(rows || [])
           // Keep selection only for hits still visible
           setRevokeSelected((prev) => {
-            const ids = new Set((rows || []).map((r) => r.item_id))
+            const ids = new Set((rows || []).map((r) => r.assignment_id || r.item_id))
             const next: Record<string, boolean> = {}
             for (const id of Object.keys(prev)) {
               if (prev[id] && ids.has(id)) next[id] = true
@@ -623,8 +662,9 @@ export default function Inventory() {
     }
   }
 
+  const revokeKey = (h: AssignedHit) => h.assignment_id || h.item_id
   const revokePicked = useMemo(
-    () => revokeHits.filter((h) => revokeSelected[h.item_id]),
+    () => revokeHits.filter((h) => revokeSelected[revokeKey(h)]),
     [revokeHits, revokeSelected],
   )
 
@@ -640,18 +680,52 @@ export default function Inventory() {
     setAssignConfirm(false)
   }
 
+  function addScholarToCart(h: AssigneeHit) {
+    if (h.type !== 'scholar') return
+    setScholarCart((prev) => (prev.some((x) => x.id === h.id) ? prev : [...prev, h]))
+    setPickedScholar(h)
+    setAssigneeQ('')
+    setAssigneeHits([])
+    setAssignConfirm(false)
+  }
+
+  function removeScholarFromCart(id: string) {
+    setScholarCart((prev) => {
+      const next = prev.filter((x) => x.id !== id)
+      setPickedScholar(next[0] || null)
+      return next
+    })
+    setAssignConfirm(false)
+  }
+
+  async function openAssignPdf(assignmentId: string, icNo: string) {
+    try {
+      await downloadFile(
+        `/api/inventory/assignments/${assignmentId}/verify-doc`,
+        `inv-verify-${icNo || assignmentId}.pdf`,
+      )
+    } catch (e: any) {
+      setErr(e?.message || 'Could not download verification PDF')
+    }
+  }
+
   async function submitAssign(e: FormEvent) {
     e.preventDefault()
-    if (!canEdit || !assignCart.length || !pickedScholar || pickedScholar.type !== 'scholar') {
-      setErr('Add at least one inventory IC and pick a scholar')
+    const scholars = scholarCart.length ? scholarCart : pickedScholar && pickedScholar.type === 'scholar' ? [pickedScholar] : []
+    if (!canEdit || !assignCart.length || !scholars.length) {
+      setErr('Add at least one inventory IC and one or more scholars')
       return
     }
     if (!assignConfirm) {
       setAssignConfirm(true)
-      setNotice(`Confirm: assign ${assignCart.length} item(s) to ${pickedScholar.label}?`)
+      setNotice(`Confirm: assign ${assignCart.length} item(s) to ${scholars.map((s) => s.label).join(', ')}?`)
       return
     }
-    if (assignMethod === 'otp' && !pickedScholar.has_email) {
+    if (assignMethod === 'otp' && scholars.length > 1) {
+      setErr('OTP assign supports one scholar at a time — remove extras or use PDF verify for multi-scholar')
+      return
+    }
+    if (assignMethod === 'otp' && !scholars[0].has_email) {
       setErr('Scholar has no email — use PDF verification or add email on Scholars first')
       return
     }
@@ -665,7 +739,8 @@ export default function Inventory() {
     try {
       const fd = new FormData()
       fd.append('item_ids', JSON.stringify(assignCart.map((x) => x.id)))
-      fd.append('scholar_id', pickedScholar.id)
+      fd.append('scholar_ids', JSON.stringify(scholars.map((s) => s.id)))
+      fd.append('scholar_id', scholars[0].id)
       fd.append('verify_method', assignMethod)
       if (assignMethod === 'document' && assignDoc) fd.append('document', assignDoc)
       const r = await api<any>('/api/inventory/assign', { method: 'POST', body: fd })
@@ -680,6 +755,7 @@ export default function Inventory() {
       }
       setNotice(r.message || 'Assigned')
       setAssignCart([])
+      setScholarCart([])
       setAssignConfirm(false)
       setPickedScholar(null)
       setInvQ('')
@@ -715,7 +791,12 @@ export default function Inventory() {
     setNotice('')
     try {
       const fd = new FormData()
-      fd.append('item_ids', JSON.stringify(revokePicked.map((h) => h.item_id)))
+      const asgIds = revokePicked.map((h) => h.assignment_id).filter(Boolean) as string[]
+      if (asgIds.length === revokePicked.length && asgIds.length) {
+        fd.append('assignment_ids', JSON.stringify(asgIds))
+      } else {
+        fd.append('item_ids', JSON.stringify([...new Set(revokePicked.map((h) => h.item_id))]))
+      }
       const r = await api<any>('/api/inventory/revoke', { method: 'POST', body: fd })
       setOtpChallengeId(r.challenge_id)
       setOtpEmail(r.email)
@@ -776,8 +857,10 @@ export default function Inventory() {
           <p>
             {tab === 'dashboard'
               ? 'Lab-wise inventory counts — click a lab to open its full Active list (same as Machines from the main dashboard)'
+              : tab === 'assigned'
+                ? 'All active assignments — item ↔ scholar, verify method, dates, PDF proof'
               : tab === 'assign'
-                ? 'Assign IC to a scholar — OTP (primary) or PDF verification'
+                ? 'Assign IC(s) to scholar(s) — multi-assign supported; OTP (one scholar) or PDF'
                 : tab === 'revoke'
                   ? 'Revoke assignment — lab owner OTP takeover'
                   : filterLocation && filterLocation !== '__blank__'
@@ -790,6 +873,7 @@ export default function Inventory() {
       <div className="tabs" style={{ marginBottom: 12 }}>
         <button className={tab === 'dashboard' ? 'active' : ''} type="button" onClick={() => { setTab('dashboard'); setSelected({}) }}>Dashboard</button>
         <button className={tab === 'active' ? 'active' : ''} type="button" onClick={() => { setTab('active'); setSelected({}) }}>Active</button>
+        <button className={tab === 'assigned' ? 'active' : ''} type="button" onClick={() => { setTab('assigned'); setSelected({}) }}>Assigned</button>
         <button className={tab === 'assign' ? 'active' : ''} type="button" onClick={() => { setTab('assign'); setSelected({}); setOtpKind('') }}>Assign inv</button>
         <button className={tab === 'revoke' ? 'active' : ''} type="button" onClick={() => { setTab('revoke'); setSelected({}); setOtpKind('') }}>Revoke inv</button>
         <button className={tab === 'removed' ? 'active' : ''} type="button" onClick={() => { setTab('removed'); setSelected({}) }}>Removed</button>
@@ -917,10 +1001,7 @@ export default function Inventory() {
                       style={{ display: 'block', width: '100%', textAlign: 'left', borderRadius: 0 }}
                       onClick={() => {
                         if (h.type === 'scholar') {
-                          setPickedScholar(h)
-                          setAssigneeQ(`${h.label} · ${h.scholar_id || h.bio_id || ''}`)
-                          setAssigneeHits([])
-                          setAssignConfirm(false)
+                          addScholarToCart(h)
                         } else {
                           setAssigneeQ('')
                           setAssigneeHits([])
@@ -938,11 +1019,22 @@ export default function Inventory() {
                   ))}
                 </div>
               )}
-              {pickedScholar && (
-                <p className="muted" style={{ fontSize: 12 }}>
-                  Selected · {pickedScholar.label}
-                  {pickedScholar.has_email ? ` · ${pickedScholar.email}` : ' · no email (use PDF)'}
-                </p>
+              {scholarCart.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="toolbar" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+                    <strong style={{ fontSize: 13 }}>Scholars ({scholarCart.length})</strong>
+                    <button className="btn secondary" type="button" onClick={() => { setScholarCart([]); setPickedScholar(null); setAssignConfirm(false) }}>Clear</button>
+                  </div>
+                  {scholarCart.map((s) => (
+                    <div key={s.id} className="toolbar" style={{ gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span><strong>{s.label}</strong> <span className="muted mono">{s.scholar_id || s.bio_id || ''}</span></span>
+                      <button className="btn secondary" type="button" onClick={() => removeScholarFromCart(s.id)}>Remove</button>
+                    </div>
+                  ))}
+                  {scholarCart.length > 1 && assignMethod === 'otp' && (
+                    <p className="err" style={{ fontSize: 12, margin: '4px 0 0' }}>OTP is one scholar at a time — use PDF for multi-scholar assign.</p>
+                  )}
+                </div>
               )}
             </label>
           </div>
@@ -982,12 +1074,12 @@ export default function Inventory() {
             </div>
           )}
 
-          {assignConfirm && assignCart.length > 0 && pickedScholar && (
+          {assignConfirm && assignCart.length > 0 && scholarCart.length > 0 && (
             <div className="card" style={{ marginTop: 12, background: 'var(--panel-2, transparent)' }}>
               <p style={{ margin: 0 }}>
                 Confirm assign <strong>{assignCart.length}</strong> item(s)
                 ({assignCart.map((x) => x.ic_no).join(', ')})
-                → <strong>{pickedScholar.label}</strong>?
+                → <strong>{scholarCart.map((s) => s.label).join(', ')}</strong>?
               </p>
               <p className="muted" style={{ margin: '8px 0 0', fontSize: 13 }}>
                 Click the button again to send OTP / apply PDF verification.
@@ -1012,7 +1104,7 @@ export default function Inventory() {
             </label>
           )}
           <div className="toolbar" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn" disabled={busy || !assignCart.length || !pickedScholar} type="submit">
+            <button className="btn" disabled={busy || !assignCart.length || !scholarCart.length} type="submit">
               {busy ? 'Working…' : assignConfirm ? `Confirm & ${assignMethod === 'otp' ? 'send OTP' : 'assign with PDF'}` : 'Review & continue'}
             </button>
             {assignConfirm && (
@@ -1025,26 +1117,68 @@ export default function Inventory() {
       )}
 
       {tab === 'assign' && (
+        <p className="muted" style={{ marginBottom: 16 }}>
+          After assigning, open the <button className="btn secondary" type="button" onClick={() => setTab('assigned')}>Assigned</button> tab for full records, filters, and PDF download.
+        </p>
+      )}
+
+      {tab === 'assigned' && (
         <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
           <div className="section-head" style={{ padding: 16, margin: 0, flexWrap: 'wrap', gap: 8 }}>
-            <h3 className="section-title" style={{ margin: 0 }}>Assigned inventory records</h3>
-            <input
-              style={{ flex: '1 1 200px', maxWidth: 320 }}
-              value={assignRecQ}
-              onChange={(e) => setAssignRecQ(e.target.value)}
-              placeholder="Search assigned records…"
-            />
+            <h3 className="section-title" style={{ margin: 0 }}>Assigned inventory</h3>
             <button className="btn secondary" type="button" disabled={busy} onClick={() => void loadAssignRecords()}>Refresh</button>
           </div>
+          <div className="toolbar" style={{ padding: '0 16px 12px', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              style={{ flex: '1 1 180px', maxWidth: 280 }}
+              value={assignRecQ}
+              onChange={(e) => setAssignRecQ(e.target.value)}
+              placeholder="Search IC, scholar, email, lab…"
+            />
+            <select value={assignRecLab} onChange={(e) => setAssignRecLab(e.target.value)} aria-label="Filter lab">
+              <option value="">All labs</option>
+              {labsForFilter.map((l) => (
+                <option key={l.id} value={l.id}>{l.name}</option>
+              ))}
+            </select>
+            <select value={assignRecMethod} onChange={(e) => setAssignRecMethod(e.target.value)} aria-label="Filter verify method">
+              <option value="">Any verify</option>
+              <option value="otp">OTP</option>
+              <option value="document">Document / PDF</option>
+            </select>
+            <label className="muted" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              From
+              <input type="date" value={assignRecFrom} onChange={(e) => setAssignRecFrom(e.target.value)} />
+            </label>
+            <label className="muted" style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              To
+              <input type="date" value={assignRecTo} onChange={(e) => setAssignRecTo(e.target.value)} />
+            </label>
+            {(assignRecQ || assignRecLab || assignRecMethod || assignRecFrom || assignRecTo) && (
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => {
+                  setAssignRecQ('')
+                  setAssignRecLab('')
+                  setAssignRecMethod('')
+                  setAssignRecFrom('')
+                  setAssignRecTo('')
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
           <p className="muted" style={{ padding: '0 16px 12px', margin: 0, fontSize: 13 }}>
-            Currently issued to scholars · {assignRecTotal} record{assignRecTotal === 1 ? '' : 's'}
+            One row per item↔scholar assignment · {assignRecTotal} record{assignRecTotal === 1 ? '' : 's'}
           </p>
           <table>
             <thead>
               <tr>
                 <th>IC No.</th>
                 <th>Item</th>
-                <th>Assigned to</th>
+                <th>Scholar</th>
                 <th>Scholar ID</th>
                 <th>Bio-ID</th>
                 <th>Lab</th>
@@ -1052,11 +1186,12 @@ export default function Inventory() {
                 <th>Verify</th>
                 <th>Assigned</th>
                 <th>By</th>
+                <th>PDF</th>
               </tr>
             </thead>
             <tbody>
               {assignedRecords.map((r) => (
-                <tr key={r.item_id}>
+                <tr key={r.assignment_id || `${r.item_id}-${r.scholar?.id || ''}`}>
                   <td className="mono">{r.ic_no}</td>
                   <td>{r.item_name || '—'}</td>
                   <td><strong>{r.assigned_to || r.scholar?.full_name || '—'}</strong></td>
@@ -1065,12 +1200,24 @@ export default function Inventory() {
                   <td>{r.lab?.name || '—'}</td>
                   <td>{r.scholar?.email || '—'}</td>
                   <td className="muted">{r.verify_method || '—'}</td>
-                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>{r.assigned_at ? ago(r.assigned_at) : '—'}</td>
+                  <td className="muted" style={{ whiteSpace: 'nowrap' }} title={r.assigned_at || ''}>
+                    {r.assigned_at ? ago(r.assigned_at) : '—'}
+                    {r.assigned_at ? <div style={{ fontSize: 11 }}>{new Date(r.assigned_at).toLocaleString()}</div> : null}
+                  </td>
                   <td className="muted">{r.assigned_by || '—'}</td>
+                  <td>
+                    {r.has_verify_doc && r.assignment_id ? (
+                      <button className="btn secondary" type="button" onClick={() => void openAssignPdf(r.assignment_id, r.ic_no)}>
+                        Download
+                      </button>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {!assignedRecords.length && (
-                <tr><td colSpan={10} className="muted" style={{ padding: 16 }}>No inventory currently assigned to scholars.</td></tr>
+                <tr><td colSpan={11} className="muted" style={{ padding: 16 }}>No inventory currently assigned to scholars.</td></tr>
               )}
             </tbody>
           </table>
@@ -1101,7 +1248,7 @@ export default function Inventory() {
                   type="button"
                   onClick={() => {
                     const next: Record<string, boolean> = {}
-                    for (const h of revokeHits) next[h.item_id] = true
+                    for (const h of revokeHits) next[revokeKey(h)] = true
                     setRevokeSelected(next)
                   }}
                 >
@@ -1126,12 +1273,12 @@ export default function Inventory() {
                   </thead>
                   <tbody>
                     {revokeHits.map((h) => (
-                      <tr key={h.item_id}>
+                      <tr key={revokeKey(h)}>
                         <td>
                           <input
                             type="checkbox"
-                            checked={!!revokeSelected[h.item_id]}
-                            onChange={(e) => setRevokeSelected((prev) => ({ ...prev, [h.item_id]: e.target.checked }))}
+                            checked={!!revokeSelected[revokeKey(h)]}
+                            onChange={(e) => setRevokeSelected((prev) => ({ ...prev, [revokeKey(h)]: e.target.checked }))}
                           />
                         </td>
                         <td className="mono">{h.ic_no}</td>
@@ -1565,6 +1712,8 @@ export default function Inventory() {
               )}
               <th>IC No.</th>
               <th>Item Name</th>
+              {tab === 'active' && <th>Scholar</th>}
+              {tab === 'active' && <th>Assign date</th>}
               <th>Type</th>
               <th>Location</th>
               <th>Inv Type</th>
@@ -1604,6 +1753,34 @@ export default function Inventory() {
                     </div>
                   ) : null}
                 </td>
+                {tab === 'active' && (
+                  <td>
+                    {(r.assignees && r.assignees.length > 0) ? (
+                      <div>
+                        {r.assignees.map((a) => (
+                          <div key={a.assignment_id || a.scholar_id}>
+                            <strong>{a.full_name || '—'}</strong>
+                            {a.entry_no ? <span className="muted mono" style={{ marginLeft: 6, fontSize: 12 }}>{a.entry_no}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (r.assigned_to || '').trim() ? (
+                      <strong>{r.assigned_to}</strong>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                )}
+                {tab === 'active' && (
+                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>
+                    {r.assigned_at ? (
+                      <>
+                        <div>{ago(r.assigned_at)}</div>
+                        <div style={{ fontSize: 11 }}>{new Date(r.assigned_at).toLocaleDateString()}</div>
+                      </>
+                    ) : '—'}
+                  </td>
+                )}
                 <td>{r.inventory_type || '—'}</td>
                 <td>{r.inventory_location || '—'}</td>
                 <td>{r.inv_type || '—'}</td>
