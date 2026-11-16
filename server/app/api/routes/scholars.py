@@ -11,6 +11,7 @@ from app.api.deps import CurrentUser, DbDep, OperatorUser, write_audit
 from app.models import InventoryItem, Lab, Machine, Scholar, utcnow
 from app.schemas.scholars import ScholarIdsBody, ScholarListOut, ScholarOut, ScholarRemoveBody
 from app.services import email_otp
+from app.services import inv_assign
 from app.services import inv_verify_docs as inv_docs
 from app.services import scholar_mgmt as xls
 from app.services import scholar_photos as photos
@@ -132,10 +133,14 @@ async def _lab_or_404(db, lab_id: UUID) -> Lab:
 
 
 async def _clear_inv_assignment(db, row: Scholar) -> None:
-    if row.inventory_item_id:
-        item = await db.get(InventoryItem, row.inventory_item_id)
-        if item and (item.assigned_to or "").strip() == (row.full_name or "").strip():
-            item.assigned_to = ""
+    """Detach this scholar from their primary listed item without wiping other assignees."""
+    if not row.inventory_item_id:
+        return
+    item = await db.get(InventoryItem, row.inventory_item_id)
+    if not item:
+        return
+    lab = await inv_assign.lab_for_inventory(db, item)
+    await inv_assign.apply_revoke_to_owner(db, item, lab, by="scholar-clear", scholar_id=row.id)
 
 
 async def _apply_inventory_link(
@@ -165,11 +170,9 @@ async def _apply_inventory_link(
         item = await db.get(InventoryItem, inventory_item_id)
         if not item or item.status != "active":
             raise HTTPException(400, "Inventory item not found or removed")
-        row.inventory_kind = "listed"
-        row.inventory_item_id = item.id
-        row.inventory_label = item.ic_no
-        row.inventory_assigned_at = utcnow()
-        item.assigned_to = (row.full_name or "").strip()
+        await inv_assign.apply_assign_to_scholar(
+            db, item, row, via="otp", by="scholars", doc_path=""
+        )
     elif kind == "non_list":
         label = (inventory_label or "").strip()
         if not label:

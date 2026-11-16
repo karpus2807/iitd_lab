@@ -102,6 +102,7 @@ async def init_models() -> None:
         await conn.run_sync(ensure_agent_update_columns)
         await conn.run_sync(ensure_inventory_assigned_column)
         await conn.run_sync(ensure_inventory_assign_meta_columns)
+        await conn.run_sync(ensure_inventory_assignments_table)
         await conn.run_sync(ensure_scholar_removal_columns)
         await conn.run_sync(ensure_scholar_inv_verify_doc_column)
         await conn.run_sync(ensure_scholar_bio_approve_columns)
@@ -357,6 +358,129 @@ def ensure_inventory_assign_meta_columns(sync_conn) -> None:
     for name, sql_type in types.items():
         if name not in existing:
             sync_conn.execute(text(f"ALTER TABLE inventory_items ADD COLUMN {name} {sql_type}"))
+
+
+def ensure_inventory_assignments_table(sync_conn) -> None:
+    """Create inventory_assignments (M:N) and backfill from legacy item.assigned_scholar_id."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(sync_conn)
+    tables = set(insp.get_table_names())
+    if "inventory_items" not in tables:
+        return
+    dialect = sync_conn.dialect.name
+    if "inventory_assignments" not in tables:
+        if dialect == "postgresql":
+            sync_conn.execute(
+                text(
+                    """
+                    CREATE TABLE inventory_assignments (
+                        id UUID PRIMARY KEY,
+                        inventory_item_id UUID NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+                        scholar_id UUID NOT NULL REFERENCES scholars(id) ON DELETE CASCADE,
+                        status VARCHAR(16) NOT NULL DEFAULT 'active',
+                        assigned_at TIMESTAMPTZ,
+                        assigned_by VARCHAR(80) DEFAULT '',
+                        verify_method VARCHAR(16) DEFAULT '',
+                        verify_doc_path VARCHAR(512) DEFAULT '',
+                        revoked_at TIMESTAMPTZ,
+                        revoked_by VARCHAR(80) DEFAULT '',
+                        created_at TIMESTAMPTZ,
+                        updated_at TIMESTAMPTZ
+                    )
+                    """
+                )
+            )
+        else:
+            sync_conn.execute(
+                text(
+                    """
+                    CREATE TABLE inventory_assignments (
+                        id CHAR(32) NOT NULL PRIMARY KEY,
+                        inventory_item_id CHAR(32) NOT NULL,
+                        scholar_id CHAR(32) NOT NULL,
+                        status VARCHAR(16) NOT NULL DEFAULT 'active',
+                        assigned_at DATETIME,
+                        assigned_by VARCHAR(80) DEFAULT '',
+                        verify_method VARCHAR(16) DEFAULT '',
+                        verify_doc_path VARCHAR(512) DEFAULT '',
+                        revoked_at DATETIME,
+                        revoked_by VARCHAR(80) DEFAULT '',
+                        created_at DATETIME,
+                        updated_at DATETIME,
+                        FOREIGN KEY(inventory_item_id) REFERENCES inventory_items(id) ON DELETE CASCADE,
+                        FOREIGN KEY(scholar_id) REFERENCES scholars(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+            )
+        sync_conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_inv_assign_item_status ON inventory_assignments (inventory_item_id, status)")
+        )
+        sync_conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_inv_assign_scholar_status ON inventory_assignments (scholar_id, status)")
+        )
+        sync_conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_inv_assign_item_scholar ON inventory_assignments (inventory_item_id, scholar_id)")
+        )
+
+    # Backfill active rows from legacy single-scholar columns (once per item/scholar pair).
+    rows = sync_conn.execute(
+        text(
+            """
+            SELECT id, assigned_scholar_id, assigned_at, assigned_by,
+                   assign_verify_method, assign_verify_doc_path
+            FROM inventory_items
+            WHERE assigned_scholar_id IS NOT NULL
+              AND (assign_verify_method IS NULL OR assign_verify_method != 'owner')
+            """
+        )
+    ).fetchall()
+    for row in rows:
+        item_id, scholar_id, assigned_at, assigned_by, method, doc = row
+        if not scholar_id:
+            continue
+        exists = sync_conn.execute(
+            text(
+                """
+                SELECT 1 FROM inventory_assignments
+                WHERE inventory_item_id = :item_id AND scholar_id = :scholar_id AND status = 'active'
+                LIMIT 1
+                """
+            ),
+            {"item_id": item_id, "scholar_id": scholar_id},
+        ).fetchone()
+        if exists:
+            continue
+        from uuid import uuid4
+
+        new_id = uuid4()
+        sync_conn.execute(
+            text(
+                """
+                INSERT INTO inventory_assignments (
+                    id, inventory_item_id, scholar_id, status,
+                    assigned_at, assigned_by, verify_method, verify_doc_path,
+                    revoked_at, revoked_by, created_at, updated_at
+                ) VALUES (
+                    :id, :item_id, :scholar_id, 'active',
+                    :assigned_at, :assigned_by, :verify_method, :verify_doc_path,
+                    NULL, '', :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": new_id.hex if dialect != "postgresql" else str(new_id),
+                "item_id": item_id,
+                "scholar_id": scholar_id,
+                "assigned_at": assigned_at,
+                "assigned_by": assigned_by or "",
+                "verify_method": method or "",
+                "verify_doc_path": doc or "",
+                "created_at": assigned_at,
+                "updated_at": assigned_at,
+            },
+        )
 
 
 def ensure_scholar_removal_columns(sync_conn) -> None:

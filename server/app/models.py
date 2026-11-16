@@ -644,6 +644,39 @@ class InventoryItem(Base, TimestampMixin):
     removed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
     removal_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    assignments: Mapped[list["InventoryAssignment"]] = relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+
+
+class InventoryAssignment(Base, TimestampMixin):
+    """Many-to-many issue of one inventory item to one or more scholars (and vice versa)."""
+
+    __tablename__ = "inventory_assignments"
+    __table_args__ = (
+        Index("ix_inv_assign_item_status", "inventory_item_id", "status"),
+        Index("ix_inv_assign_scholar_status", "scholar_id", "status"),
+        Index("ix_inv_assign_item_scholar", "inventory_item_id", "scholar_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    inventory_item_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("inventory_items.id", ondelete="CASCADE"), index=True
+    )
+    scholar_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("scholars.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | revoked
+    assigned_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    assigned_by: Mapped[str] = mapped_column(String(80), default="")
+    verify_method: Mapped[str] = mapped_column(String(16), default="")  # otp | document
+    verify_doc_path: Mapped[str] = mapped_column(String(512), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(TZDateTime(), nullable=True)
+    revoked_by: Mapped[str] = mapped_column(String(80), default="")
+
+    item: Mapped["InventoryItem"] = relationship(back_populates="assignments")
+    scholar: Mapped["Scholar"] = relationship()
+
 
 class Scholar(Base, TimestampMixin):
     """Lab scholar / researcher enrolment (M.Tech, Ph.D., Postdoc, …) — not only students."""

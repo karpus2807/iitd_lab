@@ -6,6 +6,16 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 
+class InventoryAssigneeOut(BaseModel):
+    assignment_id: str = ""
+    scholar_id: str = ""
+    full_name: str = ""
+    entry_no: str = ""
+    assigned_at: datetime | str | None = None
+    verify_method: str = ""
+    has_verify_doc: bool = False
+
+
 class InventoryItemOut(BaseModel):
     id: UUID
     ic_no: str
@@ -23,6 +33,7 @@ class InventoryItemOut(BaseModel):
     assigned_by: str = ""
     assign_verify_method: str = ""
     has_assign_verify_doc: bool = False
+    assignees: list[InventoryAssigneeOut] = Field(default_factory=list)
     status: str = "active"
     removed_at: datetime | None = None
     removed_by: str | None = None
