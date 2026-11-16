@@ -360,6 +360,23 @@ def ensure_inventory_assign_meta_columns(sync_conn) -> None:
             sync_conn.execute(text(f"ALTER TABLE inventory_items ADD COLUMN {name} {sql_type}"))
 
 
+def _naive_utc(value: datetime | str | None) -> datetime | None:
+    """Match TZDateTime bind rules — asyncpg TIMESTAMP (no tz) rejects aware values."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip().replace("Z", "+00:00")
+        try:
+            value = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 def ensure_inventory_assignments_table(sync_conn) -> None:
     """Create inventory_assignments (M:N) and backfill from legacy item.assigned_scholar_id.
 
@@ -367,8 +384,8 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
     - ``create_all`` may already have created the table with NOT NULL timestamps
     - legacy rows often have ``assigned_at`` NULL → never copy NULL into created_at
     - ``assigned_scholar_id`` was never an FK → skip orphans that would violate scholars FK
+    - timestamps must be UTC-naive (same as TZDateTime) for asyncpg TIMESTAMP columns
     """
-    from datetime import datetime, timezone
     from uuid import uuid4
 
     from sqlalchemy import inspect, text
@@ -379,6 +396,7 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
         return
     dialect = sync_conn.dialect.name
     if "inventory_assignments" not in tables:
+        # Use TIMESTAMP WITHOUT TIME ZONE to match ORM TZDateTime / rest of schema.
         if dialect == "postgresql":
             sync_conn.execute(
                 text(
@@ -388,14 +406,14 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
                         inventory_item_id UUID NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
                         scholar_id UUID NOT NULL REFERENCES scholars(id) ON DELETE CASCADE,
                         status VARCHAR(16) NOT NULL DEFAULT 'active',
-                        assigned_at TIMESTAMPTZ,
+                        assigned_at TIMESTAMP WITHOUT TIME ZONE,
                         assigned_by VARCHAR(80) DEFAULT '',
                         verify_method VARCHAR(16) DEFAULT '',
                         verify_doc_path VARCHAR(512) DEFAULT '',
-                        revoked_at TIMESTAMPTZ,
+                        revoked_at TIMESTAMP WITHOUT TIME ZONE,
                         revoked_by VARCHAR(80) DEFAULT '',
-                        created_at TIMESTAMPTZ NOT NULL,
-                        updated_at TIMESTAMPTZ NOT NULL
+                        created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                        updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL
                     )
                     """
                 )
@@ -447,7 +465,8 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
             """
         )
     ).fetchall()
-    now = datetime.now(timezone.utc)
+    now = _naive_utc(datetime.now(timezone.utc))
+    assert now is not None
     for row in rows:
         item_id, scholar_id, assigned_at, assigned_by, method, doc = row
         if not scholar_id:
@@ -466,8 +485,9 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
             continue
 
         new_id = uuid4()
+        assigned_naive = _naive_utc(assigned_at)
         # create_all / ORM columns are NOT NULL — never insert NULL timestamps.
-        ts = assigned_at or now
+        ts = assigned_naive or now
         sync_conn.execute(
             text(
                 """
@@ -486,7 +506,7 @@ def ensure_inventory_assignments_table(sync_conn) -> None:
                 "id": new_id.hex if dialect != "postgresql" else str(new_id),
                 "item_id": item_id,
                 "scholar_id": scholar_id,
-                "assigned_at": assigned_at,
+                "assigned_at": assigned_naive,
                 "assigned_by": assigned_by or "",
                 "verify_method": method or "",
                 "verify_doc_path": doc or "",

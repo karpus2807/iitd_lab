@@ -111,6 +111,58 @@ def test_ensure_skips_orphan_assigned_scholar_id():
     assert n == 0
 
 
+def test_ensure_backfill_strips_tzinfo_from_aware_assigned_at():
+    """asyncpg TIMESTAMP rejects aware datetimes — must strip tz before bind."""
+    eng = _engine()
+    aware = datetime(2026, 11, 16, 6, 25, 17, 893079, tzinfo=timezone.utc)
+    lab_id = uuid4()
+    scholar_id = uuid4()
+    item_id = uuid4()
+    with Session(eng) as db:
+        db.add(Lab(id=lab_id, name="TZ Lab", created_at=aware, updated_at=aware))
+        db.add(
+            Scholar(
+                id=scholar_id,
+                lab_id=lab_id,
+                full_name="TZ Scholar",
+                scholar_id="TZ-1",
+                created_at=aware,
+                updated_at=aware,
+            )
+        )
+        db.add(
+            InventoryItem(
+                id=item_id,
+                ic_no="IRD/MIG/TZ",
+                item_name="Aware assigned_at",
+                assigned_to="TZ Scholar",
+                assigned_scholar_id=scholar_id,
+                assigned_at=aware,
+                assign_verify_method="document",
+                status="active",
+                created_at=aware,
+                updated_at=aware,
+            )
+        )
+        db.commit()
+
+    with eng.begin() as conn:
+        ensure_inventory_assignments_table(conn)
+
+    with eng.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT assigned_at, created_at, updated_at FROM inventory_assignments "
+                "WHERE inventory_item_id = :iid"
+            ),
+            {"iid": item_id.hex},
+        ).fetchone()
+    assert row is not None
+    for val in row:
+        assert val is not None
+        assert getattr(val, "tzinfo", None) in (None,)
+
+
 def test_ensure_is_idempotent():
     eng = _engine()
     now = datetime.now(timezone.utc)
